@@ -1535,6 +1535,23 @@ BOOL dibdrv_RoundRect( PHYSDEV dev, INT left, INT top, INT right, INT bottom,
     BOOL ret = TRUE;
     HRGN outline = 0, interior = 0;
 
+    BOOL exclude_rotation_translation = FALSE;
+    XFORM old;
+    XFORM rotation_and_translation;
+
+    if (dc->attr->graphics_mode == GM_ADVANCED)
+    {
+        XFORM xf;
+        NtGdiGetTransform( pdev->dev.hdc, 0x203, &old );
+        xf = old;
+        if (xform_has_rotate_and_uniform_scale_and_shear( &xf ) &&
+            xform_decompose_rotation_and_translation( &xf, &rotation_and_translation ))
+        {
+            NtGdiModifyWorldTransform( pdev->dev.hdc, &xf, MWT_SET );
+            exclude_rotation_translation = TRUE;
+        }
+    }
+
     if (!get_pen_device_rect( dc, pdev, &rect, left, top, right, bottom )) return TRUE;
 
     pt[0].x = pt[0].y = 0;
@@ -1553,23 +1570,6 @@ BOOL dibdrv_RoundRect( PHYSDEV dev, INT left, INT top, INT right, INT bottom,
     {
         free( points );
         return FALSE;
-    }
-
-    if (pdev->brush.style != BS_NULL &&
-        !(interior = NtGdiCreateRoundRectRgn( rect.left, rect.top, rect.right + 1, rect.bottom + 1,
-                                              ellipse_width, ellipse_height )))
-    {
-        free( points );
-        if (outline) NtGdiDeleteObjectApp( outline );
-        return FALSE;
-    }
-
-    /* if not using a region, paint the interior first so the outline can overlap it */
-    if (interior && !outline)
-    {
-        ret = brush_region( pdev, interior );
-        NtGdiDeleteObjectApp( interior );
-        interior = 0;
     }
 
     count = ellipse_first_quadrant( ellipse_width, ellipse_height, points );
@@ -1615,13 +1615,37 @@ BOOL dibdrv_RoundRect( PHYSDEV dev, INT left, INT top, INT right, INT bottom,
     }
     count = end + 1;
 
+    if (exclude_rotation_translation == TRUE)
+    {
+        NtGdiModifyWorldTransform( pdev->dev.hdc, &rotation_and_translation, MWT_SET );
+        /* apply rotation and translation to calculated points */
+        NtGdiTransformPoints( dev->hdc, points, points, count, NtGdiLPtoDP );
+        /* restore origin matrix */
+        NtGdiModifyWorldTransform( pdev->dev.hdc, &old, MWT_SET );
+    }
+
+    if (pdev->brush.style != BS_NULL &&
+        !(interior = ULongToHandle(NtGdiPolyPolyDraw( ULongToHandle(ALTERNATE), points, (const UINT *)&count, 1, NtGdiPolyPolygonRgn ))))
+    {
+        free( points );
+        if (outline) NtGdiDeleteObjectApp( outline );
+            return FALSE;
+    }
+
+    /* if not using a region, paint the interior first so the outline can overlap it */
+    if (interior && !outline)
+    {
+        ret = brush_region( pdev, interior );
+        NtGdiDeleteObjectApp( interior );
+        interior = 0;
+    }
+
     reset_dash_origin( pdev );
     pdev->pen_lines( pdev, count, points, TRUE, outline );
     add_pen_lines_bounds( pdev, count, points, outline );
 
     if (interior)
     {
-        NtGdiCombineRgn( interior, interior, outline, RGN_DIFF );
         ret = brush_region( pdev, interior );
         NtGdiDeleteObjectApp( interior );
     }
