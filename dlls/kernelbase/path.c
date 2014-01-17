@@ -4839,7 +4839,10 @@ HRESULT WINAPI UrlCombineW(const WCHAR *baseW, const WCHAR *relativeW, WCHAR *co
         work = preliminary + base.cchProtocol + 1 + base.cchSuffix - 1;
         if (*work++ != '/')
             *(work++) = '/';
-        lstrcpyW(work, relative.pszSuffix);
+        if (relative.pszSuffix[0] == '.' && relative.pszSuffix[1] == 0)
+            *work = 0;
+        else
+            lstrcpyW(work, relative.pszSuffix);
         break;
 
     default:
