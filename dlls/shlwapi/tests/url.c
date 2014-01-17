@@ -349,6 +349,8 @@ static const TEST_URL_COMBINE TEST_COMBINE[] = {
     {"http://www.winehq.org/test14#aaa/bbb#ccc", "#", 0, "http://www.winehq.org/test14#"},
     {"http://www.winehq.org/tests/?query=x/y/z", "tests15", 0, "http://www.winehq.org/tests/tests15"},
     {"http://www.winehq.org/tests/?query=x/y/z#example", "tests16", 0, "http://www.winehq.org/tests/tests16"},
+    {"http://www.winehq.org/tests17", ".", 0, "http://www.winehq.org/"},
+    {"http://www.winehq.org/tests18/test", ".", 0, "http://www.winehq.org/tests18/"},
     {"file:///C:\\dir\\file.txt", "test.txt", 0, "file:///C:/dir/test.txt"},
     {"file:///C:\\dir\\file.txt#hash\\hash", "test.txt", 0, "file:///C:/dir/file.txt#hash/test.txt"},
     {"file:///C:\\dir\\file.html#hash\\hash", "test.html", 0, "file:///C:/dir/test.html"},
