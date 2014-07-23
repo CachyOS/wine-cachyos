@@ -1,4 +1,5 @@
 SOURCES = \
+	arial.sfd \
 	courier.sfd \
 	fixedsys.sfd \
 	fixedsys_jp.sfd \
