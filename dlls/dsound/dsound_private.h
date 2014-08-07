@@ -34,7 +34,9 @@
 
 #define DS_MAX_CHANNELS 6
 
+
 extern int ds_hel_buflen;
+extern int ds_hq_buffers_max;
 
 /*****************************************************************************
  * Predeclare the interface implementation structures
