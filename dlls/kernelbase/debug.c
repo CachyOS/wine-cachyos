@@ -203,6 +203,23 @@ void WINAPI DECLSPEC_HOTPATCH OutputDebugStringA( LPCSTR str )
     __ENDTRY
     if (caught_by_dbg) return;
 
+    /* for some unknown reason Windows sends the exception a second time, if a
+     * debugger is attached, and the event wasn't handled in the first attempt */
+    if (NtCurrentTeb()->Peb->BeingDebugged)
+    {
+        __TRY
+        {
+            ULONG_PTR args[2];
+            args[0] = strlen(str) + 1;
+            args[1] = (ULONG_PTR)str;
+            RaiseException( DBG_PRINTEXCEPTION_C, 0, 2, args );
+        }
+        __EXCEPT(debug_exception_handler)
+        {
+        }
+        __ENDTRY
+    }
+
     /* send string to a system-wide monitor */
     if (!mutex_inited)
     {
