@@ -217,6 +217,7 @@
 
 /* Staging tab */
 #define IDC_ENABLE_CSMT                 9001
+#define IDC_ENABLE_VAAPI                9002
 
 /* About tab */
 #define IDC_ABT_OWNER                8432
