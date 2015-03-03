@@ -5245,18 +5245,29 @@ void release_fileio( struct async_fileio *io )
 struct async_fileio *alloc_fileio( DWORD size, async_callback_t callback, HANDLE handle )
 {
     /* first free remaining previous fileinfos */
-    struct async_fileio *io = InterlockedExchangePointer( (void **)&fileio_freelist, NULL );
+    struct async_fileio *old_io = InterlockedExchangePointer( (void **)&fileio_freelist, NULL );
+    struct async_fileio *io = NULL;
 
-    while (io)
+    while (old_io)
     {
-        struct async_fileio *next = io->next;
-        free( io );
-        io = next;
+        if (!io && old_io->size >= size && old_io->size <= max(4096, 4 * size))
+        {
+            io     = old_io;
+            size   = old_io->size;
+            old_io = old_io->next;
+        }
+        else
+        {
+            struct async_fileio *next = old_io->next;
+            free( old_io );
+            old_io = next;
+        }
     }
 
-    if ((io = malloc( size )))
+    if (io || (io = malloc( size )))
     {
         io->callback = callback;
+        io->size     = size;
         io->handle   = handle;
     }
     return io;
