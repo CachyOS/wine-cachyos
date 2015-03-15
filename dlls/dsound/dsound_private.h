@@ -29,6 +29,7 @@
 #include "mediaobj.h"
 #include "mmsystem.h"
 #include "uuids.h"
+#include "dsound_eax.h"
 
 #include "wine/list.h"
 
