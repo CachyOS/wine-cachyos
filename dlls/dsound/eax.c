@@ -92,6 +92,22 @@ static const EFXEAXREVERBPROPERTIES efx_presets[] = {
     { 0.0625f, 0.5000f, 0.3162f, 0.8404f, 1.0000f, 7.5600f, 0.9100f, 1.0000f, 0.4864f, 0.0200f, { 0.0000f, 0.0000f, 0.0000f }, 2.4378f, 0.0300f, { 0.0000f, 0.0000f, 0.0000f }, 0.2500f, 0.0000f, 4.0000f, 1.0000f, 0.9943f, 5000.0000f, 250.0000f, 0.0000f, 0x0 } /* psychotic */
 };
 
+static BOOL ReverbDeviceUpdate(DirectSoundDevice *dev)
+{
+    /* stub */
+    return TRUE;
+}
+
+static void init_eax(DirectSoundDevice *dev)
+{
+    dev->eax.using_eax = TRUE;
+    dev->eax.environment = presets[0].environment;
+    dev->eax.volume = presets[0].fVolume;
+    dev->eax.damping = presets[0].fDamping;
+    memcpy(&dev->eax.eax_props, &efx_presets[0], sizeof(dev->eax.eax_props));
+    dev->eax.eax_props.flDecayTime = presets[0].fDecayTime_sec;
+}
+
 HRESULT WINAPI EAX_Get(IDirectSoundBufferImpl *buf, REFGUID guidPropSet,
         ULONG dwPropID, void *pInstanceData, ULONG cbInstanceData, void *pPropData,
         ULONG cbPropData, ULONG *pcbReturned)
@@ -101,6 +117,70 @@ HRESULT WINAPI EAX_Get(IDirectSoundBufferImpl *buf, REFGUID guidPropSet,
 
     *pcbReturned = 0;
 
+    if (IsEqualGUID(&DSPROPSETID_EAX_ReverbProperties, guidPropSet)) {
+        EAX_REVERBPROPERTIES *props;
+
+        if (!buf->device->eax.using_eax)
+            init_eax(buf->device);
+
+        switch (dwPropID) {
+            case DSPROPERTY_EAX_ALL:
+                if (cbPropData < sizeof(EAX_REVERBPROPERTIES))
+                    return E_FAIL;
+
+                props = pPropData;
+
+                props->environment = buf->device->eax.environment;
+                props->fVolume = buf->device->eax.volume;
+                props->fDecayTime_sec = buf->device->eax.eax_props.flDecayTime;
+                props->fDamping = buf->device->eax.damping;
+
+                *pcbReturned = sizeof(EAX_REVERBPROPERTIES);
+            break;
+
+            case DSPROPERTY_EAX_ENVIRONMENT:
+                if (cbPropData < sizeof(unsigned long))
+                    return E_FAIL;
+
+                *(unsigned long*)pPropData = buf->device->eax.environment;
+
+                *pcbReturned = sizeof(unsigned long);
+            break;
+
+            case DSPROPERTY_EAX_VOLUME:
+                if (cbPropData < sizeof(float))
+                    return E_FAIL;
+
+                *(float*)pPropData = buf->device->eax.volume;
+
+                *pcbReturned = sizeof(float);
+            break;
+
+            case DSPROPERTY_EAX_DECAYTIME:
+                if (cbPropData < sizeof(float))
+                    return E_FAIL;
+
+                *(float*)pPropData = buf->device->eax.eax_props.flDecayTime;
+
+                *pcbReturned = sizeof(float);
+            break;
+
+            case DSPROPERTY_EAX_DAMPING:
+                if (cbPropData < sizeof(float))
+                    return E_FAIL;
+
+                *(float*)pPropData = buf->device->eax.damping;
+
+                *pcbReturned = sizeof(float);
+            break;
+
+            default:
+                return E_PROP_ID_UNSUPPORTED;
+        }
+
+        return S_OK;
+    }
+
     return E_PROP_ID_UNSUPPORTED;
 }
 
@@ -108,8 +188,95 @@ HRESULT WINAPI EAX_Set(IDirectSoundBufferImpl *buf, REFGUID guidPropSet,
         ULONG dwPropID, void *pInstanceData, ULONG cbInstanceData, void *pPropData,
         ULONG cbPropData)
 {
+    EAX_REVERBPROPERTIES *props;
+
     TRACE("(%p,%s,%lu,%p,%lu,%p,%lu)\n",
         buf, debugstr_guid(guidPropSet), dwPropID, pInstanceData, cbInstanceData, pPropData, cbPropData);
+
+    if (IsEqualGUID(&DSPROPSETID_EAX_ReverbProperties, guidPropSet)) {
+        if (!buf->device->eax.using_eax)
+            init_eax(buf->device);
+
+        switch (dwPropID) {
+            case DSPROPERTY_EAX_ALL:
+                if (cbPropData != sizeof(EAX_REVERBPROPERTIES))
+                    return E_FAIL;
+
+                props = pPropData;
+
+                TRACE("setting environment = %lu, fVolume = %f, fDecayTime_sec = %f, fDamping = %f\n",
+                      props->environment, props->fVolume, props->fDecayTime_sec,
+                      props->fDamping);
+
+                buf->device->eax.environment = props->environment;
+
+                if (buf->device->eax.environment < EAX_ENVIRONMENT_COUNT)
+                    memcpy(&buf->device->eax.eax_props, &efx_presets[buf->device->eax.environment], sizeof(buf->device->eax.eax_props));
+
+                buf->device->eax.volume = props->fVolume;
+                buf->device->eax.eax_props.flDecayTime = props->fDecayTime_sec;
+                buf->device->eax.damping = props->fDamping;
+
+                ReverbDeviceUpdate(buf->device);
+            break;
+
+            case DSPROPERTY_EAX_ENVIRONMENT:
+                if (cbPropData != sizeof(unsigned long))
+                    return E_FAIL;
+
+                TRACE("setting environment to %lu\n", *(unsigned long*)pPropData);
+
+                buf->device->eax.environment = *(unsigned long*)pPropData;
+
+                if (buf->device->eax.environment < EAX_ENVIRONMENT_COUNT) {
+                    memcpy(&buf->device->eax.eax_props, &efx_presets[buf->device->eax.environment], sizeof(buf->device->eax.eax_props));
+                    buf->device->eax.volume = presets[buf->device->eax.environment].fVolume;
+                    buf->device->eax.eax_props.flDecayTime = presets[buf->device->eax.environment].fDecayTime_sec;
+                    buf->device->eax.damping = presets[buf->device->eax.environment].fDamping;
+                }
+
+                ReverbDeviceUpdate(buf->device);
+            break;
+
+            case DSPROPERTY_EAX_VOLUME:
+                if (cbPropData != sizeof(float))
+                    return E_FAIL;
+
+                TRACE("setting volume to %f\n", *(float*)pPropData);
+
+                buf->device->eax.volume = *(float*)pPropData;
+
+                ReverbDeviceUpdate(buf->device);
+            break;
+
+            case DSPROPERTY_EAX_DECAYTIME:
+                if (cbPropData != sizeof(float))
+                    return E_FAIL;
+
+                TRACE("setting decay time to %f\n", *(float*)pPropData);
+
+                buf->device->eax.eax_props.flDecayTime = *(float*)pPropData;
+
+                ReverbDeviceUpdate(buf->device);
+            break;
+
+            case DSPROPERTY_EAX_DAMPING:
+                if (cbPropData != sizeof(float))
+                    return E_FAIL;
+
+                TRACE("setting damping to %f\n", *(float*)pPropData);
+
+                buf->device->eax.damping = *(float*)pPropData;
+
+                ReverbDeviceUpdate(buf->device);
+            break;
+
+            default:
+                return E_PROP_ID_UNSUPPORTED;
+        }
+
+        return S_OK;
+    }
 
     return E_PROP_ID_UNSUPPORTED;
 }
