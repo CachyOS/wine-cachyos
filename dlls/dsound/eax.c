@@ -92,9 +92,24 @@ static const EFXEAXREVERBPROPERTIES efx_presets[] = {
     { 0.0625f, 0.5000f, 0.3162f, 0.8404f, 1.0000f, 7.5600f, 0.9100f, 1.0000f, 0.4864f, 0.0200f, { 0.0000f, 0.0000f, 0.0000f }, 2.4378f, 0.0300f, { 0.0000f, 0.0000f, 0.0000f }, 0.2500f, 0.0000f, 4.0000f, 1.0000f, 0.9943f, 5000.0000f, 250.0000f, 0.0000f, 0x0 } /* psychotic */
 };
 
+static float lpFilter2P(FILTER *iir, unsigned int offset, float input)
+{
+    float *history = &iir->history[offset*2];
+    float a = iir->coeff;
+    float output = input;
+
+    output = output + (history[0]-output)*a;
+    history[0] = output;
+    output = output + (history[1]-output)*a;
+    history[1] = output;
+
+    return output;
+}
+
 static void VerbPass(IDirectSoundBufferImpl* dsb, float in, float* out)
 {
-    /* stub */
+    /* Low-pass filter the incoming sample. */
+    in = lpFilter2P(&dsb->eax.LpFilter, 0, in);
 
     /* Step all delays forward one sample. */
     dsb->eax.Offset++;
@@ -135,6 +150,27 @@ void process_eax_buffer(IDirectSoundBufferImpl *dsb, float *buf, DWORD count)
     }
 
     HeapFree(GetProcessHeap(), 0, out);
+}
+
+static float lpCoeffCalc(float g, float cw)
+{
+    float a = 0.0f;
+
+    if (g < 0.9999f) /* 1-epsilon */
+    {
+        /* Be careful with gains < 0.001, as that causes the coefficient head
+         * towards 1, which will flatten the signal */
+        if (g < 0.001f) g = 0.001f;
+        a = (1 - g*cw - sqrtf(2*g*(1-cw) - g*g*(1 - cw*cw))) /
+            (1 - g);
+    }
+
+    return a;
+}
+
+static float CalcI3DL2HFreq(float hfRef, unsigned int frequency)
+{
+    return cosf(M_PI*2.0f * hfRef / frequency);
 }
 
 static unsigned int NextPowerOf2(unsigned int value)
@@ -214,12 +250,18 @@ static BOOL AllocLines(unsigned int frequency, IDirectSoundBufferImpl *dsb)
 
 static void ReverbUpdate(IDirectSoundBufferImpl *dsb)
 {
+    float cw;
+
     /* avoid segfaults in mixing thread when we recalculate the line offsets */
     EnterCriticalSection(&dsb->device->mixlock);
 
     AllocLines(dsb->device->pwfx->nSamplesPerSec, dsb);
 
     LeaveCriticalSection(&dsb->device->mixlock);
+
+    cw = CalcI3DL2HFreq(dsb->device->eax.eax_props.flHFReference, dsb->device->pwfx->nSamplesPerSec);
+
+    dsb->eax.LpFilter.coeff = lpCoeffCalc(dsb->device->eax.eax_props.flGainHF, cw);
 }
 
 static BOOL ReverbDeviceUpdate(DirectSoundDevice *dev)
@@ -237,6 +279,10 @@ void init_eax_buffer(IDirectSoundBufferImpl *dsb)
 {
     dsb->eax.TotalSamples = 0;
     dsb->eax.SampleBuffer = NULL;
+
+    dsb->eax.LpFilter.coeff = 0.0f;
+    dsb->eax.LpFilter.history[0] = 0.0f;
+    dsb->eax.LpFilter.history[1] = 0.0f;
 
     dsb->eax.Delay.Mask = 0;
     dsb->eax.Delay.Line = NULL;
