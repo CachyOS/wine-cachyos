@@ -229,6 +229,14 @@ LONG capped_refcount_dec(LONG *ref);
 
 HRESULT DSOUND_FullDuplexCreate(REFIID riid, void **ppv);
 
+/* eax.c */
+HRESULT WINAPI EAX_Get(IDirectSoundBufferImpl *buf, REFGUID guidPropSet,
+        ULONG dwPropID, void *pInstanceData, ULONG cbInstanceData, void *pPropData,
+        ULONG cbPropData, ULONG *pcbReturned);
+HRESULT WINAPI EAX_Set(IDirectSoundBufferImpl *buf, REFGUID guidPropSet,
+        ULONG dwPropID, void *pInstanceData, ULONG cbInstanceData, void *pPropData,
+        ULONG cbPropData);
+
 /* mixer.c */
 void DSOUND_CheckEvent(const IDirectSoundBufferImpl *dsb, DWORD playpos, int len);
 void DSOUND_RecalcVolPan(PDSVOLUMEPAN volpan);
