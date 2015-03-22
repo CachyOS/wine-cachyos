@@ -154,6 +154,19 @@ typedef struct {
     DelayLine Decorrelator;
     unsigned int DecoTap[3];
 
+    struct {
+        float Gain;
+        float DensityGain;
+        float MixCoeff;
+
+        float Coeff[4];
+        DelayLine Delay[4];
+        unsigned int Offset[4];
+
+        float LpCoeff[4];
+        float LpSample[4];
+    } Late;
+
     unsigned int Offset;
 } eax_buffer_info;
 
