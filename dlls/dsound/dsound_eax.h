@@ -144,6 +144,13 @@ typedef struct {
     DelayLine Delay;
     unsigned int DelayTap[2];
 
+    struct {
+        float Gain;
+        float Coeff[4];
+        DelayLine Delay[4];
+        unsigned int Offset[4];
+    } Early;
+
     unsigned int Offset;
 } eax_buffer_info;
 
