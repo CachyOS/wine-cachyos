@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2008-2009 Christopher Fitzgerald
  * Copyright (c) 2015 Mark Harmstone
  *
  * This library is free software; you can redistribute it and/or
@@ -15,6 +16,8 @@
  * License along with this library; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
+
+/* Taken in large part from OpenAL. */
 
 #ifndef DSOUND_EAX_H_DEFINED
 #define DSOUND_EAX_H_DEFINED
@@ -81,6 +84,32 @@ typedef struct {
 } EAXBUFFER_REVERBPROPERTIES;
 
 #define EAX_REVERBMIX_USEDISTANCE -1.0f
+
+typedef struct {
+    float flDensity;
+    float flDiffusion;
+    float flGain;
+    float flGainHF;
+    float flGainLF;
+    float flDecayTime;
+    float flDecayHFRatio;
+    float flDecayLFRatio;
+    float flReflectionsGain;
+    float flReflectionsDelay;
+    float flReflectionsPan[3];
+    float flLateReverbGain;
+    float flLateReverbDelay;
+    float flLateReverbPan[3];
+    float flEchoTime;
+    float flEchoDepth;
+    float flModulationTime;
+    float flModulationDepth;
+    float flAirAbsorptionGainHF;
+    float flHFReference;
+    float flLFReference;
+    float flRoomRolloffFactor;
+    int   iDecayHFLimit;
+} EFXEAXREVERBPROPERTIES, *LPEFXEAXREVERBPROPERTIES;
 
 #ifdef __cplusplus
 }
