@@ -157,7 +157,12 @@ typedef struct {
     struct {
         float Gain;
         float DensityGain;
+        float ApFeedCoeff;
         float MixCoeff;
+
+        float ApCoeff[4];
+        DelayLine ApDelay[4];
+        unsigned int ApOffset[4];
 
         float Coeff[4];
         DelayLine Delay[4];
