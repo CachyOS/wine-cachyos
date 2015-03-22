@@ -121,6 +121,11 @@ typedef struct DelayLine
 } DelayLine;
 
 typedef struct {
+    float coeff;
+    float history[2];
+} FILTER;
+
+typedef struct {
     BOOL using_eax;
     unsigned long environment;
     float volume;
@@ -133,6 +138,8 @@ typedef struct {
 
     float *SampleBuffer;
     unsigned int TotalSamples;
+
+    FILTER LpFilter;
 
     DelayLine Delay;
 
