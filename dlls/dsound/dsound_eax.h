@@ -151,6 +151,9 @@ typedef struct {
         unsigned int Offset[4];
     } Early;
 
+    DelayLine Decorrelator;
+    unsigned int DecoTap[3];
+
     unsigned int Offset;
 } eax_buffer_info;
 
