@@ -111,6 +111,14 @@ typedef struct {
     int   iDecayHFLimit;
 } EFXEAXREVERBPROPERTIES, *LPEFXEAXREVERBPROPERTIES;
 
+typedef struct {
+    BOOL using_eax;
+    unsigned long environment;
+    float volume;
+    float damping;
+    EFXEAXREVERBPROPERTIES eax_props;
+} eax_info;
+
 #ifdef __cplusplus
 }
 #endif
