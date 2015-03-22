@@ -98,6 +98,8 @@ struct DirectSoundDevice
 
     normfunc normfunction;
 
+    eax_info                    eax;
+
     /* DirectSound3DListener fields */
     DS3DLISTENER                ds3dl;
     BOOL                        ds3dl_need_recalc;
