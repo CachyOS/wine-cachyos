@@ -106,10 +106,25 @@ static float lpFilter2P(FILTER *iir, unsigned int offset, float input)
     return output;
 }
 
+static void DelayLineIn(DelayLine *Delay, unsigned int offset, float in)
+{
+    Delay->Line[offset&Delay->Mask] = in;
+}
+
+static float DelayLineOut(DelayLine *Delay, unsigned int offset)
+{
+    return Delay->Line[offset&Delay->Mask];
+}
+
 static void VerbPass(IDirectSoundBufferImpl* dsb, float in, float* out)
 {
     /* Low-pass filter the incoming sample. */
     in = lpFilter2P(&dsb->eax.LpFilter, 0, in);
+
+    /* Feed the initial delay line. */
+    DelayLineIn(&dsb->eax.Delay, dsb->eax.Offset, in);
+
+    in = DelayLineOut(&dsb->eax.Delay, dsb->eax.Offset - dsb->eax.DelayTap[0]);
 
     /* Step all delays forward one sample. */
     dsb->eax.Offset++;
@@ -150,6 +165,12 @@ void process_eax_buffer(IDirectSoundBufferImpl *dsb, float *buf, DWORD count)
     }
 
     HeapFree(GetProcessHeap(), 0, out);
+}
+
+static void UpdateDelayLine(float earlyDelay, float lateDelay, unsigned int frequency, eax_buffer_info *State)
+{
+    State->DelayTap[0] = fastf2u(earlyDelay * frequency);
+    State->DelayTap[1] = fastf2u((earlyDelay + lateDelay) * frequency);
 }
 
 static float lpCoeffCalc(float g, float cw)
@@ -262,6 +283,10 @@ static void ReverbUpdate(IDirectSoundBufferImpl *dsb)
     cw = CalcI3DL2HFreq(dsb->device->eax.eax_props.flHFReference, dsb->device->pwfx->nSamplesPerSec);
 
     dsb->eax.LpFilter.coeff = lpCoeffCalc(dsb->device->eax.eax_props.flGainHF, cw);
+
+    UpdateDelayLine(dsb->device->eax.eax_props.flReflectionsDelay,
+                    dsb->device->eax.eax_props.flLateReverbDelay,
+                    dsb->device->pwfx->nSamplesPerSec, &dsb->eax);
 }
 
 static BOOL ReverbDeviceUpdate(DirectSoundDevice *dev)
@@ -286,6 +311,8 @@ void init_eax_buffer(IDirectSoundBufferImpl *dsb)
 
     dsb->eax.Delay.Mask = 0;
     dsb->eax.Delay.Line = NULL;
+    dsb->eax.DelayTap[0] = 0;
+    dsb->eax.DelayTap[1] = 0;
 
     dsb->eax.Offset = 0;
 

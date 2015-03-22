@@ -142,6 +142,7 @@ typedef struct {
     FILTER LpFilter;
 
     DelayLine Delay;
+    unsigned int DelayTap[2];
 
     unsigned int Offset;
 } eax_buffer_info;
