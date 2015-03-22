@@ -92,6 +92,14 @@ static const EFXEAXREVERBPROPERTIES efx_presets[] = {
     { 0.0625f, 0.5000f, 0.3162f, 0.8404f, 1.0000f, 7.5600f, 0.9100f, 1.0000f, 0.4864f, 0.0200f, { 0.0000f, 0.0000f, 0.0000f }, 2.4378f, 0.0300f, { 0.0000f, 0.0000f, 0.0000f }, 0.2500f, 0.0000f, 4.0000f, 1.0000f, 0.9943f, 5000.0000f, 250.0000f, 0.0000f, 0x0 } /* psychotic */
 };
 
+static void VerbPass(IDirectSoundBufferImpl* dsb, float in, float* out)
+{
+    /* stub */
+
+    /* Step all delays forward one sample. */
+    dsb->eax.Offset++;
+}
+
 static unsigned int fastf2u(float f)
 {
     return (unsigned int)f;
@@ -99,7 +107,34 @@ static unsigned int fastf2u(float f)
 
 void process_eax_buffer(IDirectSoundBufferImpl *dsb, float *buf, DWORD count)
 {
-    /* stub */
+    int i;
+    float* out;
+    float gain;
+
+    if (dsb->device->eax.volume == 0.0f)
+        return;
+
+    if (dsb->mix_channels > 1) {
+        WARN("EAX not yet supported for non-mono sources\n");
+        return;
+    }
+
+    out = HeapAlloc(GetProcessHeap(), 0, sizeof(float)*count*4);
+
+    for (i = 0; i < count; i++) {
+        VerbPass(dsb, buf[i], &out[i*4]);
+    }
+
+    if (dsb->eax.reverb_mix == EAX_REVERBMIX_USEDISTANCE)
+        gain = 1.0f; /* FIXME - should be calculated from distance */
+    else
+        gain = dsb->eax.reverb_mix;
+
+    for (i = 0; i < count; i++) {
+        buf[i] += gain * out[i*4];
+    }
+
+    HeapFree(GetProcessHeap(), 0, out);
 }
 
 static unsigned int NextPowerOf2(unsigned int value)
