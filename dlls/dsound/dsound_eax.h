@@ -85,6 +85,9 @@ typedef struct {
 
 #define EAX_REVERBMIX_USEDISTANCE -1.0f
 
+#define AL_EAXREVERB_MAX_REFLECTIONS_DELAY       (0.3f)
+#define AL_EAXREVERB_MAX_LATE_REVERB_DELAY       (0.1f)
+
 typedef struct {
     float flDensity;
     float flDiffusion;
@@ -111,6 +114,12 @@ typedef struct {
     int   iDecayHFLimit;
 } EFXEAXREVERBPROPERTIES, *LPEFXEAXREVERBPROPERTIES;
 
+typedef struct DelayLine
+{
+    unsigned int Mask;
+    float *Line;
+} DelayLine;
+
 typedef struct {
     BOOL using_eax;
     unsigned long environment;
@@ -121,6 +130,13 @@ typedef struct {
 
 typedef struct {
     float reverb_mix;
+
+    float *SampleBuffer;
+    unsigned int TotalSamples;
+
+    DelayLine Delay;
+
+    unsigned int Offset;
 } eax_buffer_info;
 
 #ifdef __cplusplus
