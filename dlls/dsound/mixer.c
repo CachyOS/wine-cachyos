@@ -514,7 +514,7 @@ static void putieee32_dsp(const IDirectSoundBufferImpl *dsb, DWORD pos, DWORD ch
  */
 static void DSOUND_MixToTemporary(IDirectSoundBufferImpl *dsb, DWORD frames)
 {
-    BOOL using_filters = dsb->num_filters > 0;
+    BOOL using_filters = dsb->num_filters > 0 || dsb->device->eax.using_eax;
     UINT istride, ostride, size_bytes;
     DWORD channel, i;
     bitsputfunc put;
@@ -560,6 +560,9 @@ static void DSOUND_MixToTemporary(IDirectSoundBufferImpl *dsb, DWORD frames)
                     WARN("filter %lu has no inplace object - unsupported\n", i);
             }
         }
+
+        if (dsb->device->eax.using_eax)
+            process_eax_buffer(dsb, dsb->device->dsp_buffer, frames * dsb->mix_channels);
 
         istride = ostride;
         ostride = dsb->device->pwfx->nChannels * sizeof(float);
