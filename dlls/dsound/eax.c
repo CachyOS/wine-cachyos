@@ -92,20 +92,46 @@ static const EFXEAXREVERBPROPERTIES efx_presets[] = {
     { 0.0625f, 0.5000f, 0.3162f, 0.8404f, 1.0000f, 7.5600f, 0.9100f, 1.0000f, 0.4864f, 0.0200f, { 0.0000f, 0.0000f, 0.0000f }, 2.4378f, 0.0300f, { 0.0000f, 0.0000f, 0.0000f }, 0.2500f, 0.0000f, 4.0000f, 1.0000f, 0.9943f, 5000.0000f, 250.0000f, 0.0000f, 0x0 } /* psychotic */
 };
 
-static BOOL ReverbDeviceUpdate(DirectSoundDevice *dev)
+static void ReverbUpdate(IDirectSoundBufferImpl *dsb)
 {
     /* stub */
+}
+
+static BOOL ReverbDeviceUpdate(DirectSoundDevice *dev)
+{
+    int i;
+
+    for (i = 0; i < dev->nrofbuffers; i++) {
+        ReverbUpdate(dev->buffers[i]);
+    }
+
     return TRUE;
+}
+
+void init_eax_buffer(IDirectSoundBufferImpl *dsb)
+{
+    ReverbUpdate(dsb);
 }
 
 static void init_eax(DirectSoundDevice *dev)
 {
+    int i;
+
     dev->eax.using_eax = TRUE;
     dev->eax.environment = presets[0].environment;
     dev->eax.volume = presets[0].fVolume;
     dev->eax.damping = presets[0].fDamping;
     memcpy(&dev->eax.eax_props, &efx_presets[0], sizeof(dev->eax.eax_props));
     dev->eax.eax_props.flDecayTime = presets[0].fDecayTime_sec;
+
+    for (i = 0; i < dev->nrofbuffers; i++) {
+        init_eax_buffer(dev->buffers[i]);
+    }
+}
+
+void free_eax_buffer(IDirectSoundBufferImpl *dsb)
+{
+    /* stub */
 }
 
 HRESULT WINAPI EAX_Get(IDirectSoundBufferImpl *buf, REFGUID guidPropSet,
