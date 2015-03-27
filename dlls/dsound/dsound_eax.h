@@ -119,6 +119,10 @@ typedef struct {
     EFXEAXREVERBPROPERTIES eax_props;
 } eax_info;
 
+typedef struct {
+    float reverb_mix;
+} eax_buffer_info;
+
 #ifdef __cplusplus
 }
 #endif
