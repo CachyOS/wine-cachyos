@@ -242,6 +242,7 @@ HRESULT WINAPI EAX_Set(IDirectSoundBufferImpl *buf, REFGUID guidPropSet,
         ULONG cbPropData);
 void free_eax_buffer(IDirectSoundBufferImpl *dsb);
 void init_eax_buffer(IDirectSoundBufferImpl *dsb);
+void process_eax_buffer(IDirectSoundBufferImpl *dsb, float *buf, DWORD count);
 
 /* mixer.c */
 void DSOUND_CheckEvent(const IDirectSoundBufferImpl *dsb, DWORD playpos, int len);
