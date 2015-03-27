@@ -178,6 +178,8 @@ struct IDirectSoundBufferImpl
     int                         num_filters;
     DSFilter*                   filters;
 
+    eax_buffer_info             eax;
+
     struct list entry;
 };
 
