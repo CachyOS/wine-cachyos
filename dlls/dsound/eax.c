@@ -179,6 +179,38 @@ HRESULT WINAPI EAX_Get(IDirectSoundBufferImpl *buf, REFGUID guidPropSet,
         }
 
         return S_OK;
+    } else if (IsEqualGUID(&DSPROPSETID_EAXBUFFER_ReverbProperties, guidPropSet)) {
+        EAXBUFFER_REVERBPROPERTIES *props;
+
+        if (!buf->device->eax.using_eax)
+            init_eax(buf->device);
+
+        switch (dwPropID) {
+            case DSPROPERTY_EAXBUFFER_ALL:
+                if (cbPropData < sizeof(EAXBUFFER_REVERBPROPERTIES))
+                    return E_FAIL;
+
+                props = pPropData;
+
+                props->fMix = buf->eax.reverb_mix;
+
+                *pcbReturned = sizeof(EAXBUFFER_REVERBPROPERTIES);
+            break;
+
+            case DSPROPERTY_EAXBUFFER_REVERBMIX:
+                if (cbPropData < sizeof(float))
+                    return E_FAIL;
+
+                *(float*)pPropData = buf->eax.reverb_mix;
+
+                *pcbReturned = sizeof(float);
+            break;
+
+            default:
+                return E_PROP_ID_UNSUPPORTED;
+        }
+
+        return S_OK;
     }
 
     return E_PROP_ID_UNSUPPORTED;
@@ -269,6 +301,38 @@ HRESULT WINAPI EAX_Set(IDirectSoundBufferImpl *buf, REFGUID guidPropSet,
                 buf->device->eax.damping = *(float*)pPropData;
 
                 ReverbDeviceUpdate(buf->device);
+            break;
+
+            default:
+                return E_PROP_ID_UNSUPPORTED;
+        }
+
+        return S_OK;
+    } else if (IsEqualGUID(&DSPROPSETID_EAXBUFFER_ReverbProperties, guidPropSet)) {
+        EAXBUFFER_REVERBPROPERTIES *props;
+
+        if (!buf->device->eax.using_eax)
+            init_eax(buf->device);
+
+        switch (dwPropID) {
+            case DSPROPERTY_EAXBUFFER_ALL:
+                if (cbPropData != sizeof(EAXBUFFER_REVERBPROPERTIES))
+                    return E_FAIL;
+
+                props = pPropData;
+
+                TRACE("setting reverb mix to %f\n", props->fMix);
+
+                buf->eax.reverb_mix = props->fMix;
+            break;
+
+            case DSPROPERTY_EAXBUFFER_REVERBMIX:
+                if (cbPropData != sizeof(float))
+                    return E_FAIL;
+
+                TRACE("setting reverb mix to %f\n", *(float*)pPropData);
+
+                buf->eax.reverb_mix = *(float*)pPropData;
             break;
 
             default:
