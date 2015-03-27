@@ -92,6 +92,11 @@ static const EFXEAXREVERBPROPERTIES efx_presets[] = {
     { 0.0625f, 0.5000f, 0.3162f, 0.8404f, 1.0000f, 7.5600f, 0.9100f, 1.0000f, 0.4864f, 0.0200f, { 0.0000f, 0.0000f, 0.0000f }, 2.4378f, 0.0300f, { 0.0000f, 0.0000f, 0.0000f }, 0.2500f, 0.0000f, 4.0000f, 1.0000f, 0.9943f, 5000.0000f, 250.0000f, 0.0000f, 0x0 } /* psychotic */
 };
 
+void process_eax_buffer(IDirectSoundBufferImpl *dsb, float *buf, DWORD count)
+{
+    /* stub */
+}
+
 static void ReverbUpdate(IDirectSoundBufferImpl *dsb)
 {
     /* stub */
