@@ -1148,6 +1148,8 @@ HRESULT secondarybuffer_create(DirectSoundDevice *device, const DSBUFFERDESC *ds
 	}
 
         InitializeSRWLock(&dsb->lock);
+	if (dsb->device->eax.using_eax)
+		init_eax_buffer(dsb);
 
         /* register buffer */
         err = DirectSoundDevice_AddBuffer(device, dsb);
@@ -1188,6 +1190,8 @@ void secondarybuffer_destroy(IDirectSoundBufferImpl *This)
         }
         free(This->filters);
     }
+
+    free_eax_buffer(This);
 
     TRACE("(%p) released\n", This);
 
