@@ -233,6 +233,7 @@ static ULONG DirectSoundDevice_Release(DirectSoundDevice * device)
         if(device->mmdevice)
             IMMDevice_Release(device->mmdevice);
         CloseHandle(device->sleepev);
+        free(device->dsp_buffer);
         free(device->tmp_buffer);
         free(device->cp_buffer);
         free(device->buffer);
