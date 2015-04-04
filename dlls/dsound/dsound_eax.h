@@ -134,6 +134,7 @@ typedef struct {
 } eax_info;
 
 typedef struct {
+    BOOL reverb_update;
     float reverb_mix;
 
     float *SampleBuffer;

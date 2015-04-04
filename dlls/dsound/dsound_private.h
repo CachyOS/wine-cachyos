@@ -240,6 +240,7 @@ HRESULT WINAPI EAX_Get(IDirectSoundBufferImpl *buf, REFGUID guidPropSet,
 HRESULT WINAPI EAX_Set(IDirectSoundBufferImpl *buf, REFGUID guidPropSet,
         ULONG dwPropID, void *pInstanceData, ULONG cbInstanceData, void *pPropData,
         ULONG cbPropData);
+void init_eax_device(DirectSoundDevice *dev);
 void free_eax_buffer(IDirectSoundBufferImpl *dsb);
 void init_eax_buffer(IDirectSoundBufferImpl *dsb);
 void process_eax_buffer(IDirectSoundBufferImpl *dsb, float *buf, DWORD count);
