@@ -1219,7 +1219,7 @@ HRESULT IDirectSoundBufferImpl_Duplicate(
     VOID *committedbuff;
     TRACE("(%p,%p,%p)\n", device, ppdsb, pdsb);
 
-    dsb = malloc(sizeof(*dsb));
+    dsb = calloc(1, sizeof(*dsb));
     if (dsb == NULL) {
         WARN("out of memory\n");
         *ppdsb = NULL;
@@ -1266,6 +1266,8 @@ HRESULT IDirectSoundBufferImpl_Duplicate(
     DSOUND_RecalcFormat(dsb);
 
     InitializeSRWLock(&dsb->lock);
+
+    init_eax_buffer(dsb); /* FIXME: should we duplicate EAX properties? */
 
     /* register buffer */
     hres = DirectSoundDevice_AddBuffer(device, dsb);
