@@ -34,6 +34,7 @@
 #include "dsconf.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(dsound);
+WINE_DECLARE_DEBUG_CHANNEL(winediag);
 
 /*******************************************************************************
  *		IDirectSoundNotify
@@ -1376,16 +1377,11 @@ static HRESULT WINAPI IKsPropertySetImpl_QuerySupport(IKsPropertySet *iface, REF
 
     TRACE("(%p,%s,%ld,%p)\n",This,debugstr_guid(guidPropSet),dwPropID,pTypeSupport);
 
-    if (IsEqualGUID(&DSPROPSETID_EAX_ReverbProperties, guidPropSet)) {
-        if (dwPropID <= DSPROPERTY_EAX_DAMPING) {
-            *pTypeSupport = KSPROPERTY_SUPPORT_GET | KSPROPERTY_SUPPORT_SET;
-            return S_OK;
-        }
-    } else if (IsEqualGUID(&DSPROPSETID_EAXBUFFER_ReverbProperties, guidPropSet)) {
-        if (dwPropID <= DSPROPERTY_EAXBUFFER_REVERBMIX) {
-            *pTypeSupport = KSPROPERTY_SUPPORT_GET | KSPROPERTY_SUPPORT_SET;
-            return S_OK;
-        }
+    if (EAX_QuerySupport(guidPropSet, dwPropID, pTypeSupport)) {
+        static int once;
+        if (!once++)
+            FIXME_(winediag)("EAX sound effects are enabled - try to disable it if your app crashes unexpectedly\n");
+        return S_OK;
     }
 
     return E_PROP_ID_UNSUPPORTED;
