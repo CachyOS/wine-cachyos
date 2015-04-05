@@ -35,9 +35,9 @@
 
 #define DS_MAX_CHANNELS 6
 
-
 extern int ds_hel_buflen;
 extern int ds_hq_buffers_max;
+extern BOOL ds_eax_enabled;
 
 /*****************************************************************************
  * Predeclare the interface implementation structures
@@ -234,6 +234,7 @@ LONG capped_refcount_dec(LONG *ref);
 HRESULT DSOUND_FullDuplexCreate(REFIID riid, void **ppv);
 
 /* eax.c */
+BOOL WINAPI EAX_QuerySupport(REFGUID guidPropSet, ULONG dwPropID, ULONG *pTypeSupport);
 HRESULT WINAPI EAX_Get(IDirectSoundBufferImpl *buf, REFGUID guidPropSet,
         ULONG dwPropID, void *pInstanceData, ULONG cbInstanceData, void *pPropData,
         ULONG cbPropData, ULONG *pcbReturned);
