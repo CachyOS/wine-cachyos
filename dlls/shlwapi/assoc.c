@@ -130,10 +130,9 @@ HRESULT WINAPI AssocGetPerceivedType(LPCWSTR lpszExt, PERCEIVED *lpType,
 {
   FIXME("(%s, %p, %p, %p) not supported\n", debugstr_w(lpszExt), lpType, lpFlag, lppszType);
 
-  if (lpszExt == NULL)
-    return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
-
-  return E_NOTIMPL;
+  if (lpType) *lpType = PERCEIVED_TYPE_UNSPECIFIED;
+  if (lpFlag) *lpFlag = PERCEIVEDFLAG_UNDEFINED;
+  return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
 }
 
 /*************************************************************************
