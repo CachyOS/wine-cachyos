@@ -557,8 +557,10 @@ static void test_assoc_perceived(void)
     {
         if (assoc_perceived_types[i].minversion && assoc_perceived_types[i].minversion > version)
             continue;
-        todo_wine
-        test_assoc_one(&assoc_perceived_types[i]);
+        if (!(assoc_perceived_types[i].flags & PERCEIVEDFLAG_HARDCODED))
+            todo_wine test_assoc_one(&assoc_perceived_types[i]);
+        else
+            test_assoc_one(&assoc_perceived_types[i]);
     }
 
     /* below Vista */
@@ -573,7 +575,6 @@ static void test_assoc_perceived(void)
     /* below Win8 */
     if (version < 0x602)
     {
-        todo_wine
         test_assoc_one(&mp2);
     }
 }
