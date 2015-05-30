@@ -127,6 +127,11 @@ static inline TEB64 *NtCurrentTeb64(void) { return (TEB64 *)NtCurrentTeb()->GdiB
 
 NTSTATUS WINAPI RtlHashUnicodeString(PCUNICODE_STRING,BOOLEAN,ULONG,ULONG*);
 
+/* version */
+extern const char * CDECL wine_get_version(void);
+extern const char * CDECL wine_get_build_id(void);
+extern void CDECL wine_get_host_version( const char **sysname, const char **release );
+
 /* convert from straight ASCII to Unicode without depending on the current codepage */
 static inline void ascii_to_unicode( WCHAR *dst, const char *src, size_t len )
 {
