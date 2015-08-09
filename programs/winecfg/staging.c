@@ -90,6 +90,21 @@ static void hidewine_set(BOOL status)
     set_reg_key(config_key, keypath(L""), L"HideWineExports", status ? L"Y" : L"N");
 }
 
+/*
+ * GTK3
+ */
+static BOOL gtk3_get(void)
+{
+    BOOL ret;
+    WCHAR *value = get_reg_key(config_key, keypath(L""), L"ThemeEngine", NULL);
+    ret = (value && !wcsicmp(value, L"GTK"));
+    free(value);
+    return ret;
+}
+static void gtk3_set(BOOL status)
+{
+    set_reg_key(config_key, keypath(L""), L"ThemeEngine", status ? L"GTK" : NULL);
+}
 
 static void load_staging_settings(HWND dialog)
 {
@@ -97,6 +112,7 @@ static void load_staging_settings(HWND dialog)
     CheckDlgButton(dialog, IDC_ENABLE_VAAPI, vaapi_get() ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(dialog, IDC_ENABLE_EAX, eax_get() ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(dialog, IDC_ENABLE_HIDEWINE, hidewine_get() ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(dialog, IDC_ENABLE_GTK3, gtk3_get() ? BST_CHECKED : BST_UNCHECKED);
 }
 
 INT_PTR CALLBACK StagingDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
@@ -136,6 +152,10 @@ INT_PTR CALLBACK StagingDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lPar
             return TRUE;
         case IDC_ENABLE_HIDEWINE:
             hidewine_set(IsDlgButtonChecked(hDlg, IDC_ENABLE_HIDEWINE) == BST_CHECKED);
+            SendMessageW(GetParent(hDlg), PSM_CHANGED, 0, 0);
+            return TRUE;
+        case IDC_ENABLE_GTK3:
+            gtk3_set(IsDlgButtonChecked(hDlg, IDC_ENABLE_GTK3) == BST_CHECKED);
             SendMessageW(GetParent(hDlg), PSM_CHANGED, 0, 0);
             return TRUE;
         }
