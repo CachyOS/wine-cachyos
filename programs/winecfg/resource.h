@@ -220,6 +220,7 @@
 #define IDC_ENABLE_VAAPI                9002
 #define IDC_ENABLE_EAX                  9003
 #define IDC_ENABLE_HIDEWINE             9004
+#define IDC_ENABLE_GTK3                 9005
 
 /* About tab */
 #define IDC_ABT_OWNER                8432
