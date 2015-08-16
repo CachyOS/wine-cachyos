@@ -75,6 +75,7 @@ SOURCES = \
 	shelldispatch.c \
 	shellitem.c \
 	shelllink.c \
+	shellnew.c \
 	shellole.c \
 	shellord.c \
 	shellpath.c \
