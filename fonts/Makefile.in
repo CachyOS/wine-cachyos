@@ -11,5 +11,6 @@ SOURCES = \
 	system.sfd \
 	tahoma.sfd \
 	tahomabd.sfd \
+	times.sfd \
 	webdings.sfd \
 	wingding.sfd
