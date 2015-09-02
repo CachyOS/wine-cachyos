@@ -408,11 +408,21 @@ HRESULT WINAPI QueryPathOfRegTypeLib( REFGUID guid, WORD wMaj, WORD wMin, LCID l
  *    Success: S_OK
  *    Failure: Status
  */
-HRESULT WINAPI CreateTypeLib(
-	SYSKIND syskind, LPCOLESTR szFile, ICreateTypeLib** ppctlib
-) {
-    FIXME("(%d,%s,%p), stub!\n",syskind,debugstr_w(szFile),ppctlib);
-    return E_FAIL;
+HRESULT WINAPI CreateTypeLib(SYSKIND syskind, LPCOLESTR file, ICreateTypeLib **ctlib)
+{
+    ICreateTypeLib2 *typelib2;
+    HRESULT hres;
+
+    FIXME("(%d, %s, %p): forwarding to CreateTypeLib2\n", syskind, debugstr_w(file), ctlib);
+
+    hres = CreateTypeLib2(syskind, file, &typelib2);
+    if(SUCCEEDED(hres))
+    {
+        hres = ICreateTypeLib2_QueryInterface(typelib2, &IID_ICreateTypeLib, (void **)ctlib);
+        ICreateTypeLib2_Release(typelib2);
+    }
+
+    return hres;
 }
 
 /******************************************************************************
