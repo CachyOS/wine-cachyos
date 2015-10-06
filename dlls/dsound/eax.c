@@ -826,6 +826,11 @@ BOOL WINAPI EAX_QuerySupport(REFGUID guidPropSet, ULONG dwPropID, ULONG *pTypeSu
             *pTypeSupport = KSPROPERTY_SUPPORT_GET | KSPROPERTY_SUPPORT_SET;
             return TRUE;
         }
+    } else if (IsEqualGUID(&DSPROPSETID_EAX20_ListenerProperties, guidPropSet)) {
+        if (dwPropID <= DSPROPERTY_EAX20LISTENER_FLAGS) {
+            *pTypeSupport = KSPROPERTY_SUPPORT_GET | KSPROPERTY_SUPPORT_SET;
+            return TRUE;
+        }
     }
 
     return FALSE;
@@ -933,6 +938,9 @@ HRESULT WINAPI EAX_Get(IDirectSoundBufferImpl *buf, REFGUID guidPropSet,
         }
 
         return S_OK;
+    } else if (IsEqualGUID(&DSPROPSETID_EAX20_ListenerProperties, guidPropSet)) {
+        FIXME("Unsupported DSPROPSETID_EAX20_ListenerProperties: %ld\n", dwPropID);
+        return E_PROP_ID_UNSUPPORTED;
     }
 
     return E_PROP_ID_UNSUPPORTED;
@@ -1062,6 +1070,9 @@ HRESULT WINAPI EAX_Set(IDirectSoundBufferImpl *buf, REFGUID guidPropSet,
         }
 
         return S_OK;
+    } else if (IsEqualGUID(&DSPROPSETID_EAX20_ListenerProperties, guidPropSet)) {
+        FIXME("Unsupported DSPROPSETID_EAX20_ListenerProperties: %ld\n", dwPropID);
+        return E_PROP_ID_UNSUPPORTED;
     }
 
     return E_PROP_ID_UNSUPPORTED;
