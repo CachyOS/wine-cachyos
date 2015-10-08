@@ -831,8 +831,14 @@ BOOL WINAPI EAX_QuerySupport(REFGUID guidPropSet, ULONG dwPropID, ULONG *pTypeSu
             *pTypeSupport = KSPROPERTY_SUPPORT_GET | KSPROPERTY_SUPPORT_SET;
             return TRUE;
         }
+    } else if (IsEqualGUID(&DSPROPSETID_EAX20_BufferProperties, guidPropSet)) {
+        if (dwPropID <= DSPROPERTY_EAX20BUFFER_FLAGS) {
+            *pTypeSupport = KSPROPERTY_SUPPORT_GET | KSPROPERTY_SUPPORT_SET;
+            return TRUE;
+        }
     }
 
+    FIXME("(%s,%ld,%p)\n", debugstr_guid(guidPropSet), dwPropID, pTypeSupport);
     return FALSE;
 }
 
@@ -941,8 +947,13 @@ HRESULT WINAPI EAX_Get(IDirectSoundBufferImpl *buf, REFGUID guidPropSet,
     } else if (IsEqualGUID(&DSPROPSETID_EAX20_ListenerProperties, guidPropSet)) {
         FIXME("Unsupported DSPROPSETID_EAX20_ListenerProperties: %ld\n", dwPropID);
         return E_PROP_ID_UNSUPPORTED;
+    } else if (IsEqualGUID(&DSPROPSETID_EAX20_BufferProperties, guidPropSet)) {
+        FIXME("Unsupported DSPROPSETID_EAX20_BufferProperties: %ld\n", dwPropID);
+        return E_PROP_ID_UNSUPPORTED;
     }
 
+    FIXME("(buf=%p,guidPropSet=%s,dwPropID=%ld,pInstanceData=%p,cbInstanceData=%ld,pPropData=%p,cbPropData=%ld,pcbReturned=%p)\n",
+        buf, debugstr_guid(guidPropSet), dwPropID, pInstanceData, cbInstanceData, pPropData, cbPropData, pcbReturned);
     return E_PROP_ID_UNSUPPORTED;
 }
 
@@ -1073,7 +1084,12 @@ HRESULT WINAPI EAX_Set(IDirectSoundBufferImpl *buf, REFGUID guidPropSet,
     } else if (IsEqualGUID(&DSPROPSETID_EAX20_ListenerProperties, guidPropSet)) {
         FIXME("Unsupported DSPROPSETID_EAX20_ListenerProperties: %ld\n", dwPropID);
         return E_PROP_ID_UNSUPPORTED;
+    } else if (IsEqualGUID(&DSPROPSETID_EAX20_BufferProperties, guidPropSet)) {
+        FIXME("Unsupported DSPROPSETID_EAX20_BufferProperties: %ld\n", dwPropID);
+        return E_PROP_ID_UNSUPPORTED;
     }
 
+    FIXME("(%p,%s,%ld,%p,%ld,%p,%ld)\n",
+        buf, debugstr_guid(guidPropSet), dwPropID, pInstanceData, cbInstanceData, pPropData, cbPropData);
     return E_PROP_ID_UNSUPPORTED;
 }
