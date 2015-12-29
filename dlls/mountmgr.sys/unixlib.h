@@ -90,6 +90,7 @@ struct set_dosdev_symlink_params
 {
     const char *dev;
     const char *dest;
+    BOOL serial;
 };
 
 struct get_volume_dos_devices_params

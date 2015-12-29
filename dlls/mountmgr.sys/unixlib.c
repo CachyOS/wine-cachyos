@@ -36,6 +36,7 @@
 #ifdef HAVE_SYS_STATVFS_H
 # include <sys/statvfs.h>
 #endif
+#include <termios.h>
 #include <unistd.h>
 
 #include "unixlib.h"
@@ -303,6 +304,27 @@ static NTSTATUS set_dosdev_symlink( void *args )
     const struct set_dosdev_symlink_params *params = args;
     char *path;
     NTSTATUS status = STATUS_SUCCESS;
+
+#ifdef linux
+    /* Serial port device files almost always exist on Linux even if the corresponding serial
+     * ports don't exist. Do a basic functionality check before advertising a serial port. */
+    if (params->serial)
+    {
+        struct termios tios;
+        int fd;
+
+        if ((fd = open( params->dest, O_RDONLY )) == -1)
+            return FALSE;
+
+        if (tcgetattr( fd, &tios ) == -1)
+        {
+            close( fd );
+            return FALSE;
+        }
+
+        close( fd );
+    }
+#endif
 
     if (!(path = get_dosdevices_path( params->dev ))) return STATUS_NO_MEMORY;
 
