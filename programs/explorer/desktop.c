@@ -844,6 +844,7 @@ static BOOL get_default_enable_shell( const WCHAR *name )
 static void load_graphics_driver( const WCHAR *driver, GUID *guid )
 {
     static const WCHAR device_keyW[] = L"System\\CurrentControlSet\\Control\\Video\\{%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x}\\0000";
+    static const WCHAR video_keyW[]  = L"System\\CurrentControlSet\\Control\\Video\\0000";
 
     WCHAR buffer[MAX_PATH], libname[32], *name, *next;
     WCHAR key[ARRAY_SIZE( device_keyW ) + 39];
@@ -899,6 +900,10 @@ static void load_graphics_driver( const WCHAR *driver, GUID *guid )
     }
 
     TRACE( "display %s driver %s\n", debugstr_guid(guid), debugstr_w(libname) );
+
+    /* create video key first without REG_OPTION_VOLATILE attribute */
+    if (!RegCreateKeyExW( HKEY_LOCAL_MACHINE, video_keyW, 0, NULL, 0, KEY_SET_VALUE, NULL, &hkey, NULL ))
+        RegCloseKey( hkey );
 
     swprintf( key, ARRAY_SIZE(key), device_keyW, guid->Data1, guid->Data2, guid->Data3,
               guid->Data4[0], guid->Data4[1], guid->Data4[2], guid->Data4[3],
