@@ -549,6 +549,12 @@ static int get_element_size(type_t *type)
     case VT_LPWSTR:
         return pointer_size;
 
+    case VT_VOID:
+        return 0;
+
+    case VT_VARIANT:
+        return pointer_size == 8 ? 24 : 16;
+
     default:
         error("get_element_size: unrecognized vt %d\n", vt);
         break;
