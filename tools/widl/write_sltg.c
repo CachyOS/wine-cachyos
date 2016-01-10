@@ -419,7 +419,7 @@ static void add_interface_typeinfo(struct sltg_typelib *typelib, type_t *type)
     error("add_interface_typeinfo: %s not implemented\n", type->name);
 }
 
-static const char *add_typeinfo_block(struct sltg_typelib *typelib, const type_t *type)
+static const char *add_typeinfo_block(struct sltg_typelib *typelib, const type_t *type, int kind)
 {
     const char *index_name, *other_name;
     void *block;
@@ -456,7 +456,7 @@ static const char *add_typeinfo_block(struct sltg_typelib *typelib, const type_t
     *p++ = -1; /* res26 */
     *(GUID *)p = guid;
     p += sizeof(GUID)/2;
-    *p = type_get_type(type);
+    *p = kind;
 
     sltg_add_typeinfo(typelib, block, size, index_name);
 
@@ -670,7 +670,7 @@ static void add_structure_typeinfo(struct sltg_typelib *typelib, const type_t *t
 
     init_sltg_data(&data);
 
-    index_name = add_typeinfo_block(typelib, type);
+    index_name = add_typeinfo_block(typelib, type, TKIND_RECORD);
 
     init_typeinfo(&ti, type, TKIND_RECORD);
     append_data(&data, &ti, sizeof(ti));
