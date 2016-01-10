@@ -291,9 +291,20 @@ static void add_block(struct sltg_typelib *sltg, void *data, int size, const cha
     block->length = size;
     block->data = data;
     block->index_string = add_index(&sltg->index, name);
-    block->next = sltg->blocks;
+    block->next = NULL;
 
-    sltg->blocks = block;
+    if (sltg->blocks)
+    {
+        struct sltg_block *blocks = sltg->blocks;
+
+        while (blocks->next)
+            blocks = blocks->next;
+
+        blocks->next = block;
+    }
+    else
+        sltg->blocks = block;
+
     sltg->n_file_blocks++;
 }
 
@@ -378,7 +389,7 @@ static void sltg_add_typeinfo(struct sltg_typelib *sltg, void *data, int size, c
     {
         struct sltg_block *typeinfo = sltg->typeinfo;
 
-        while (typeinfo && typeinfo->next)
+        while (typeinfo->next)
             typeinfo = typeinfo->next;
 
         typeinfo->next = block;
@@ -1085,11 +1096,11 @@ int create_sltg_typelib(typelib_t *typelib)
     init_name_table(&sltg);
     init_library(&sltg);
 
-    add_library_block(&sltg);
-
     if (typelib->stmts)
         LIST_FOR_EACH_ENTRY(stmt, typelib->stmts, const statement_t, entry)
             add_statement(&sltg, stmt);
+
+    add_library_block(&sltg);
 
     save_all_changes(&sltg);
 
