@@ -555,6 +555,37 @@ static void init_typeinfo(struct sltg_typeinfo_header *ti, const type_t *type, i
     }
 }
 
+static void init_sltg_tail(struct sltg_tail *tail)
+{
+    tail->cFuncs = 0;
+    tail->cVars = 0;
+    tail->cImplTypes = 0;
+    tail->res06 = 0;
+    tail->funcs_off = -1;
+    tail->vars_off = 0;
+    tail->impls_off = -1;
+    tail->funcs_bytes = -1;
+    tail->vars_bytes = 0;
+    tail->impls_bytes = -1;
+    tail->tdescalias_vt = -1;
+    tail->res16 = -1;
+    tail->res18 = 0;
+    tail->res1a = 0;
+    tail->simple_alias = 0;
+    tail->res1e = 0;
+    tail->cbSizeInstance = 0;
+    tail->cbAlignment = 4;
+    tail->res24 = -1;
+    tail->res26 = -1;
+    tail->cbSizeVft = 0;
+    tail->res2a = -1;
+    tail->res2c = -1;
+    tail->res2e = -1;
+    tail->res30 = -1;
+    tail->res32 = 0;
+    tail->type_bytes = 0;
+}
+
 static void write_hrefmap(struct sltg_data *data, const struct sltg_hrefmap *hrefmap)
 {
     struct sltg_hrefinfo hrefinfo;
@@ -953,32 +984,11 @@ static void add_structure_typeinfo(struct sltg_typelib *typelib, type_t *type)
         }
     }
 
-    tail.cFuncs = 0;
+    init_sltg_tail(&tail);
+
     tail.cVars = var_count;
-    tail.cImplTypes = 0;
-    tail.res06 = 0;
-    tail.funcs_off = -1;
-    tail.vars_off = 0;
-    tail.impls_off = -1;
-    tail.funcs_bytes = -1;
     tail.vars_bytes = var_data_size;
-    tail.impls_bytes = -1;
-    tail.tdescalias_vt = -1;
-    tail.res16 = -1;
-    tail.res18 = 0;
-    tail.res1a = 0;
-    tail.simple_alias = 0;
-    tail.res1e = 0;
     tail.cbSizeInstance = size_instance;
-    tail.cbAlignment = 4;
-    tail.res24 = -1;
-    tail.res26 = -1;
-    tail.cbSizeVft = 0;
-    tail.res2a = -1;
-    tail.res2c = -1;
-    tail.res2e = -1;
-    tail.res30 = -1;
-    tail.res32 = 0;
     tail.type_bytes = data.size - member_offset - sizeof(member);
     append_data(&data, &tail, sizeof(tail));
 
