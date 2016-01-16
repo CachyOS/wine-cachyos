@@ -37,6 +37,9 @@
 #include "wine/test.h"
 #include "wine/asm.h"
 #include "wine/rbtree.h"
+#include "initguid.h"
+#define COBJMACROS
+#include "shobjidl.h"
 
 #ifndef __WINE_WINTERNL_H
 
@@ -105,6 +108,9 @@ static BOOL      (WINAPI *pRtlIsCriticalSectionLockedByThread)(CRITICAL_SECTION 
 static NTSTATUS  (WINAPI *pRtlInitializeCriticalSectionEx)(CRITICAL_SECTION *, ULONG, ULONG);
 static void *    (WINAPI *pRtlFindExportedRoutineByName)(HMODULE,const char *);
 static NTSTATUS  (WINAPI *pLdrEnumerateLoadedModules)(void *, void *, void *);
+static NTSTATUS  (WINAPI *pRtlQueryPackageIdentity)(HANDLE, WCHAR*, SIZE_T*, WCHAR*, SIZE_T*, BOOLEAN*);
+static NTSTATUS  (WINAPI *pRtlMakeSelfRelativeSD)(PSECURITY_DESCRIPTOR,PSECURITY_DESCRIPTOR,LPDWORD);
+static NTSTATUS  (WINAPI *pRtlAbsoluteToSelfRelativeSD)(PSECURITY_DESCRIPTOR,PSECURITY_DESCRIPTOR,PULONG);
 static NTSTATUS  (WINAPI *pLdrRegisterDllNotification)(ULONG, PLDR_DLL_NOTIFICATION_FUNCTION, void *, void **);
 static NTSTATUS  (WINAPI *pLdrUnregisterDllNotification)(void *);
 static void      (WINAPI *pRtlRbInsertNodeEx)(RTL_RB_TREE *, RTL_BALANCED_NODE *, BOOLEAN, RTL_BALANCED_NODE *);
@@ -151,6 +157,9 @@ static void InitFunctionPtrs(void)
         pRtlInitializeCriticalSectionEx = (void *)GetProcAddress(hntdll, "RtlInitializeCriticalSectionEx");
         pRtlFindExportedRoutineByName = (void *)GetProcAddress(hntdll, "RtlFindExportedRoutineByName");
         pLdrEnumerateLoadedModules = (void *)GetProcAddress(hntdll, "LdrEnumerateLoadedModules");
+        pRtlQueryPackageIdentity = (void *)GetProcAddress(hntdll, "RtlQueryPackageIdentity");
+        pRtlMakeSelfRelativeSD = (void *)GetProcAddress(hntdll, "RtlMakeSelfRelativeSD");
+        pRtlAbsoluteToSelfRelativeSD = (void *)GetProcAddress(hntdll, "RtlAbsoluteToSelfRelativeSD");
         pLdrRegisterDllNotification = (void *)GetProcAddress(hntdll, "LdrRegisterDllNotification");
         pLdrUnregisterDllNotification = (void *)GetProcAddress(hntdll, "LdrUnregisterDllNotification");
         pRtlRbInsertNodeEx = (void *)GetProcAddress(hntdll, "RtlRbInsertNodeEx");
@@ -3626,6 +3635,76 @@ static void test_RtlFirstFreeAce(void)
     HeapFree(GetProcessHeap(), 0, acl);
 }
 
+static void test_RtlQueryPackageIdentity(void)
+{
+    const WCHAR programW[] = {'M','i','c','r','o','s','o','f','t','.','W','i','n','d','o','w','s','.',
+                              'P','h','o','t','o','s','_','8','w','e','k','y','b','3','d','8','b','b','w','e','!','A','p','p',0};
+    const WCHAR fullnameW[] = {'M','i','c','r','o','s','o','f','t','.','W','i','n','d','o','w','s','.',
+                               'P','h','o','t','o','s', 0};
+    const WCHAR appidW[] = {'A','p','p',0};
+    IApplicationActivationManager *manager;
+    WCHAR buf1[MAX_PATH], buf2[MAX_PATH];
+    HANDLE process, token;
+    SIZE_T size1, size2;
+    NTSTATUS status;
+    DWORD processid;
+    HRESULT hr;
+    BOOL ret;
+
+    if (!pRtlQueryPackageIdentity)
+    {
+        win_skip("RtlQueryPackageIdentity not available\n");
+        return;
+    }
+
+    size1 = size2 = MAX_PATH * sizeof(WCHAR);
+    status = pRtlQueryPackageIdentity((HANDLE)~(ULONG_PTR)3, buf1, &size1, buf2, &size2, NULL);
+    ok(status == STATUS_NOT_FOUND, "expected STATUS_NOT_FOUND, got %08lx\n", status);
+
+    CoInitializeEx(0, COINIT_APARTMENTTHREADED);
+    hr = CoCreateInstance(&CLSID_ApplicationActivationManager, NULL, CLSCTX_LOCAL_SERVER,
+                          &IID_IApplicationActivationManager, (void **)&manager);
+    if (FAILED(hr))
+    {
+        todo_wine win_skip("Failed to create ApplicationActivationManager (%lx)\n", hr);
+        goto done;
+    }
+
+    hr = IApplicationActivationManager_ActivateApplication(manager, programW, NULL,
+                                                           AO_NOERRORUI, &processid);
+    if (FAILED(hr))
+    {
+        todo_wine win_skip("Failed to start program (%lx)\n", hr);
+        IApplicationActivationManager_Release(manager);
+        goto done;
+    }
+
+    process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE, FALSE, processid);
+    ok(process != NULL, "OpenProcess failed with %lx\n", GetLastError());
+    ret = OpenProcessToken(process, TOKEN_QUERY, &token);
+    ok(ret, "OpenProcessToken failed with error %lx\n", GetLastError());
+
+    size1 = size2 = MAX_PATH * sizeof(WCHAR);
+    status = pRtlQueryPackageIdentity(token, buf1, &size1, buf2, &size2, NULL);
+    ok(status == STATUS_SUCCESS, "Expected STATUS_SUCCESS, got %08lx\n", status);
+
+    ok(!memcmp(buf1, fullnameW, sizeof(fullnameW) - sizeof(WCHAR)),
+       "Expected buf1 to begin with %s, got %s\n", wine_dbgstr_w(fullnameW), wine_dbgstr_w(buf1));
+    ok(size1 >= sizeof(WCHAR) && !(size1 % sizeof(WCHAR)), "Unexpected size1 = %Iu\n", size1);
+    ok(buf1[size1 / sizeof(WCHAR) - 1] == 0, "Expected buf1[%Iu] == 0\n", size1 / sizeof(WCHAR) - 1);
+
+    ok(!lstrcmpW(buf2, appidW), "Expected buf2 to be %s, got %s\n", wine_dbgstr_w(appidW), wine_dbgstr_w(buf2));
+    ok(size2 >= sizeof(WCHAR) && !(size2 % sizeof(WCHAR)), "Unexpected size2 = %Iu\n", size2);
+    ok(buf2[size2 / sizeof(WCHAR) - 1] == 0, "Expected buf2[%Iu] == 0\n", size2 / sizeof(WCHAR) - 1);
+
+    CloseHandle(token);
+    TerminateProcess(process, 0);
+    CloseHandle(process);
+
+done:
+    CoUninitialize();
+}
+
 static void test_RtlInitializeSid(void)
 {
     SID_IDENTIFIER_AUTHORITY sid_ident = { SECURITY_NT_AUTHORITY };
@@ -3861,6 +3940,7 @@ START_TEST(rtl)
     test_RtlInitializeCriticalSectionEx();
     test_RtlLeaveCriticalSection();
     test_LdrEnumerateLoadedModules();
+    test_RtlQueryPackageIdentity();
     test_RtlMakeSelfRelativeSD();
     test_LdrRegisterDllNotification();
     test_DbgPrint();
