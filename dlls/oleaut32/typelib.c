@@ -4177,7 +4177,7 @@ static void SLTG_DoFuncs(char *pBlk, char *pFirstItem, ITypeInfoImpl *pTI,
 	pArg = (WORD*)(pBlk + pFunc->arg_off);
 
 	for(param = 0; param < pFuncDesc->funcdesc.cParams; param++) {
-	    char *paramName = pNameTable + *pArg;
+	    char *paramName = pNameTable + (*pArg & ~1);
 	    BOOL HaveOffs;
 	    /* If arg type follows then paramName points to the 2nd
 	       letter of the name, else the next WORD is an offset to
@@ -4188,17 +4188,14 @@ static void SLTG_DoFuncs(char *pBlk, char *pFirstItem, ITypeInfoImpl *pTI,
 	       meaning that the next WORD is the type, the latter
 	       meaning that the next WORD is an offset to the type. */
 
-	    HaveOffs = FALSE;
-	    if(*pArg == 0xffff)
+	    if(*pArg == 0xffff || *pArg == 0xfffe)
 	        paramName = NULL;
-	    else if(*pArg == 0xfffe) {
-	        paramName = NULL;
-		HaveOffs = TRUE;
-	    }
-	    else if(paramName[-1] && !isalnum(paramName[-1]))
-	        HaveOffs = TRUE;
 
+	    HaveOffs = !(*pArg & 1);
 	    pArg++;
+
+            TRACE_(typelib)("param %d: paramName %s, *pArg %#x\n",
+                param, debugstr_a(paramName), *pArg);
 
 	    if(HaveOffs) { /* the next word is an offset to type */
 	        pType = (WORD*)(pBlk + *pArg);
@@ -4206,8 +4203,6 @@ static void SLTG_DoFuncs(char *pBlk, char *pFirstItem, ITypeInfoImpl *pTI,
 			    &pFuncDesc->funcdesc.lprgelemdescParam[param], ref_lookup);
 		pArg++;
 	    } else {
-		if(paramName)
-		  paramName--;
 		pArg = SLTG_DoElem(pArg, pBlk,
                                    &pFuncDesc->funcdesc.lprgelemdescParam[param], ref_lookup);
 	    }
