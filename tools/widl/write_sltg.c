@@ -1465,11 +1465,12 @@ static void add_interface_typeinfo(struct sltg_typelib *typelib, type_t *iface)
 
     STATEMENTS_FOR_EACH_FUNC(stmt_func, type_iface_get_stmts(iface))
     {
-        if (i == func_count - 1) i |= 0x80000000;
+        int idx = inherited_func_count + i;
+
+        if (i == func_count - 1) idx |= 0x80000000;
 
         base_offset += add_func_desc(typelib, &data, stmt_func->u.var,
-                                     inherited_func_count + i,
-                                     dispid++, base_offset, &hrefmap);
+                                     idx, dispid + i, base_offset, &hrefmap);
         i++;
     }
 
