@@ -298,9 +298,9 @@ static int add_name(struct sltg_typelib *sltg, const char *name)
     else
         new_size = (new_size + 1) & ~1;
 
-    if (aligned_size > sltg->name_table.allocated)
+    if (new_size > sltg->name_table.allocated)
     {
-        sltg->name_table.allocated = max(sltg->name_table.allocated * 2, aligned_size);
+        sltg->name_table.allocated = max(sltg->name_table.allocated * 2, new_size);
         sltg->name_table.data = xrealloc(sltg->name_table.data, sltg->name_table.allocated);
     }
 
@@ -889,9 +889,8 @@ static short write_var_desc(struct sltg_typelib *typelib, struct sltg_data *data
         {
             chat("write_var_desc: vt VT_PTR | 0x0400 | %04x\n",  param_flags);
             vt = VT_PTR | 0x0400 | param_flags;
-            param_flags = 0;
             append_data(data, &vt, sizeof(vt));
-            write_var_desc(typelib, data, ref, param_flags, 0, base_offset, size_instance, hrefmap);
+            write_var_desc(typelib, data, ref, 0, 0, base_offset, size_instance, hrefmap);
         }
         else
             write_var_desc(typelib, data, ref, param_flags, 0x0e00, base_offset, size_instance, hrefmap);
