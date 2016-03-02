@@ -39,6 +39,8 @@ SOURCES = \
 	resources/folder.svg \
 	resources/folder_open.svg \
 	resources/help.svg \
+	resources/ietoolbar.svg \
+	resources/ietoolbar_small.svg \
 	resources/image.svg \
 	resources/internet.svg \
 	resources/log_off.svg \

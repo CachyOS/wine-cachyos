@@ -1081,6 +1081,14 @@ IDB_TB_SMALL_LIGHT BITMAP resources/idb_tb_small.bmp
 /* @makedep: resources/idb_tb_small.bmp */
 IDB_TB_SMALL_DARK BITMAP resources/idb_tb_small.bmp
 
+/* @makedep: resources/ietoolbar.bmp */
+204 BITMAP resources/ietoolbar.bmp
+205 BITMAP resources/ietoolbar.bmp
+
+/* @makedep: resources/ietoolbar_small.bmp */
+206 BITMAP resources/ietoolbar_small.bmp
+207 BITMAP resources/ietoolbar_small.bmp
+
 /* @makedep: resources/searching.avi */
 IDR_AVI_SEARCHING AVI resources/searching.avi
 
