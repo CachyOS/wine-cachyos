@@ -245,7 +245,7 @@
 @ stub SearchForInfFile
 @ stub SetArrayToMultiSzValue
 @ stdcall SetupAddInstallSectionToDiskSpaceListA(long long long str ptr long)
-@ stub SetupAddInstallSectionToDiskSpaceListW
+@ stdcall SetupAddInstallSectionToDiskSpaceListW(long long long wstr ptr long)
 @ stdcall SetupAddSectionToDiskSpaceListA(long long long str long ptr long)
 @ stdcall SetupAddSectionToDiskSpaceListW(long long long wstr long ptr long)
 @ stdcall SetupAddToDiskSpaceListA(long str int64 long ptr long)
