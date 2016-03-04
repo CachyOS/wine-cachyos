@@ -86,6 +86,8 @@ extern const WCHAR *DIRID_get_string( int dirid );
 extern const WCHAR *PARSER_get_inf_filename( HINF hinf );
 extern WCHAR *PARSER_get_dest_dir( INFCONTEXT *context );
 
+extern WCHAR *get_destination_dir( HINF hinf, const WCHAR *section );
+
 /* support for ANSI queue callback functions */
 
 struct callback_WtoA_context
