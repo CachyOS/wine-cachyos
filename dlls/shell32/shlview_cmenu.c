@@ -330,6 +330,64 @@ static void DoDelete(ContextMenu *This)
 }
 
 /**************************************************************************
+ * SetDropEffect
+ *
+ * Set the drop effect in a IDataObject object
+ */
+static void SetDropEffect(IDataObject *dataobject, DWORD value)
+{
+    FORMATETC formatetc;
+    STGMEDIUM medium;
+    DWORD *effect;
+
+    InitFormatEtc(formatetc, RegisterClipboardFormatW(CFSTR_PREFERREDDROPEFFECTW), TYMED_HGLOBAL);
+
+    medium.tymed = TYMED_HGLOBAL;
+    medium.pUnkForRelease = NULL;
+    medium.hGlobal = GlobalAlloc(GHND|GMEM_SHARE, sizeof(DWORD));
+    if (!medium.hGlobal) return;
+
+    effect = GlobalLock(medium.hGlobal);
+    if (!effect)
+    {
+        ReleaseStgMedium(&medium);
+        return;
+    }
+    *effect = value;
+    GlobalUnlock(effect);
+
+    IDataObject_SetData(dataobject, &formatetc, &medium, FALSE);
+    ReleaseStgMedium(&medium);
+}
+
+/**************************************************************************
+ * GetDropEffect
+ *
+ * Get the drop effect from a IDataObject object
+ */
+static void GetDropEffect(IDataObject *dataobject, DWORD *value)
+{
+    FORMATETC formatetc;
+    STGMEDIUM medium;
+    DWORD *effect;
+
+    *value = DROPEFFECT_NONE;
+
+    InitFormatEtc(formatetc, RegisterClipboardFormatW(CFSTR_PREFERREDDROPEFFECTW), TYMED_HGLOBAL);
+
+    if (SUCCEEDED(IDataObject_GetData(dataobject, &formatetc, &medium)))
+    {
+        effect = GlobalLock(medium.hGlobal);
+        if (effect)
+        {
+            *value = *effect;
+            GlobalUnlock(effect);
+        }
+        ReleaseStgMedium(&medium);
+    }
+}
+
+/**************************************************************************
  * DoCopyOrCut
  *
  * copies the currently selected items into the clipboard
@@ -342,6 +400,7 @@ static void DoCopyOrCut(ContextMenu *This, HWND hwnd, BOOL cut)
 
     if (SUCCEEDED(IShellFolder_GetUIObjectOf(This->parent, hwnd, This->cidl, (LPCITEMIDLIST*)This->apidl, &IID_IDataObject, 0, (void**)&dataobject)))
     {
+        SetDropEffect(dataobject, cut ? DROPEFFECT_MOVE : DROPEFFECT_COPY);
         OleSetClipboard(dataobject);
         IDataObject_Release(dataobject);
     }
@@ -1143,7 +1202,7 @@ static void DoNewFolder(ContextMenu *This, IShellView *view)
     }
 }
 
-static HRESULT paste_pidls(ContextMenu *This, ITEMIDLIST **pidls, UINT count)
+static HRESULT paste_pidls(ContextMenu *This, IDataObject *pda, ITEMIDLIST **pidls, UINT count)
 {
     IShellFolder *psfDesktop;
     UINT i;
@@ -1175,10 +1234,12 @@ static HRESULT paste_pidls(ContextMenu *This, ITEMIDLIST **pidls, UINT count)
             /* do the copy/move */
             if (psfhlpdst && psfhlpsrc)
             {
+                DWORD dropEffect;
+                GetDropEffect(pda, &dropEffect);
+
                 hr = ISFHelper_CopyItems(psfhlpdst, psfFrom, 1, (LPCITEMIDLIST*)&pidl_item);
-                /* FIXME handle move
-                ISFHelper_DeleteItems(psfhlpsrc, 1, &pidl_item);
-                */
+                if (SUCCEEDED(hr) && dropEffect == DROPEFFECT_MOVE)
+                    hr = ISFHelper_DeleteItems(psfhlpsrc, 1, (LPCITEMIDLIST*)&pidl_item, FALSE);
             }
             if(psfhlpdst) ISFHelper_Release(psfhlpdst);
             if(psfhlpsrc) ISFHelper_Release(psfhlpsrc);
@@ -1224,7 +1285,7 @@ static HRESULT DoPaste(ContextMenu *This)
 	      apidl = _ILCopyCidaToaPidl(&pidl, lpcida);
 	      if (apidl)
 	      {
-	        hr = paste_pidls(This, apidl, lpcida->cidl);
+                hr = paste_pidls(This, pda, apidl, lpcida->cidl);
 	        _ILFreeaPidl(apidl, lpcida->cidl);
 	        SHFree(pidl);
 	      }
@@ -1262,7 +1323,7 @@ static HRESULT DoPaste(ContextMenu *This)
 	          }
 	        }
 	        if (SUCCEEDED(hr))
-	          hr = paste_pidls(This, pidls, count);
+                  hr = paste_pidls(This, pda, pidls, count);
 	        _ILFreeaPidl(pidls, count);
 	      }
 	      else
