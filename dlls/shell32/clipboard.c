@@ -212,3 +212,41 @@ HGLOBAL RenderFILENAMEW (LPITEMIDLIST pidlRoot, LPITEMIDLIST * apidl, UINT cidl)
 
 	return hGlobal;
 }
+
+HGLOBAL RenderPREFERREDDROPEFFECT (DWORD value)
+{
+    DWORD *pEffect;
+    HGLOBAL hGlobal;
+
+    TRACE("(%ld)\n", value);
+
+    hGlobal = GlobalAlloc(GHND|GMEM_SHARE, sizeof(DWORD));
+    if(!hGlobal) return hGlobal;
+
+    pEffect = GlobalLock(hGlobal);
+    if (pEffect)
+    {
+        *pEffect = value;
+        GlobalUnlock(hGlobal);
+    }
+
+    return hGlobal;
+}
+
+HRESULT GetPREFERREDDROPEFFECT (STGMEDIUM *pmedium, DWORD *value)
+{
+    DWORD *pEffect;
+    BOOL result = E_OUTOFMEMORY;
+
+    TRACE("(%p, %p)\n", pmedium, value);
+
+    pEffect = GlobalLock(pmedium->hGlobal);
+    if (pEffect)
+    {
+        *value = *pEffect;
+        result = S_OK;
+        GlobalUnlock(pmedium->hGlobal);
+    }
+
+    return result;
+}
