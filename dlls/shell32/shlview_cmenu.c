@@ -324,7 +324,7 @@ static void DoDelete(ContextMenu *This)
     IShellFolder_QueryInterface(This->parent, &IID_ISFHelper, (void**)&helper);
     if (helper)
     {
-        ISFHelper_DeleteItems(helper, This->cidl, (LPCITEMIDLIST*)This->apidl);
+        ISFHelper_DeleteItems(helper, This->cidl, (LPCITEMIDLIST *)This->apidl, TRUE);
         ISFHelper_Release(helper);
     }
 }
