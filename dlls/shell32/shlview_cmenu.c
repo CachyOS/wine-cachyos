@@ -907,6 +907,12 @@ static HRESULT WINAPI ItemMenu_InvokeCommand(
             DoCopyOrCut(This, lpcmi->hwnd, TRUE);
         else if (strcmp(lpcmi->lpVerb,"properties")==0)
             DoOpenProperties(This, lpcmi->hwnd);
+        else if (strcmp(lpcmi->lpVerb,"cut")==0)
+            DoCopyOrCut(This, lpcmi->hwnd, TRUE);
+        else if (strcmp(lpcmi->lpVerb,"copy")==0)
+            DoCopyOrCut(This, lpcmi->hwnd, FALSE);
+        else if (strcmp(lpcmi->lpVerb,"paste")==0)
+            DoPaste(This);
         else {
             FIXME("Unhandled string verb %s\n",debugstr_a(lpcmi->lpVerb));
             return E_FAIL;
