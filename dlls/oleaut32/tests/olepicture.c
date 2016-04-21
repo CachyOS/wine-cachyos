@@ -239,7 +239,7 @@ test_pic_with_stream(LPSTREAM stream, unsigned int imgsize)
         {
             BITMAP bmp;
             GetObjectA(UlongToHandle(handle), sizeof(BITMAP), &bmp);
-            todo_wine ok(bmp.bmBits != 0, "not a dib\n");
+            ok(bmp.bmBits != 0, "not a dib\n");
         }
 
 	width = 0;
