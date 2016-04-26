@@ -1470,21 +1470,18 @@ todo_wine
     ok(hr == S_OK, "QueryInterface error %#x\n", hr);
 
     hr = IPersistStream_Save(src_stream, dst_stream, TRUE);
-todo_wine
     ok(hr == S_OK, "Save error %#x\n", hr);
 
     IPersistStream_Release(src_stream);
     IStream_Release(dst_stream);
 
     mem = GlobalLock(hmem);
-if (hr == S_OK)
-{
     ok(!memcmp(mem, "lt\0\0", 4), "got wrong stream header %04x\n", mem[0]);
     ok(mem[1] == 128, "expected 128, got %u\n", mem[1]);
     emh = (ENHMETAHEADER *)(mem + 2);
     ok(emh->iType == EMR_HEADER, "wrong iType %04x\n", emh->iType);
     ok(emh->dSignature == ENHMETA_SIGNATURE, "wrong dSignature %08x\n", emh->dSignature);
-}
+
     GlobalUnlock(hmem);
     GlobalFree(hmem);
 

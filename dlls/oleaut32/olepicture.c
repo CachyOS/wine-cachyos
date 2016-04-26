@@ -256,6 +256,18 @@ static void OLEPictureImpl_SetIcon(OLEPictureImpl * This)
     }
 }
 
+static void OLEPictureImpl_SetEMF(OLEPictureImpl *This)
+{
+    ENHMETAHEADER emh;
+
+    GetEnhMetaFileHeader(This->desc.emf.hemf, sizeof(emh), &emh);
+
+    This->origWidth = 0;
+    This->origHeight = 0;
+    This->himetricWidth = emh.rclFrame.right - emh.rclFrame.left;
+    This->himetricHeight = emh.rclFrame.bottom - emh.rclFrame.top;
+}
+
 /************************************************************************
  * OLEPictureImpl_Construct
  *
@@ -339,8 +351,7 @@ static HRESULT OLEPictureImpl_Construct(LPPICTDESC pictDesc, BOOL fOwn, OLEPictu
         break;
 
       case PICTYPE_ENHMETAFILE:
-        FIXME("EMF is not supported\n");
-        newObject->himetricWidth = newObject->himetricHeight = 0;
+        OLEPictureImpl_SetEMF(newObject);
         break;
 
       default:
@@ -1747,6 +1758,17 @@ static BOOL serializeIcon(HICON hIcon, void ** ppBuffer, unsigned int * pLength)
         return success;
 }
 
+static BOOL serializeEMF(HENHMETAFILE hemf, void **buf, unsigned *size)
+{
+    *size = GetEnhMetaFileBits(hemf, 0, NULL);
+    if (!*size) return FALSE;
+
+    *buf = HeapAlloc(GetProcessHeap(), 0, *size);
+    if (!*buf) return FALSE;
+
+    return GetEnhMetaFileBits(hemf, *size, *buf) != 0;
+}
+
 static HRESULT WINAPI OLEPictureImpl_Save(
   IPersistStream* iface,IStream*pStm,BOOL fClearDirty)
 {
@@ -1822,11 +1844,30 @@ static HRESULT WINAPI OLEPictureImpl_Save(
         IStream_Write(pStm, This->data, This->datalen, &dummy);
         hResult = S_OK;
         break;
+
+    case PICTYPE_ENHMETAFILE:
+        if (This->bIsDirty || !This->data)
+        {
+            serializeResult = serializeEMF(This->desc.emf.hemf, &pIconData, &iDataSize);
+            if (!serializeResult)
+            {
+                hResult = E_FAIL;
+                break;
+            }
+
+            HeapFree(GetProcessHeap(), 0, This->data);
+            This->data = pIconData;
+            This->datalen = iDataSize;
+        }
+        header[0] = 0x0000746c;
+        header[1] = This->datalen;
+        IStream_Write(pStm, header, 2 * sizeof(DWORD), &dummy);
+        IStream_Write(pStm, This->data, This->datalen, &dummy);
+        hResult = S_OK;
+        break;
+
     case PICTYPE_METAFILE:
         FIXME("(%p,%p,%d), PICTYPE_METAFILE not implemented!\n",This,pStm,fClearDirty);
-        break;
-    case PICTYPE_ENHMETAFILE:
-        FIXME("(%p,%p,%d),PICTYPE_ENHMETAFILE not implemented!\n",This,pStm,fClearDirty);
         break;
     default:
         FIXME("(%p,%p,%d), [unknown type] not implemented!\n",This,pStm,fClearDirty);
