@@ -1361,16 +1361,12 @@ static void test_NtSetLdtEntries(void)
     {
         memset(&sel.entry, 0x9a, sizeof(sel.entry));
         ret = GetThreadSelectorEntry(GetCurrentThread(), 0x000f, &sel.entry);
-        todo_wine
         ok(ret, "GetThreadSelectorEntry failed\n");
-        todo_wine
         ok(!memcmp(&ds_entry, &sel.entry, sizeof(ds_entry)), "entries do not match\n");
 
         memset(&sel.entry, 0x9a, sizeof(sel.entry));
         ret = GetThreadSelectorEntry(GetCurrentThread(), 0x001f, &sel.entry);
-        todo_wine
         ok(ret, "GetThreadSelectorEntry failed\n");
-        todo_wine
         ok(!memcmp(&ds_entry, &sel.entry, sizeof(ds_entry)), "entries do not match\n");
     }
 }
