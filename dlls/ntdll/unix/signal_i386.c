@@ -2361,7 +2361,7 @@ NTSTATUS get_thread_ldt_entry( HANDLE handle, void *data, ULONG len, ULONG *ret_
                 if (reply->flags)
                     info->Entry = ldt_make_entry( (void *)reply->base, reply->limit, reply->flags );
                 else
-                    status = STATUS_UNSUCCESSFUL;
+                    status = STATUS_ACCESS_VIOLATION;
             }
         }
         SERVER_END_REQ;
