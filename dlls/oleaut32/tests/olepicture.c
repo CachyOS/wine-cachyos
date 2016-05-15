@@ -1436,7 +1436,6 @@ static void test_load_save_emf(void)
     size = -1;
     hr = IPicture_SaveAsFile(pic, dst_stream, TRUE, &size);
     ok(hr == S_OK, "IPicture_SaveasFile error %#x\n", hr);
-todo_wine
     ok(size == 128, "expected 128, got %d\n", size);
     emh = GlobalLock(hmem);
 if (size)
@@ -1448,9 +1447,7 @@ if (size)
 
     size = -1;
     hr = IPicture_SaveAsFile(pic, dst_stream, FALSE, &size);
-todo_wine
     ok(hr == E_FAIL, "expected E_FAIL, got %#x\n", hr);
-todo_wine
     ok(size == -1, "expected -1, got %d\n", size);
 
     offset.QuadPart = 0;
