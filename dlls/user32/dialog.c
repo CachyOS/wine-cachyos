@@ -189,7 +189,7 @@ static const WORD *DIALOG_GetControl32( const WORD *p, DLG_CONTROL_INFO *info,
 static BOOL DIALOG_CreateControls32( HWND hwnd, LPCSTR template, const DLG_TEMPLATE *dlgTemplate,
                                      HINSTANCE hInst, BOOL unicode )
 {
-    DIALOGINFO *dlgInfo = DIALOG_get_info( hwnd, TRUE );
+    DIALOGINFO *dlgInfo = DIALOG_get_info( hwnd, FALSE );
     DLG_CONTROL_INFO info;
     HWND hwndCtrl, hwndDefButton = 0;
     INT items = dlgTemplate->nbItems;

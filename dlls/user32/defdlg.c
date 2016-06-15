@@ -317,7 +317,7 @@ static LRESULT USER_DefDlgProcA( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     LRESULT result;
 
     /* Perform DIALOGINFO initialization if not done */
-    if(!(dlgInfo = DIALOG_get_info( hwnd, TRUE ))) return 0;
+    if (!(dlgInfo = DIALOG_get_info( hwnd, msg == WM_NCCREATE ))) return 0;
 
     SetWindowLongPtrW( hwnd, DWLP_MSGRESULT, 0 );
 
@@ -369,7 +369,7 @@ static LRESULT USER_DefDlgProcW( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     LRESULT result;
 
     /* Perform DIALOGINFO initialization if not done */
-    if(!(dlgInfo = DIALOG_get_info( hwnd, TRUE ))) return 0;
+    if (!(dlgInfo = DIALOG_get_info( hwnd, msg == WM_NCCREATE ))) return 0;
 
     SetWindowLongPtrW( hwnd, DWLP_MSGRESULT, 0 );
     result = WINPROC_CallDlgProcW( hwnd, msg, wParam, lParam );
