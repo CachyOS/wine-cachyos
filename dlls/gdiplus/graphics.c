@@ -601,7 +601,7 @@ static ARGB blend_colors(ARGB start, ARGB end, REAL position)
     INT start_a, end_a, final_a;
     INT pos;
 
-    pos = gdip_round(position * 0xff);
+    pos = (INT)(position * 255.0f + 0.5f);
 
     start_a = ((start >> 24) & 0xff) * (pos ^ 0xff);
     end_a = ((end >> 24) & 0xff) * pos;
@@ -1007,6 +1007,11 @@ static ARGB sample_bitmap_pixel(GDIPCONST GpRect *src_rect, LPBYTE bits, UINT wi
     return ((DWORD*)(bits))[(x - src_rect->X) + (y - src_rect->Y) * src_rect->Width];
 }
 
+static FORCEINLINE int positive_ceilf(float f)
+{
+    return f - (int)f > 0.0f ? f + 1.0f : f;
+}
+
 static ARGB resample_bitmap_pixel(GDIPCONST GpRect *src_rect, LPBYTE bits, UINT width,
     UINT height, GpPointF *point, GDIPCONST GpImageAttributes *attributes,
     InterpolationMode interpolation, PixelOffsetMode offset_mode)
@@ -1027,12 +1032,12 @@ static ARGB resample_bitmap_pixel(GDIPCONST GpRect *src_rect, LPBYTE bits, UINT 
         ARGB top, bottom;
         float x_offset;
 
-        leftxf = floorf(point->X);
-        leftx = (INT)leftxf;
-        rightx = (INT)ceilf(point->X);
-        topyf = floorf(point->Y);
-        topy = (INT)topyf;
-        bottomy = (INT)ceilf(point->Y);
+        leftx = (INT)point->X;
+        leftxf = (REAL)leftx;
+        rightx = positive_ceilf(point->X);
+        topy = (INT)point->Y;
+        topyf = (REAL)topy;
+        bottomy = positive_ceilf(point->Y);
 
         if (leftx == rightx && topy == bottomy)
             return sample_bitmap_pixel(src_rect, bits, width, height,
