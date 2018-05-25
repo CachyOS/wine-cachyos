@@ -1452,6 +1452,8 @@ static void test_multi_encoder_impl(const struct bitmap_data **srcs, const CLSID
 
         if (hglobal && SUCCEEDED(hr))
         {
+            IWICBitmapEncoderInfo *info = NULL;
+
             if (palette)
             {
                 hr = IWICBitmapEncoder_SetPalette(encoder, palette);
@@ -1469,6 +1471,20 @@ static void test_multi_encoder_impl(const struct bitmap_data **srcs, const CLSID
                 else
                     ok(hr == WINCODEC_ERR_UNSUPPORTEDOPERATION, "wrong error %#lx\n", hr);
                 hr = S_OK;
+            }
+
+            hr = IWICBitmapEncoder_GetEncoderInfo(encoder, &info);
+            ok(hr == S_OK || hr == WINCODEC_ERR_COMPONENTNOTFOUND, "wrong error %#lx\n", hr);
+            if (SUCCEEDED(hr))
+            {
+                CLSID clsid;
+
+                hr = IWICBitmapEncoderInfo_GetCLSID(info, &clsid);
+                ok(hr == S_OK, "wrong error %#lx\n", hr);
+                ok(!IsEqualGUID(clsid_encoder, &clsid), "wrong CLSID %s (%s)\n",
+                       wine_dbgstr_guid(clsid_encoder), wine_dbgstr_guid(&clsid));
+
+                IWICBitmapEncoderInfo_Release(info);
             }
 
             i=0;
