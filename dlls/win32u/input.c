@@ -2853,11 +2853,11 @@ BOOL process_wine_clipcursor( HWND hwnd, UINT flags, BOOL reset )
 {
     struct user_thread_info *thread_info = get_user_thread_info();
     RECT rect, virtual_rect = get_virtual_screen_rect( 0, MDT_RAW_DPI );
-    BOOL was_clipping, empty = !!(flags & SET_CURSOR_NOCLIP);
+    BOOL empty = !!(flags & SET_CURSOR_NOCLIP);
 
     TRACE( "hwnd %p, flags %#x, reset %u\n", hwnd, flags, reset );
 
-    if ((was_clipping = thread_info->clipping_cursor)) InterlockedDecrement( &clipping_cursor );
+    if (thread_info->clipping_cursor) InterlockedDecrement( &clipping_cursor );
     thread_info->clipping_cursor = FALSE;
 
     if (reset)
@@ -2874,8 +2874,8 @@ BOOL process_wine_clipcursor( HWND hwnd, UINT flags, BOOL reset )
     if (EqualRect( &rect, &virtual_rect )) empty = TRUE;
     if (empty && !(flags & SET_CURSOR_FSCLIP))
     {
-        /* if currently clipping, check if we should switch to fullscreen clipping */
-        if (was_clipping && clip_fullscreen_window( hwnd, TRUE )) return TRUE;
+        /* check if we should switch to fullscreen clipping */
+        if (clip_fullscreen_window( hwnd, TRUE )) return TRUE;
         return user_driver->pClipCursor( NULL, FALSE );
     }
 
