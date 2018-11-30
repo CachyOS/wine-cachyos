@@ -21,6 +21,7 @@
 #include <stdarg.h>
 #include <string.h>
 #include <sys/types.h>
+#include <math.h>
 
 #define COBJMACROS
 
@@ -333,17 +334,6 @@ static INT SIC_IconAppend (const WCHAR *sourcefile, INT src_index, HICON *hicons
     return ret;
 }
 
-static BOOL get_imagelist_icon_size(int list, SIZE *size)
-{
-    int cx, cy;
-    if (list < 0 || list >= ARRAY_SIZE(shell_imagelists)) return FALSE;
-
-    if (!ImageList_GetIconSize( shell_imagelists[list], &cx, &cy )) return FALSE;
-    size->cx = cx;
-    size->cy = cy;
-    return TRUE;
-}
-
 /****************************************************************************
  * SIC_LoadIcon				[internal]
  *
@@ -354,15 +344,67 @@ static INT SIC_LoadIcon (const WCHAR *sourcefile, INT index, DWORD flags)
 {
     HICON hicons[ARRAY_SIZE(shell_imagelists)] = { 0 };
     HICON hshortcuts[ARRAY_SIZE(hicons)] = { 0 };
+    SIZE size[ARRAY_SIZE(shell_imagelists)];
     unsigned int i;
-    SIZE size;
     INT ret = -1;
 
+    /* Keep track of the sizes in case any icon fails to get extracted */
     for (i = 0; i < ARRAY_SIZE(hicons); i++)
     {
-        if (!get_imagelist_icon_size( i, &size ) ||
-            !PrivateExtractIconsW( sourcefile, index, size.cx, size.cy, &hicons[i], 0, 1, 0 ))
-            WARN("Failed to load icon %d from %s.\n", index, debugstr_w(sourcefile));
+        ImageList_GetIconSize(shell_imagelists[i], &size[i].cx, &size[i].cy);
+        PrivateExtractIconsW(sourcefile, index, size[i].cx, size[i].cy, &hicons[i], 0, 1, 0);
+    }
+
+    /* Fill any icon handles that failed to get extracted, by resizing
+       another icon handle that succeeded and creating the icon from it.
+       Use a dumb O(n^2) algorithm since ARRAY_SIZE(hicons) is small */
+    for (i = 0; i < ARRAY_SIZE(hicons); i++)
+    {
+        unsigned int k, ix, iy;
+        BOOL failed = TRUE;
+        if (hicons[i]) continue;
+
+        for (k = 0; k < ARRAY_SIZE(hicons); k++)
+        {
+            if (hicons[k])
+            {
+                ix = iy = k;
+                failed = FALSE;
+                break;
+            }
+        }
+        if (failed) goto fail;
+
+        for (k++; k < ARRAY_SIZE(hicons); k++)
+        {
+            if (!hicons[k]) continue;
+
+            /* Find closest-sized icon, but favor larger icons to resize from */
+            if (size[k].cx >= size[i].cx)
+                ix = (size[ix].cx < size[i].cx || size[ix].cx > size[k].cx) ? k : ix;
+            else
+                ix = (size[ix].cx < size[i].cx && size[ix].cx < size[k].cx) ? k : ix;
+
+            if (size[k].cy >= size[i].cy)
+                iy = (size[iy].cy < size[i].cy || size[iy].cy > size[k].cy) ? k : iy;
+            else
+                iy = (size[iy].cy < size[i].cy && size[iy].cy < size[k].cy) ? k : iy;
+        }
+
+        /* Use the closest icon in aspect ratio if ix and iy differ */
+        if (ix != iy)
+        {
+            float i_ratio, ix_ratio, iy_ratio;
+            i_ratio  = (float)size[i].cx  / (float)size[i].cy;
+            ix_ratio = (float)size[ix].cx / (float)size[ix].cy;
+            iy_ratio = (float)size[iy].cx / (float)size[iy].cy;
+            if (fabsf(ix_ratio - i_ratio) > fabsf(iy_ratio - i_ratio))
+                ix = iy;
+        }
+
+        /* If this fails, we have to abort to prevent the image lists from
+           becoming out of sync and completely screwing the icons up */
+        hicons[i] = CopyImage(hicons[ix], IMAGE_ICON, size[i].cx, size[i].cy, 0);
         if (!hicons[i]) goto fail;
     }
 
