@@ -392,6 +392,22 @@ static void MSGBOX_CopyToClipbaord( HWND hwnd )
     }
 }
 
+HHOOK msghook_handle;
+
+LRESULT CALLBACK msg_hook_proc(int nCode, WPARAM wParam, LPARAM lParam)
+{
+    MSG *msg = (MSG *)lParam;
+    if (nCode == MSGF_DIALOGBOX && msg->message == WM_KEYUP)
+    {
+        if ( (msg->wParam == 'C' || msg->wParam == 'c') && (NtUserGetKeyState(VK_CONTROL) & 0x8000))
+        {
+            MSGBOX_CopyToClipbaord(GetParent(msg->hwnd));
+        }
+    }
+
+    return NtUserCallNextHookEx(msghook_handle, nCode, wParam, lParam);
+}
+
 /**************************************************************************
  *           MSGBOX_DlgProc
  *
@@ -407,6 +423,7 @@ static INT_PTR CALLBACK MSGBOX_DlgProc( HWND hwnd, UINT message,
        SetWindowContextHelpId(hwnd, mbp->dwContextHelpId);
        MSGBOX_OnInit(hwnd, mbp);
        SetPropA(hwnd, "WINE_MSGBOX_HELPCALLBACK", mbp->lpfnMsgBoxCallback);
+       msghook_handle = SetWindowsHookExA(WH_MSGFILTER, msg_hook_proc, NULL, GetCurrentThreadId());
        break;
    }
    case WM_COPY:
@@ -414,6 +431,9 @@ static INT_PTR CALLBACK MSGBOX_DlgProc( HWND hwnd, UINT message,
         MSGBOX_CopyToClipbaord(hwnd);
         break;
    }
+   case WM_DESTROY:
+       NtUserUnhookWindowsHookEx(msghook_handle);
+       break;
 
    case WM_COMMAND:
     switch (LOWORD(wParam))
