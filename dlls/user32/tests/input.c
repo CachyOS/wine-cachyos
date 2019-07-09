@@ -5403,6 +5403,40 @@ static void test_GetKeyboardLayout(void)
     }
 }
 
+static void test_GetKeyboardLayoutList(void)
+{
+    int cnt, cnt2;
+    HKL *layouts;
+    ULONG_PTR baselayout;
+    LANGID langid;
+
+    baselayout = GetUserDefaultLCID();
+    langid = PRIMARYLANGID(LANGIDFROMLCID(baselayout));
+    if (langid == LANG_CHINESE || langid == LANG_JAPANESE || langid == LANG_KOREAN)
+        baselayout = MAKELONG( baselayout, 0xe001 ); /* IME */
+    else
+        baselayout |= baselayout << 16;
+
+    cnt = GetKeyboardLayoutList(0, NULL);
+    /* Most users will not have more than a few keyboard layouts installed at a time. */
+    ok(cnt > 0 && cnt < 10, "Layout count %d\n", cnt);
+    if (cnt > 0)
+    {
+        layouts = HeapAlloc(GetProcessHeap(), 0, sizeof(*layouts) * cnt );
+
+        cnt2 = GetKeyboardLayoutList(cnt, layouts);
+        ok(cnt == cnt2, "wrong value %d!=%d\n", cnt, cnt2);
+        for(cnt = 0; cnt < cnt2; cnt++)
+        {
+            if(layouts[cnt] == (HKL)baselayout)
+                break;
+        }
+        ok(cnt < cnt2, "Didnt find current keyboard\n");
+
+        HeapFree(GetProcessHeap(), 0, layouts);
+    }
+}
+
 START_TEST(input)
 {
     char **argv;
@@ -5447,6 +5481,7 @@ START_TEST(input)
     test_GetRawInputBuffer();
     test_RegisterRawInputDevices();
     test_rawinput(argv[0]);
+    test_GetKeyboardLayoutList();
     test_DefRawInputProc();
     test_GetKeyboardLayout();
 
