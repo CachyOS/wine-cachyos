@@ -509,7 +509,6 @@ BOOL WINAPI UnloadKeyboardLayout( HKL layout )
     return FALSE;
 }
 
-
 static DWORD CALLBACK devnotify_window_callbackW(HANDLE handle, DWORD flags, DEV_BROADCAST_HDR *header)
 {
     TRACE_(rawinput)("handle %p, flags %#lx, header %p\n", handle, flags, header);
