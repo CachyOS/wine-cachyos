@@ -1330,8 +1330,59 @@ static HRESULT WINAPI IXACT3EngineImpl_PrepareStreamingWave(IXACT3Engine *iface,
         IXACT3Wave **ppWave)
 {
     XACT3EngineImpl *This = impl_from_IXACT3Engine(iface);
-    FIXME("(%p): stub!\n", This);
-    return E_NOTIMPL;
+    XACT3WaveImpl *wave;
+    FACTWave *fwave = NULL;
+    FACTStreamingParameters fakeParms;
+    wrap_readfile_struct *fake;
+    FACTWaveBankEntry fact_wavebank;
+    UINT ret;
+
+    TRACE("(%p)->(0x%08lx, %p, %p, %ld, %p, %ld, %d, %p)\n", This, dwFlags, &entry, &streamingParams,
+            dwAlignment, pdwSeekTable, dwPlayOffset, nLoopCount, ppWave);
+
+    fake = (wrap_readfile_struct*) CoTaskMemAlloc(
+            sizeof(wrap_readfile_struct));
+    fake->engine = This;
+    fake->file = streamingParams.file;
+    fakeParms.file = fake;
+    fakeParms.flags = streamingParams.flags;
+    fakeParms.offset = streamingParams.offset;
+    fakeParms.packetSize = streamingParams.packetSize;
+
+    fact_wavebank.dwFlagsAndDuration = entry.dwFlagsAndDuration;
+    fact_wavebank.Format.dwValue = entry.Format.dwValue;
+    fact_wavebank.PlayRegion.dwOffset = entry.PlayRegion.dwOffset;
+    fact_wavebank.PlayRegion.dwLength = entry.PlayRegion.dwLength;
+    fact_wavebank.LoopRegion.dwStartSample = entry.LoopRegion.dwStartSample;
+    fact_wavebank.LoopRegion.dwTotalSamples = entry.LoopRegion.dwTotalSamples;
+
+    /* FAudio Prototype is incorrect and shouldn't take a buffer as an parameter,
+     *   passing through NULL to ensure it's not used.
+     */
+    ret = FACTAudioEngine_PrepareStreamingWave(This->fact_engine, dwFlags, fact_wavebank, fakeParms,
+            dwAlignment, (uint32_t *)pdwSeekTable, NULL, dwPlayOffset, nLoopCount, &fwave);
+
+    if(ret != 0 || !fwave)
+    {
+        ERR("Failed to CreateWave: %d (%p)\n", ret, fwave);
+        return E_FAIL;
+    }
+
+    wave = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*wave));
+    if (!wave)
+    {
+        FACTWave_Destroy(fwave);
+        ERR("Failed to allocate XACT3WaveImpl!");
+        return E_OUTOFMEMORY;
+    }
+
+    wave->IXACT3Wave_iface.lpVtbl = &XACT3Wave_Vtbl;
+    wave->fact_wave = fwave;
+    *ppWave = &wave->IXACT3Wave_iface;
+
+    TRACE("Created Wave: %p\n", wave);
+
+    return S_OK;
 }
 
 static HRESULT WINAPI IXACT3EngineImpl_PrepareWave(IXACT3Engine *iface,
