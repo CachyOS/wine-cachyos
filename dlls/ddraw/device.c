@@ -335,6 +335,9 @@ static ULONG WINAPI d3d_device_inner_Release(IUnknown *iface)
             This->ddraw = NULL;
         }
 
+        if (This->pick_record_size > 0)
+            free(This->pick_records);
+
         TRACE("Releasing render target %p.\n", This->rt_iface);
         rt_iface = This->rt_iface;
         This->rt_iface = NULL;
@@ -741,7 +744,7 @@ static HRESULT WINAPI d3d_device1_Execute(IDirect3DDevice *iface,
 
     /* Execute... */
     wined3d_mutex_lock();
-    hr = d3d_execute_buffer_execute(buffer, device);
+    hr = d3d_execute_buffer_execute(buffer, device, NULL);
     wined3d_mutex_unlock();
 
     return hr;
@@ -1008,16 +1011,44 @@ static HRESULT WINAPI d3d_device1_NextViewport(IDirect3DDevice *iface,
  *        x2 and y2 are ignored.
  *
  * Returns:
- *  D3D_OK because it's a stub
+ *  D3D_OK on success
+ *  DDERR_INVALIDPARAMS if any of the parameters == NULL
  *
  *****************************************************************************/
 static HRESULT WINAPI d3d_device1_Pick(IDirect3DDevice *iface, IDirect3DExecuteBuffer *buffer,
         IDirect3DViewport *viewport, DWORD flags, D3DRECT *rect)
 {
-    FIXME("iface %p, buffer %p, viewport %p, flags %#lx, rect %s stub!\n",
-            iface, buffer, viewport, flags, wine_dbgstr_rect((RECT *)rect));
+    struct d3d_device *device = impl_from_IDirect3DDevice(iface);
+    struct d3d_execute_buffer *buffer_impl = unsafe_impl_from_IDirect3DExecuteBuffer(buffer);
+    struct d3d_viewport *viewport_impl = unsafe_impl_from_IDirect3DViewport(viewport);
+    HRESULT hr;
 
-    return D3D_OK;
+    TRACE("iface %p, buffer %p, viewport %p, flags %#lx, rect %s.\n",
+             iface, buffer, viewport, flags, wine_dbgstr_rect((RECT *)rect));
+
+    /* Sanity checks */
+    if (!buffer)
+    {
+        WARN("NULL buffer, returning DDERR_INVALIDPARAMS\n");
+        return DDERR_INVALIDPARAMS;
+    }
+
+    if (!viewport)
+    {
+        WARN("NULL viewport, returning DDERR_INVALIDPARAMS\n");
+        return DDERR_INVALIDPARAMS;
+    }
+
+    if (FAILED(hr = IDirect3DDevice3_SetCurrentViewport
+            (&device->IDirect3DDevice3_iface, &viewport_impl->IDirect3DViewport3_iface)))
+        return hr;
+
+    /* Execute the pick */
+    wined3d_mutex_lock();
+    hr = d3d_execute_buffer_execute(buffer_impl, device, rect);
+    wined3d_mutex_unlock();
+
+    return hr;
 }
 
 /*****************************************************************************
@@ -1033,13 +1064,35 @@ static HRESULT WINAPI d3d_device1_Pick(IDirect3DDevice *iface, IDirect3DExecuteB
  *  D3DPickRec: Address to store the resulting D3DPICKRECORD array.
  *
  * Returns:
- *  D3D_OK, because it's a stub
+ *  D3D_OK always
  *
  *****************************************************************************/
 static HRESULT WINAPI d3d_device1_GetPickRecords(IDirect3DDevice *iface,
         DWORD *count, D3DPICKRECORD *records)
 {
-    FIXME("iface %p, count %p, records %p stub!\n", iface, count, records);
+    struct d3d_device *device;
+
+    TRACE("iface %p, count %p, records %p.\n", iface, count, records);
+
+    /* Windows doesn't check if count is non-NULL */
+
+    wined3d_mutex_lock();
+
+    device = impl_from_IDirect3DDevice(iface);
+
+    /* Set count to the number of pick records we have */
+    *count = device->pick_record_count;
+
+    /* It is correct usage according to documentation to call this function with records == NULL
+       to retrieve _just_ the record count, which the caller can then use to allocate an
+       appropriately sized array, then call this function again to fill that array with data. */
+    if (records && count)
+    {
+        /* If we have a destination array and records to copy, copy them now */
+        memcpy(records, device->pick_records, sizeof(*device->pick_records) * device->pick_record_count);
+    }
+
+    wined3d_mutex_unlock();
 
     return D3D_OK;
 }
