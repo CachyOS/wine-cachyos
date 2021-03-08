@@ -139,6 +139,7 @@ struct msg_queue
     timeout_t              last_get_msg;    /* time of last get message call */
     int                    keystate_lock;   /* owns an input keystate lock */
     const queue_shm_t     *shared;          /* thread queue shared memory ptr */
+    struct inproc_sync    *inproc_sync;     /* in-process synchronization object */
     int                    esync_fd;        /* esync file descriptor (signalled on message) */
     int                    esync_in_msgwait; /* our thread is currently waiting on us */
     unsigned int           fsync_idx;
@@ -162,6 +163,7 @@ static int msg_queue_signaled( struct object *obj, struct wait_queue_entry *entr
 static int msg_queue_get_esync_fd( struct object *obj, enum esync_type *type );
 static unsigned int msg_queue_get_fsync_idx( struct object *obj, enum fsync_type *type );
 static void msg_queue_satisfied( struct object *obj, struct wait_queue_entry *entry );
+static struct inproc_sync *msg_queue_get_inproc_sync( struct object *obj );
 static void msg_queue_destroy( struct object *obj );
 static void msg_queue_poll_event( struct fd *fd, int event );
 static void thread_input_dump( struct object *obj, int verbose );
@@ -190,7 +192,7 @@ static const struct object_ops msg_queue_ops =
     NULL,                      /* unlink_name */
     no_open_file,              /* open_file */
     no_kernel_obj_list,        /* get_kernel_obj_list */
-    no_get_inproc_sync,        /* get_inproc_sync */
+    msg_queue_get_inproc_sync, /* get_inproc_sync */
     no_close_handle,           /* close_handle */
     msg_queue_destroy          /* destroy */
 };
@@ -349,6 +351,7 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
         queue->hooks           = NULL;
         queue->last_get_msg    = current_time;
         queue->keystate_lock   = 0;
+        queue->inproc_sync     = NULL;
         queue->shared          = thread->queue_shared;
         queue->esync_fd        = -1;
         queue->esync_in_msgwait = 0;
@@ -717,7 +720,11 @@ static inline void set_queue_bits( struct msg_queue *queue, unsigned int bits )
     }
     SHARED_WRITE_END
 
-    if (is_signaled( queue )) wake_up( &queue->obj, 0 );
+    if (is_signaled( queue ))
+    {
+        wake_up( &queue->obj, 0 );
+        set_inproc_event( queue->inproc_sync );
+    }
 }
 
 /* clear some queue bits */
@@ -743,6 +750,9 @@ static inline void clear_queue_bits( struct msg_queue *queue, unsigned int bits 
         shared->changed_bits = queue->changed_bits;
     }
     SHARED_WRITE_END
+
+    if (!is_signaled( queue ))
+        reset_inproc_event( queue->inproc_sync );
 }
 
 /* check if message is matched by the filter */
@@ -1349,6 +1359,17 @@ static void msg_queue_satisfied( struct object *obj, struct wait_queue_entry *en
         shared->changed_mask = queue->changed_mask;
     }
     SHARED_WRITE_END
+    reset_inproc_event( queue->inproc_sync );
+}
+
+static struct inproc_sync *msg_queue_get_inproc_sync( struct object *obj )
+{
+    struct msg_queue *queue = (struct msg_queue *)obj;
+
+    if (!queue->inproc_sync)
+        queue->inproc_sync = create_inproc_event( INPROC_SYNC_QUEUE, is_signaled( queue ) );
+    if (queue->inproc_sync) grab_object( queue->inproc_sync );
+    return queue->inproc_sync;
 }
 
 static void cleanup_msg_queue( struct msg_queue *queue )
@@ -1394,6 +1415,7 @@ static void cleanup_msg_queue( struct msg_queue *queue )
     if (queue->fd) release_object( queue->fd );
     queue->destroyed = 1;
     if (do_esync()) close( queue->esync_fd );
+    if (queue->inproc_sync) release_object( queue->inproc_sync );
 }
 
 static void msg_queue_destroy( struct object *obj )
@@ -1421,6 +1443,7 @@ static void msg_queue_poll_event( struct fd *fd, int event )
     if (event & (POLLERR | POLLHUP)) set_fd_events( fd, -1 );
     else set_fd_events( queue->fd, 0 );
     wake_up( &queue->obj, 0 );
+    set_inproc_event( queue->inproc_sync );
 }
 
 static void thread_input_dump( struct object *obj, int verbose )
@@ -2980,7 +3003,15 @@ DECL_HANDLER(set_queue_mask)
                 }
                 SHARED_WRITE_END
             }
-            else wake_up( &queue->obj, 0 );
+            else
+            {
+                wake_up( &queue->obj, 0 );
+                set_inproc_event( queue->inproc_sync );
+            }
+        }
+        else
+        {
+            reset_inproc_event( queue->inproc_sync );
         }
 
         if (do_fsync() && !is_signaled( queue ))
@@ -3013,6 +3044,9 @@ DECL_HANDLER(get_queue_status)
             shared->changed_bits = queue->changed_bits;
         }
         SHARED_WRITE_END
+
+        if (!is_signaled( queue ))
+            reset_inproc_event( queue->inproc_sync );
     }
     else reply->wake_bits = reply->changed_bits = 0;
 }
@@ -3200,6 +3234,9 @@ DECL_HANDLER(get_message)
     }
     SHARED_WRITE_END
 
+    if (!is_signaled( queue ))
+        reset_inproc_event( queue->inproc_sync );
+
     /* then check for posted messages */
     if ((filter & QS_POSTMESSAGE) &&
         get_posted_message( queue, get_win, req->get_first, req->get_last, req->flags, reply ))
@@ -3266,6 +3303,7 @@ DECL_HANDLER(get_message)
     }
     SHARED_WRITE_END
 
+    reset_inproc_event( queue->inproc_sync );
     set_error( STATUS_PENDING );  /* FIXME */
 
     if (do_fsync() && !is_signaled( queue ))
