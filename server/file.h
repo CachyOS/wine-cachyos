@@ -110,6 +110,7 @@ extern char *dup_fd_name( struct fd *root, const char *name ) __WINE_DEALLOC(fre
 extern void get_nt_name( struct fd *fd, struct unicode_str *name );
 
 extern int default_fd_signaled( struct object *obj, struct wait_queue_entry *entry );
+extern struct inproc_sync *default_fd_get_inproc_sync( struct object *obj );
 extern int default_fd_get_esync_fd( struct object *obj, enum esync_type *type );
 extern unsigned int default_fd_get_fsync_idx( struct object *obj, enum fsync_type *type );
 extern int default_fd_get_poll_events( struct fd *fd );
