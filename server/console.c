@@ -142,6 +142,7 @@ struct console_server
     unsigned int          once_input : 1; /* flag if input thread has already been requested */
     int                   term_fd;        /* UNIX terminal fd */
     struct termios        termios;        /* original termios */
+    struct inproc_sync   *inproc_sync;    /* in-process synchronization object */
 };
 
 static void console_server_dump( struct object *obj, int verbose );
@@ -152,6 +153,7 @@ static struct object *console_server_lookup_name( struct object *obj, struct uni
                                                 unsigned int attr, struct object *root );
 static struct object *console_server_open_file( struct object *obj, unsigned int access,
                                                 unsigned int sharing, unsigned int options );
+static struct inproc_sync *console_server_get_inproc_sync( struct object *obj );
 
 static const struct object_ops console_server_ops =
 {
@@ -173,7 +175,7 @@ static const struct object_ops console_server_ops =
     NULL,                             /* unlink_name */
     console_server_open_file,         /* open_file */
     no_kernel_obj_list,               /* get_kernel_obj_list */
-    no_get_inproc_sync,               /* get_inproc_sync */
+    console_server_get_inproc_sync,   /* get_inproc_sync */
     no_close_handle,                  /* close_handle */
     console_server_destroy            /* destroy */
 };
@@ -591,6 +593,7 @@ static int queue_host_ioctl( struct console_server *server, unsigned int code, u
     }
     list_add_tail( &server->queue, &ioctl->entry );
     wake_up( &server->obj, 0 );
+    set_inproc_event( server->inproc_sync );
     if (async) set_error( STATUS_PENDING );
     return 1;
 }
@@ -623,6 +626,7 @@ static void disconnect_console_server( struct console_server *server )
         server->console->server = NULL;
         server->console = NULL;
         wake_up( &server->obj, 0 );
+        set_inproc_event( server->inproc_sync );
     }
 }
 
@@ -914,6 +918,7 @@ static void console_server_destroy( struct object *obj )
     assert( obj->ops == &console_server_ops );
     disconnect_console_server( server );
     if (server->fd) release_object( server->fd );
+    if (server->inproc_sync) release_object( server->inproc_sync );
 }
 
 static struct object *console_server_lookup_name( struct object *obj, struct unicode_str *name,
@@ -974,6 +979,17 @@ static struct object *console_server_open_file( struct object *obj, unsigned int
     return grab_object( obj );
 }
 
+static struct inproc_sync *console_server_get_inproc_sync( struct object *obj )
+{
+    struct console_server *server = (struct console_server *)obj;
+    int signaled = !server->console || !list_empty( &server->queue );
+
+    if (!server->inproc_sync)
+        server->inproc_sync = create_inproc_event( INPROC_SYNC_MANUAL_SERVER, signaled );
+    if (server->inproc_sync) grab_object( server->inproc_sync );
+    return server->inproc_sync;
+}
+
 static struct object *create_console_server( void )
 {
     struct console_server *server;
@@ -985,6 +1001,7 @@ static struct object *create_console_server( void )
     server->term_fd    = -1;
     list_init( &server->queue );
     list_init( &server->read_queue );
+    server->inproc_sync = NULL;
     server->fd = alloc_pseudo_fd( &console_server_fd_ops, &server->obj, FILE_SYNCHRONOUS_IO_NONALERT );
     if (!server->fd)
     {
@@ -1630,6 +1647,8 @@ DECL_HANDLER(get_next_console_request)
         /* set result of previous ioctl */
         ioctl = LIST_ENTRY( list_head( &server->queue ), struct console_host_ioctl, entry );
         list_remove( &ioctl->entry );
+        if (list_empty( &server->queue ))
+            reset_inproc_event( server->inproc_sync );
     }
 
     if (ioctl)
@@ -1715,6 +1734,9 @@ DECL_HANDLER(get_next_console_request)
     {
         set_error( STATUS_PENDING );
     }
+
+    if (list_empty( &server->queue ))
+        reset_inproc_event( server->inproc_sync );
 
     release_object( server );
 }
