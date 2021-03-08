@@ -4080,3 +4080,15 @@ struct handle_info
 @REPLY
     int enable;                /* previous state of auto-repeat enable */
 @END
+
+
+enum inproc_sync_type
+{
+    INPROC_SYNC_SEMAPHORE = 1,
+    INPROC_SYNC_MUTEX,
+    INPROC_SYNC_AUTO_EVENT,
+    INPROC_SYNC_MANUAL_EVENT,
+    INPROC_SYNC_AUTO_SERVER,
+    INPROC_SYNC_MANUAL_SERVER,
+    INPROC_SYNC_QUEUE,
+};

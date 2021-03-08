@@ -120,6 +120,7 @@ static const struct object_ops apc_reserve_ops =
     default_unlink_name,        /* unlink_name */
     no_open_file,               /* open_file */
     no_kernel_obj_list,         /* get_kernel_obj_list */
+    no_get_inproc_sync,         /* get_inproc_sync */
     no_close_handle,            /* close_handle */
     no_destroy                  /* destroy */
 };
@@ -144,6 +145,7 @@ static const struct object_ops completion_reserve_ops =
     default_unlink_name,       /* unlink_name */
     no_open_file,              /* open_file */
     no_kernel_obj_list,        /* get_kernel_obj_list */
+    no_get_inproc_sync,        /* get_inproc_sync */
     no_close_handle,           /* close_handle */
     no_destroy                 /* destroy */
 };
@@ -634,6 +636,12 @@ int no_signal( struct object *obj, unsigned int access )
 }
 
 struct fd *no_get_fd( struct object *obj )
+{
+    set_error( STATUS_OBJECT_TYPE_MISMATCH );
+    return NULL;
+}
+
+struct inproc_sync *no_get_inproc_sync( struct object *obj )
 {
     set_error( STATUS_OBJECT_TYPE_MISMATCH );
     return NULL;
