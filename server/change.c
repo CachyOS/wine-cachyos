@@ -124,7 +124,7 @@ static const struct object_ops dir_ops =
     NULL,                     /* unlink_name */
     no_open_file,             /* open_file */
     no_kernel_obj_list,       /* get_kernel_obj_list */
-    no_get_inproc_sync,       /* get_inproc_sync */
+    default_fd_get_inproc_sync, /* get_inproc_sync */
     dir_close_handle,         /* close_handle */
     dir_destroy               /* destroy */
 };
