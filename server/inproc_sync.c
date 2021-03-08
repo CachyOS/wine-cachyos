@@ -29,6 +29,8 @@
 #include "winternl.h"
 
 #include "file.h"
+#include "handle.h"
+#include "request.h"
 #include "thread.h"
 
 #ifdef HAVE_LINUX_NTSYNC_H
@@ -375,3 +377,18 @@ void abandon_inproc_mutex( thread_id_t tid, struct inproc_sync *inproc_sync )
 }
 
 #endif
+
+DECL_HANDLER(get_linux_sync_device)
+{
+#ifdef HAVE_LINUX_NTSYNC_H
+    struct linux_device *device;
+
+    if ((device = get_linux_device()))
+    {
+        reply->handle = alloc_handle( current->process, device, 0, 0 );
+        release_object( device );
+    }
+#else
+    set_error( STATUS_NOT_IMPLEMENTED );
+#endif
+}

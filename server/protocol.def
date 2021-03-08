@@ -4217,3 +4217,10 @@ enum inproc_sync_type
     INPROC_SYNC_MANUAL_SERVER,
     INPROC_SYNC_QUEUE,
 };
+
+
+/* Obtain a handle to the ntsync device object */
+@REQ(get_linux_sync_device)
+@REPLY
+    obj_handle_t handle;          /* handle to the device */
+@END
