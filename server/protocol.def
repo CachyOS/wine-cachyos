@@ -4217,3 +4217,10 @@ enum fast_sync_type
     FAST_SYNC_MANUAL_SERVER,
     FAST_SYNC_QUEUE,
 };
+
+
+/* Obtain a handle to the fast synchronization device object */
+@REQ(get_linux_sync_device)
+@REPLY
+    obj_handle_t handle;          /* handle to the device */
+@END
