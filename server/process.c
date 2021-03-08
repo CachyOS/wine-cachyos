@@ -124,6 +124,7 @@ static const struct object_ops process_ops =
     NULL,                        /* unlink_name */
     no_open_file,                /* open_file */
     process_get_kernel_obj_list, /* get_kernel_obj_list */
+    no_get_fast_sync,            /* get_fast_sync */
     no_close_handle,             /* close_handle */
     process_destroy              /* destroy */
 };
@@ -177,6 +178,7 @@ static const struct object_ops startup_info_ops =
     NULL,                          /* unlink_name */
     no_open_file,                  /* open_file */
     no_kernel_obj_list,            /* get_kernel_obj_list */
+    no_get_fast_sync,              /* get_fast_sync */
     no_close_handle,               /* close_handle */
     startup_info_destroy           /* destroy */
 };
@@ -240,6 +242,7 @@ static const struct object_ops job_ops =
     default_unlink_name,           /* unlink_name */
     no_open_file,                  /* open_file */
     no_kernel_obj_list,            /* get_kernel_obj_list */
+    no_get_fast_sync,              /* get_fast_sync */
     job_close_handle,              /* close_handle */
     job_destroy                    /* destroy */
 };

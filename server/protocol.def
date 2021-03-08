@@ -4205,3 +4205,15 @@ enum fsync_type
     unsigned int shm_idx;
 @REPLY
 @END
+
+
+enum fast_sync_type
+{
+    FAST_SYNC_SEMAPHORE = 1,
+    FAST_SYNC_MUTEX,
+    FAST_SYNC_AUTO_EVENT,
+    FAST_SYNC_MANUAL_EVENT,
+    FAST_SYNC_AUTO_SERVER,
+    FAST_SYNC_MANUAL_SERVER,
+    FAST_SYNC_QUEUE,
+};
