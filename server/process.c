@@ -96,6 +96,7 @@ static unsigned int process_map_access( struct object *obj, unsigned int access 
 static struct security_descriptor *process_get_sd( struct object *obj );
 static void process_poll_event( struct fd *fd, int event );
 static struct list *process_get_kernel_obj_list( struct object *obj );
+static struct inproc_sync *process_get_inproc_sync( struct object *obj );
 static void process_destroy( struct object *obj );
 static int process_get_esync_fd( struct object *obj, enum esync_type *type );
 static unsigned int process_get_fsync_idx( struct object *obj, enum fsync_type *type );
@@ -124,7 +125,7 @@ static const struct object_ops process_ops =
     NULL,                        /* unlink_name */
     no_open_file,                /* open_file */
     process_get_kernel_obj_list, /* get_kernel_obj_list */
-    no_get_inproc_sync,          /* get_inproc_sync */
+    process_get_inproc_sync,     /* get_inproc_sync */
     no_close_handle,             /* close_handle */
     process_destroy              /* destroy */
 };
@@ -696,6 +697,7 @@ struct process *create_process( int fd, struct process *parent, unsigned int fla
     process->rawinput_device_count = 0;
     process->rawinput_mouse  = NULL;
     process->rawinput_kbd    = NULL;
+    process->inproc_sync       = NULL;
     memset( &process->image_info, 0, sizeof(process->image_info) );
     process->esync_fd        = -1;
     process->fsync_idx       = 0;
@@ -815,6 +817,8 @@ static void process_destroy( struct object *obj )
         fsync_cleanup_process_shm_indices( process->id );
         fsync_free_shm_idx( process->fsync_idx );
     }
+
+    if (process->inproc_sync) release_object( process->inproc_sync );
 }
 
 /* dump a process on stdout for debugging purposes */
@@ -858,6 +862,16 @@ static struct list *process_get_kernel_obj_list( struct object *obj )
 {
     struct process *process = (struct process *)obj;
     return &process->kernel_object;
+}
+
+static struct inproc_sync *process_get_inproc_sync( struct object *obj )
+{
+    struct process *process = (struct process *)obj;
+
+    if (!process->inproc_sync)
+        process->inproc_sync = create_inproc_event( INPROC_SYNC_MANUAL_SERVER, !process->running_threads );
+    if (process->inproc_sync) grab_object( process->inproc_sync );
+    return process->inproc_sync;
 }
 
 static struct security_descriptor *process_get_sd( struct object *obj )
@@ -1024,6 +1038,7 @@ static void process_killed( struct process *process )
     release_job_process( process );
     start_sigkill_timer( process );
     wake_up( &process->obj, 0 );
+    set_inproc_event( process->inproc_sync );
 }
 
 /* add a thread to a process running threads list */
