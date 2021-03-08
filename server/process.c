@@ -202,6 +202,7 @@ struct type_descr job_type =
 
 static void job_dump( struct object *obj, int verbose );
 static int job_signaled( struct object *obj, struct wait_queue_entry *entry );
+static struct fast_sync *job_get_fast_sync( struct object *obj );
 static int job_close_handle( struct object *obj, struct process *process, obj_handle_t handle );
 static void job_destroy( struct object *obj );
 
@@ -219,6 +220,7 @@ struct job
     struct job *parent;
     struct list parent_job_entry;  /* list entry for parent job */
     struct list child_job_list;    /* list of child jobs */
+    struct fast_sync *fast_sync;   /* fast synchronization object */
 };
 
 static const struct object_ops job_ops =
@@ -243,7 +245,7 @@ static const struct object_ops job_ops =
     default_unlink_name,           /* unlink_name */
     no_open_file,                  /* open_file */
     no_kernel_obj_list,            /* get_kernel_obj_list */
-    no_get_fast_sync,              /* get_fast_sync */
+    job_get_fast_sync,             /* get_fast_sync */
     job_close_handle,              /* close_handle */
     job_destroy                    /* destroy */
 };
@@ -268,6 +270,7 @@ static struct job *create_job_object( struct object *root, const struct unicode_
             job->completion_port = NULL;
             job->completion_key = 0;
             job->parent = NULL;
+            job->fast_sync = NULL;
         }
     }
     return job;
@@ -424,6 +427,17 @@ static void terminate_job( struct job *job, int exit_code )
     job->terminating = 0;
     job->signaled = 1;
     wake_up( &job->obj, 0 );
+    fast_set_event( job->fast_sync );
+}
+
+static struct fast_sync *job_get_fast_sync( struct object *obj )
+{
+    struct job *job = (struct job *)obj;
+
+    if (!job->fast_sync)
+        job->fast_sync = fast_create_event( FAST_SYNC_MANUAL_SERVER, job->signaled );
+    if (job->fast_sync) grab_object( job->fast_sync );
+    return job->fast_sync;
 }
 
 static int job_close_handle( struct object *obj, struct process *process, obj_handle_t handle )
@@ -454,6 +468,8 @@ static void job_destroy( struct object *obj )
         list_remove( &job->parent_job_entry );
         release_object( job->parent );
     }
+
+    if (job->fast_sync) release_object( job->fast_sync );
 }
 
 static void job_dump( struct object *obj, int verbose )
