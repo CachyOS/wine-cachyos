@@ -58,6 +58,7 @@ struct event
     struct list    kernel_object;   /* list of kernel object pointers */
     int            manual_reset;    /* is it a manual reset event? */
     int            signaled;        /* event has been signaled */
+    struct fast_sync *fast_sync;    /* fast synchronization object */
     int            esync_fd;        /* esync file descriptor */
     unsigned int   fsync_idx;
 };
@@ -69,6 +70,7 @@ static int event_get_esync_fd( struct object *obj, enum esync_type *type );
 static unsigned int event_get_fsync_idx( struct object *obj, enum fsync_type *type );
 static int event_signal( struct object *obj, unsigned int access);
 static struct list *event_get_kernel_obj_list( struct object *obj );
+static struct fast_sync *event_get_fast_sync( struct object *obj );
 static void event_destroy( struct object *obj );
 
 static const struct object_ops event_ops =
@@ -93,7 +95,7 @@ static const struct object_ops event_ops =
     default_unlink_name,       /* unlink_name */
     no_open_file,              /* open_file */
     event_get_kernel_obj_list, /* get_kernel_obj_list */
-    no_get_fast_sync,          /* get_fast_sync */
+    event_get_fast_sync,       /* get_fast_sync */
     no_close_handle,           /* close_handle */
     event_destroy              /* destroy */
 };
@@ -163,6 +165,7 @@ struct event *create_event( struct object *root, const struct unicode_str *name,
             list_init( &event->kernel_object );
             event->manual_reset = manual_reset;
             event->signaled     = initial_state;
+            event->fast_sync    = NULL;
             event->fsync_idx = 0;
 
             if (do_fsync())
@@ -216,6 +219,7 @@ void set_event( struct event *event )
     event->signaled = 1;
     /* wake up all waiters if manual reset, a single one otherwise */
     wake_up( &event->obj, !event->manual_reset );
+    fast_set_event( event->fast_sync );
 }
 
 void reset_event( struct event *event )
@@ -238,6 +242,8 @@ void reset_event( struct event *event )
 
     if (do_esync())
         esync_clear( event->esync_fd );
+
+    fast_reset_event( event->fast_sync );
 }
 
 static void event_dump( struct object *obj, int verbose )
@@ -297,6 +303,19 @@ static struct list *event_get_kernel_obj_list( struct object *obj )
     return &event->kernel_object;
 }
 
+static struct fast_sync *event_get_fast_sync( struct object *obj )
+{
+    struct event *event = (struct event *)obj;
+
+    if (!event->fast_sync)
+    {
+        enum fast_sync_type type = event->manual_reset ? FAST_SYNC_MANUAL_EVENT : FAST_SYNC_AUTO_EVENT;
+        event->fast_sync = fast_create_event( type, event->signaled );
+    }
+    if (event->fast_sync) grab_object( event->fast_sync );
+    return event->fast_sync;
+}
+
 static void event_destroy( struct object *obj )
 {
     struct event *event = (struct event *)obj;
@@ -304,6 +323,7 @@ static void event_destroy( struct object *obj )
     if (do_esync())
         close( event->esync_fd );
     if (event->fsync_idx) fsync_free_shm_idx( event->fsync_idx );
+    if (event->fast_sync) release_object( event->fast_sync );
 }
 
 struct keyed_event *create_keyed_event( struct object *root, const struct unicode_str *name,

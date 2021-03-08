@@ -13,6 +13,7 @@ SOURCES = \
 	directory.c \
 	esync.c \
 	event.c \
+	fast_sync.c \
 	fd.c \
 	file.c \
 	fsync.c \
