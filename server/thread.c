@@ -116,6 +116,7 @@ static const struct object_ops thread_apc_ops =
     NULL,                       /* unlink_name */
     no_open_file,               /* open_file */
     no_kernel_obj_list,         /* get_kernel_obj_list */
+    no_get_inproc_sync,         /* get_inproc_sync */
     no_close_handle,            /* close_handle */
     thread_apc_destroy          /* destroy */
 };
@@ -160,6 +161,7 @@ static const struct object_ops context_ops =
     NULL,                       /* unlink_name */
     no_open_file,               /* open_file */
     no_kernel_obj_list,         /* get_kernel_obj_list */
+    no_get_inproc_sync,         /* get_inproc_sync */
     no_close_handle,            /* close_handle */
     no_destroy                  /* destroy */
 };
@@ -213,6 +215,7 @@ static const struct object_ops thread_ops =
     NULL,                       /* unlink_name */
     no_open_file,               /* open_file */
     thread_get_kernel_obj_list, /* get_kernel_obj_list */
+    no_get_inproc_sync,         /* get_inproc_sync */
     no_close_handle,            /* close_handle */
     destroy_thread              /* destroy */
 };
