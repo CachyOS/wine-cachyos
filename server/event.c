@@ -56,6 +56,7 @@ struct event
     struct list    kernel_object;   /* list of kernel object pointers */
     int            manual_reset;    /* is it a manual reset event? */
     int            signaled;        /* event has been signaled */
+    struct inproc_sync *inproc_sync;/* in-process synchronization object */
 };
 
 static void event_dump( struct object *obj, int verbose );
@@ -63,6 +64,8 @@ static int event_signaled( struct object *obj, struct wait_queue_entry *entry );
 static void event_satisfied( struct object *obj, struct wait_queue_entry *entry );
 static int event_signal( struct object *obj, unsigned int access);
 static struct list *event_get_kernel_obj_list( struct object *obj );
+static struct inproc_sync *event_get_inproc_sync( struct object *obj );
+static void event_destroy( struct object *obj );
 
 static const struct object_ops event_ops =
 {
@@ -84,9 +87,9 @@ static const struct object_ops event_ops =
     default_unlink_name,       /* unlink_name */
     no_open_file,              /* open_file */
     event_get_kernel_obj_list, /* get_kernel_obj_list */
-    no_get_inproc_sync,        /* get_inproc_sync */
+    event_get_inproc_sync,     /* get_inproc_sync */
     no_close_handle,           /* close_handle */
-    no_destroy                 /* destroy */
+    event_destroy              /* destroy */
 };
 
 
@@ -152,6 +155,7 @@ struct event *create_event( struct object *root, const struct unicode_str *name,
             list_init( &event->kernel_object );
             event->manual_reset = manual_reset;
             event->signaled     = initial_state;
+            event->inproc_sync    = NULL;
         }
     }
     return event;
@@ -175,11 +179,13 @@ void set_event( struct event *event )
     event->signaled = 1;
     /* wake up all waiters if manual reset, a single one otherwise */
     wake_up( &event->obj, !event->manual_reset );
+    set_inproc_event( event->inproc_sync );
 }
 
 void reset_event( struct event *event )
 {
     event->signaled = 0;
+    reset_inproc_event( event->inproc_sync );
 }
 
 static void event_dump( struct object *obj, int verbose )
@@ -223,6 +229,26 @@ static struct list *event_get_kernel_obj_list( struct object *obj )
 {
     struct event *event = (struct event *)obj;
     return &event->kernel_object;
+}
+
+static struct inproc_sync *event_get_inproc_sync( struct object *obj )
+{
+    struct event *event = (struct event *)obj;
+
+    if (!event->inproc_sync)
+    {
+        enum inproc_sync_type type = event->manual_reset ? INPROC_SYNC_MANUAL_EVENT : INPROC_SYNC_AUTO_EVENT;
+        event->inproc_sync = create_inproc_event( type, event->signaled );
+    }
+    if (event->inproc_sync) grab_object( event->inproc_sync );
+    return event->inproc_sync;
+}
+
+static void event_destroy( struct object *obj )
+{
+    struct event *event = (struct event *)obj;
+
+    if (event->inproc_sync) release_object( event->inproc_sync );
 }
 
 struct keyed_event *create_keyed_event( struct object *root, const struct unicode_str *name,
