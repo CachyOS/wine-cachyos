@@ -146,6 +146,7 @@ struct console_server
     unsigned int          once_input : 1; /* flag if input thread has already been requested */
     int                   term_fd;     /* UNIX terminal fd */
     struct termios        termios;     /* original termios */
+    struct fast_sync     *fast_sync;      /* fast synchronization object */
     int                   esync_fd;
     unsigned int          fsync_idx;
 };
@@ -160,6 +161,7 @@ static struct object *console_server_lookup_name( struct object *obj, struct uni
                                                 unsigned int attr, struct object *root );
 static struct object *console_server_open_file( struct object *obj, unsigned int access,
                                                 unsigned int sharing, unsigned int options );
+static struct fast_sync *console_server_get_fast_sync( struct object *obj );
 
 static const struct object_ops console_server_ops =
 {
@@ -183,7 +185,7 @@ static const struct object_ops console_server_ops =
     NULL,                             /* unlink_name */
     console_server_open_file,         /* open_file */
     no_kernel_obj_list,               /* get_kernel_obj_list */
-    no_get_fast_sync,                 /* get_fast_sync */
+    console_server_get_fast_sync,     /* get_fast_sync */
     no_close_handle,                  /* close_handle */
     console_server_destroy            /* destroy */
 };
@@ -611,6 +613,7 @@ static int queue_host_ioctl( struct console_server *server, unsigned int code, u
     }
     list_add_tail( &server->queue, &ioctl->entry );
     wake_up( &server->obj, 0 );
+    fast_set_event( server->fast_sync );
     if (async) set_error( STATUS_PENDING );
     return 1;
 }
@@ -647,6 +650,7 @@ static void disconnect_console_server( struct console_server *server )
         server->console->server = NULL;
         server->console = NULL;
         wake_up( &server->obj, 0 );
+        fast_set_event( server->fast_sync );
     }
 }
 
@@ -934,6 +938,7 @@ static void console_server_destroy( struct object *obj )
     if (server->fd) release_object( server->fd );
     if (do_esync()) close( server->esync_fd );
     if (server->fsync_idx) fsync_free_shm_idx( server->fsync_idx );
+    if (server->fast_sync) release_object( server->fast_sync );
 }
 
 static struct object *console_server_lookup_name( struct object *obj, struct unicode_str *name,
@@ -1002,6 +1007,17 @@ static struct object *console_server_open_file( struct object *obj, unsigned int
     return grab_object( obj );
 }
 
+static struct fast_sync *console_server_get_fast_sync( struct object *obj )
+{
+    struct console_server *server = (struct console_server *)obj;
+    int signaled = !server->console || !list_empty( &server->queue );
+
+    if (!server->fast_sync)
+        server->fast_sync = fast_create_event( FAST_SYNC_MANUAL_SERVER, signaled );
+    if (server->fast_sync) grab_object( server->fast_sync );
+    return server->fast_sync;
+}
+
 static struct object *create_console_server( void )
 {
     struct console_server *server;
@@ -1013,6 +1029,7 @@ static struct object *create_console_server( void )
     server->term_fd    = -1;
     list_init( &server->queue );
     list_init( &server->read_queue );
+    server->fast_sync = NULL;
     server->fd = alloc_pseudo_fd( &console_server_fd_ops, &server->obj, FILE_SYNCHRONOUS_IO_NONALERT );
     if (!server->fd)
     {
@@ -1670,6 +1687,8 @@ DECL_HANDLER(get_next_console_request)
             fsync_clear( &server->obj );
         if (do_esync() && list_empty( &server->queue ))
             esync_clear( server->esync_fd );
+        if (list_empty( &server->queue ))
+            fast_reset_event( server->fast_sync );
     }
 
     if (ioctl)
@@ -1759,6 +1778,9 @@ DECL_HANDLER(get_next_console_request)
         fsync_clear( &server->obj );
     if (do_esync() && list_empty( &server->queue ))
         esync_clear( server->esync_fd );
+
+    if (list_empty( &server->queue ))
+        fast_reset_event( server->fast_sync );
 
     release_object( server );
 }
