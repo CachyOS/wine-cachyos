@@ -800,6 +800,21 @@ unsigned int server_wait( const select_op_t *select_op, data_size_t size, UINT f
 }
 
 
+/* helper function to perform a server-side wait on an internal handle without
+ * using the fast synchronization path */
+unsigned int server_wait_for_object( HANDLE handle, BOOL alertable, const LARGE_INTEGER *timeout )
+{
+    select_op_t select_op;
+    UINT flags = SELECT_INTERRUPTIBLE;
+
+    if (alertable) flags |= SELECT_ALERTABLE;
+
+    select_op.wait.op = SELECT_WAIT;
+    select_op.wait.handles[0] = wine_server_obj_handle( handle );
+    return server_wait( &select_op, offsetof( select_op_t, wait.handles[1] ), flags, timeout );
+}
+
+
 /***********************************************************************
  *              NtContinue  (NTDLL.@)
  */
@@ -861,7 +876,7 @@ unsigned int server_queue_process_apc( HANDLE process, const apc_call_t *call, a
         }
         else
         {
-            NtWaitForSingleObject( handle, FALSE, NULL );
+            server_wait_for_object( handle, FALSE, NULL );
 
             SERVER_START_REQ( get_apc_result )
             {
