@@ -4234,3 +4234,16 @@ enum fast_sync_type
     int          type;            /* object type */
     unsigned int access;          /* handle access rights */
 @END
+
+
+/* Begin a client-side wait on a message queue */
+@REQ(fast_select_queue)
+    obj_handle_t handle;          /* handle to the queue */
+@END
+
+
+/* End a client-side wait on a message queue */
+@REQ(fast_unselect_queue)
+    obj_handle_t handle;          /* handle to the queue */
+    int          signaled;        /* was the queue signaled? */
+@END

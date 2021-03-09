@@ -140,6 +140,7 @@ struct msg_queue
     int                    keystate_lock;   /* owns an input keystate lock */
     const queue_shm_t     *shared;          /* thread queue shared memory ptr */
     struct fast_sync      *fast_sync;       /* fast synchronization object */
+    int                    in_fast_wait;    /* are we in a client-side wait? */
     int                    esync_fd;        /* esync file descriptor (signalled on message) */
     int                    esync_in_msgwait; /* our thread is currently waiting on us */
     unsigned int           fsync_idx;
@@ -352,6 +353,7 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
         queue->last_get_msg    = current_time;
         queue->keystate_lock   = 0;
         queue->fast_sync       = NULL;
+        queue->in_fast_wait    = 0;
         queue->shared          = thread->queue_shared;
         queue->esync_fd        = -1;
         queue->esync_in_msgwait = 0;
@@ -1279,6 +1281,9 @@ static int is_queue_hung( struct msg_queue *queue )
 
     if (do_esync() && queue->esync_in_msgwait)
         return 0;   /* thread is waiting on queue in absentia -> not hung */
+
+    if (queue->in_fast_wait)
+        return 0;  /* thread is waiting on queue in absentia -> not hung */
 
     return 1;
 }
@@ -4093,4 +4098,58 @@ DECL_HANDLER(fsync_msgwait)
     /* and start/stop waiting on the driver */
     if (queue->fd)
         set_fd_events( queue->fd, req->in_msgwait ? POLLIN : 0 );
+}
+
+DECL_HANDLER(fast_select_queue)
+{
+    struct msg_queue *queue;
+
+    if (!(queue = (struct msg_queue *)get_handle_obj( current->process, req->handle,
+                                                      SYNCHRONIZE, &msg_queue_ops )))
+        return;
+
+    /* a thread can only wait on its own queue */
+    if (current->queue != queue || queue->in_fast_wait)
+    {
+        set_error( STATUS_ACCESS_DENIED );
+    }
+    else
+    {
+        const queue_shm_t *queue_shm = queue->shared;
+        if (current->process->idle_event && !(queue_shm->wake_mask & QS_SMRESULT))
+            set_event( current->process->idle_event );
+
+        if (queue->fd)
+            set_fd_events( queue->fd, POLLIN );
+
+        queue->in_fast_wait = 1;
+    }
+
+    release_object( queue );
+}
+
+DECL_HANDLER(fast_unselect_queue)
+{
+    struct msg_queue *queue;
+
+    if (!(queue = (struct msg_queue *)get_handle_obj( current->process, req->handle,
+                                                      SYNCHRONIZE, &msg_queue_ops )))
+        return;
+
+    if (current->queue != queue || !queue->in_fast_wait)
+    {
+        set_error( STATUS_ACCESS_DENIED );
+    }
+    else
+    {
+        if (queue->fd)
+            set_fd_events( queue->fd, 0 );
+
+        if (req->signaled)
+            msg_queue_satisfied( &queue->obj, NULL );
+
+        queue->in_fast_wait = 0;
+    }
+
+    release_object( queue );
 }
