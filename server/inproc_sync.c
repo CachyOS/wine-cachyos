@@ -289,6 +289,28 @@ struct inproc_sync *create_inproc_semaphore( unsigned int count, unsigned int ma
     return create_inproc_sync( INPROC_SYNC_SEMAPHORE, semaphore );
 }
 
+struct inproc_sync *create_inproc_mutex( thread_id_t owner, unsigned int count )
+{
+    struct ntsync_mutex_args args;
+    struct linux_device *device;
+    int mutex;
+
+    if (!(device = get_linux_device())) return NULL;
+
+    args.owner = owner;
+    args.count = count;
+    if ((mutex = ioctl( get_unix_fd( device->fd ), NTSYNC_IOC_CREATE_MUTEX, &args )) < 0)
+    {
+        file_set_error();
+        release_object( device );
+        return NULL;
+    }
+
+    release_object( device );
+
+    return create_inproc_sync( INPROC_SYNC_MUTEX, mutex );
+}
+
 void set_inproc_event( struct inproc_sync *inproc_sync )
 {
     __u32 count;
@@ -311,6 +333,11 @@ void reset_inproc_event( struct inproc_sync *inproc_sync )
     ioctl( get_unix_fd( inproc_sync->fd ), NTSYNC_IOC_EVENT_RESET, &count );
 }
 
+void abandon_inproc_mutex( thread_id_t tid, struct inproc_sync *inproc_sync )
+{
+    ioctl( get_unix_fd( inproc_sync->fd ), NTSYNC_IOC_MUTEX_KILL, &tid );
+}
+
 #else
 
 struct inproc_sync *create_inproc_event( enum inproc_sync_type type, int signaled )
@@ -325,11 +352,21 @@ struct inproc_sync *create_inproc_semaphore( unsigned int count, unsigned int ma
     return NULL;
 }
 
+struct inproc_sync *create_inproc_mutex( thread_id_t owner, unsigned int count )
+{
+    set_error( STATUS_NOT_IMPLEMENTED );
+    return NULL;
+}
+
 void set_inproc_event( struct inproc_sync *inproc_sync )
 {
 }
 
 void reset_inproc_event( struct inproc_sync *obj )
+{
+}
+
+void abandon_inproc_mutex( thread_id_t tid, struct inproc_sync *inproc_sync )
 {
 }
 
