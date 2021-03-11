@@ -160,8 +160,9 @@ struct inproc_sync
 
 static void linux_obj_dump( struct object *obj, int verbose );
 static void linux_obj_destroy( struct object *obj );
+static struct fd *linux_obj_get_fd( struct object *obj );
 
-static const struct object_ops inproc_sync_ops =
+static const struct object_ops linux_obj_ops =
 {
     sizeof(struct inproc_sync), /* size */
     &no_type,                   /* type */
@@ -171,7 +172,7 @@ static const struct object_ops inproc_sync_ops =
     NULL,                       /* signaled */
     NULL,                       /* satisfied */
     no_signal,                  /* signal */
-    no_get_fd,                  /* get_fd */
+    linux_obj_get_fd,           /* get_fd */
     default_map_access,         /* map_access */
     default_get_sd,             /* get_sd */
     default_set_sd,             /* set_sd */
@@ -189,22 +190,29 @@ static const struct object_ops inproc_sync_ops =
 static void linux_obj_dump( struct object *obj, int verbose )
 {
     struct inproc_sync *inproc_sync = (struct inproc_sync *)obj;
-    assert( obj->ops == &inproc_sync_ops );
+    assert( obj->ops == &linux_obj_ops );
     fprintf( stderr, "In-process synchronization object type=%u fd=%p\n", inproc_sync->type, inproc_sync->fd );
 }
 
 static void linux_obj_destroy( struct object *obj )
 {
     struct inproc_sync *inproc_sync = (struct inproc_sync *)obj;
-    assert( obj->ops == &inproc_sync_ops );
+    assert( obj->ops == &linux_obj_ops );
     if (inproc_sync->fd) release_object( inproc_sync->fd );
+}
+
+static struct fd *linux_obj_get_fd( struct object *obj )
+{
+    struct inproc_sync *inproc_sync = (struct inproc_sync *)obj;
+    assert( obj->ops == &linux_obj_ops );
+    return (struct fd *)grab_object( inproc_sync->fd );
 }
 
 static struct inproc_sync *create_inproc_sync( enum inproc_sync_type type, int unix_fd )
 {
     struct inproc_sync *inproc_sync;
 
-    if (!(inproc_sync = alloc_object( &inproc_sync_ops )))
+    if (!(inproc_sync = alloc_object( &linux_obj_ops )))
     {
         close( unix_fd );
         return NULL;
@@ -259,6 +267,28 @@ struct inproc_sync *create_inproc_event( enum inproc_sync_type type, int signale
     return create_inproc_sync( type, event );
 }
 
+struct inproc_sync *create_inproc_semaphore( unsigned int count, unsigned int max )
+{
+    struct ntsync_sem_args args;
+    struct linux_device *device;
+    int semaphore;
+
+    if (!(device = get_linux_device())) return NULL;
+
+    args.count = count;
+    args.max = max;
+    if ((semaphore = ioctl( get_unix_fd( device->fd ), NTSYNC_IOC_CREATE_SEM, &args )) < 0)
+    {
+        file_set_error();
+        release_object( device );
+        return NULL;
+    }
+
+    release_object( device );
+
+    return create_inproc_sync( INPROC_SYNC_SEMAPHORE, semaphore );
+}
+
 void set_inproc_event( struct inproc_sync *inproc_sync )
 {
     __u32 count;
@@ -284,6 +314,12 @@ void reset_inproc_event( struct inproc_sync *inproc_sync )
 #else
 
 struct inproc_sync *create_inproc_event( enum inproc_sync_type type, int signaled )
+{
+    set_error( STATUS_NOT_IMPLEMENTED );
+    return NULL;
+}
+
+struct inproc_sync *create_inproc_semaphore( unsigned int count, unsigned int max )
 {
     set_error( STATUS_NOT_IMPLEMENTED );
     return NULL;
