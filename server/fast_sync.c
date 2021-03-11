@@ -83,7 +83,7 @@ static const struct fd_ops fast_sync_fd_ops =
 {
     default_fd_get_poll_events,     /* get_poll_events */
     default_poll_event,             /* poll_event */
-    fast_sync_get_fd_type,       /* get_fd_type */
+    fast_sync_get_fd_type,          /* get_fd_type */
     no_fd_read,                     /* read */
     no_fd_write,                    /* write */
     no_fd_flush,                    /* flush */
@@ -162,8 +162,9 @@ struct fast_sync
 
 static void linux_obj_dump( struct object *obj, int verbose );
 static void linux_obj_destroy( struct object *obj );
+static struct fd *linux_obj_get_fd( struct object *obj );
 
-static const struct object_ops fast_sync_ops =
+static const struct object_ops linux_obj_ops =
 {
     sizeof(struct fast_sync),   /* size */
     &no_type,                   /* type */
@@ -175,7 +176,7 @@ static const struct object_ops fast_sync_ops =
     NULL,                       /* get_fsync_idx */
     NULL,                       /* satisfied */
     no_signal,                  /* signal */
-    no_get_fd,                  /* get_fd */
+    linux_obj_get_fd,           /* get_fd */
     default_map_access,         /* map_access */
     default_get_sd,             /* get_sd */
     default_set_sd,             /* set_sd */
@@ -193,22 +194,29 @@ static const struct object_ops fast_sync_ops =
 static void linux_obj_dump( struct object *obj, int verbose )
 {
     struct fast_sync *fast_sync = (struct fast_sync *)obj;
-    assert( obj->ops == &fast_sync_ops );
+    assert( obj->ops == &linux_obj_ops );
     fprintf( stderr, "Fast synchronization object type=%u fd=%p\n", fast_sync->type, fast_sync->fd );
 }
 
 static void linux_obj_destroy( struct object *obj )
 {
     struct fast_sync *fast_sync = (struct fast_sync *)obj;
-    assert( obj->ops == &fast_sync_ops );
+    assert( obj->ops == &linux_obj_ops );
     if (fast_sync->fd) release_object( fast_sync->fd );
+}
+
+static struct fd *linux_obj_get_fd( struct object *obj )
+{
+    struct fast_sync *fast_sync = (struct fast_sync *)obj;
+    assert( obj->ops == &linux_obj_ops );
+    return (struct fd *)grab_object( fast_sync->fd );
 }
 
 static struct fast_sync *create_fast_sync( enum fast_sync_type type, int unix_fd )
 {
     struct fast_sync *fast_sync;
 
-    if (!(fast_sync = alloc_object( &fast_sync_ops )))
+    if (!(fast_sync = alloc_object( &linux_obj_ops )))
     {
         close( unix_fd );
         return NULL;
@@ -262,6 +270,28 @@ struct fast_sync *fast_create_event( enum fast_sync_type type, int signaled )
     return create_fast_sync( type, args.event );
 }
 
+struct fast_sync *fast_create_semaphore( unsigned int count, unsigned int max )
+{
+    struct ntsync_sem_args args = {0};
+    struct linux_device *device;
+    struct fast_sync *fast_sync;
+
+    if (!(device = get_linux_device())) return NULL;
+
+    args.count = count;
+    args.max = max;
+    if (ioctl( get_unix_fd( device->fd ), NTSYNC_IOC_CREATE_SEM, &args ) < 0)
+    {
+        file_set_error();
+        release_object( device );
+        return NULL;
+    }
+
+    release_object( device );
+
+    return create_fast_sync( FAST_SYNC_SEMAPHORE, args.sem );
+}
+
 void fast_set_event( struct fast_sync *fast_sync )
 {
     __u32 count;
@@ -287,6 +317,12 @@ void fast_reset_event( struct fast_sync *fast_sync )
 #else
 
 struct fast_sync *fast_create_event( enum fast_sync_type type, int signaled )
+{
+    set_error( STATUS_NOT_IMPLEMENTED );
+    return NULL;
+}
+
+struct fast_sync *fast_create_semaphore( unsigned int count, unsigned int max )
 {
     set_error( STATUS_NOT_IMPLEMENTED );
     return NULL;
