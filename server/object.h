@@ -232,6 +232,7 @@ extern void abandon_mutexes( struct thread *thread );
 /* in-process synchronization functions */
 
 extern struct inproc_sync *create_inproc_event( enum inproc_sync_type type, int signaled );
+extern struct inproc_sync *create_inproc_semaphore( unsigned int count, unsigned int max );
 extern void set_inproc_event( struct inproc_sync *obj );
 extern void reset_inproc_event( struct inproc_sync *obj );
 
