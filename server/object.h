@@ -233,8 +233,10 @@ extern void abandon_mutexes( struct thread *thread );
 
 extern struct fast_sync *fast_create_event( enum fast_sync_type type, int signaled );
 extern struct fast_sync *fast_create_semaphore( unsigned int count, unsigned int max );
+extern struct fast_sync *fast_create_mutex( thread_id_t owner, unsigned int count );
 extern void fast_set_event( struct fast_sync *obj );
 extern void fast_reset_event( struct fast_sync *obj );
+extern void fast_abandon_mutex( thread_id_t tid, struct fast_sync *fast_sync );
 
 extern struct fast_sync *no_get_fast_sync( struct object *obj );
 

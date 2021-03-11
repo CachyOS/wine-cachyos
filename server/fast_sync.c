@@ -274,7 +274,6 @@ struct fast_sync *fast_create_semaphore( unsigned int count, unsigned int max )
 {
     struct ntsync_sem_args args = {0};
     struct linux_device *device;
-    struct fast_sync *fast_sync;
 
     if (!(device = get_linux_device())) return NULL;
 
@@ -290,6 +289,27 @@ struct fast_sync *fast_create_semaphore( unsigned int count, unsigned int max )
     release_object( device );
 
     return create_fast_sync( FAST_SYNC_SEMAPHORE, args.sem );
+}
+
+struct fast_sync *fast_create_mutex( thread_id_t owner, unsigned int count )
+{
+    struct ntsync_mutex_args args = {0};
+    struct linux_device *device;
+
+    if (!(device = get_linux_device())) return NULL;
+
+    args.owner = owner;
+    args.count = count;
+    if (ioctl( get_unix_fd( device->fd ), NTSYNC_IOC_CREATE_MUTEX, &args ) < 0)
+    {
+        file_set_error();
+        release_object( device );
+        return NULL;
+    }
+
+    release_object( device );
+
+    return create_fast_sync( FAST_SYNC_MUTEX, args.mutex );
 }
 
 void fast_set_event( struct fast_sync *fast_sync )
@@ -314,6 +334,11 @@ void fast_reset_event( struct fast_sync *fast_sync )
     ioctl( get_unix_fd( fast_sync->fd ), NTSYNC_IOC_EVENT_RESET, &count );
 }
 
+void fast_abandon_mutex( thread_id_t tid, struct fast_sync *fast_sync )
+{
+    ioctl( get_unix_fd( fast_sync->fd ), NTSYNC_IOC_MUTEX_KILL, &tid );
+}
+
 #else
 
 struct fast_sync *fast_create_event( enum fast_sync_type type, int signaled )
@@ -328,11 +353,21 @@ struct fast_sync *fast_create_semaphore( unsigned int count, unsigned int max )
     return NULL;
 }
 
+struct fast_sync *fast_create_mutex( thread_id_t owner, unsigned int count )
+{
+    set_error( STATUS_NOT_IMPLEMENTED );
+    return NULL;
+}
+
 void fast_set_event( struct fast_sync *fast_sync )
 {
 }
 
 void fast_reset_event( struct fast_sync *obj )
+{
+}
+
+void fast_abandon_mutex( thread_id_t tid, struct fast_sync *fast_sync )
 {
 }
 
