@@ -157,6 +157,7 @@ static struct linux_device *get_linux_device(void)
         return NULL;
     }
 
+    fprintf( stderr, "wine: using fast synchronization.\n" );
     linux_device_object = device;
     return device;
 }
