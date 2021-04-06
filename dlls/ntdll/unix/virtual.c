@@ -4130,6 +4130,7 @@ static TEB *init_teb( void *ptr, BOOL is_wow )
     thread_data->reply_fd   = -1;
     thread_data->wait_fd[0] = -1;
     thread_data->wait_fd[1] = -1;
+    thread_data->linux_alert_obj = -1;
     list_add_head( &teb_list, &thread_data->entry );
     return teb;
 }
