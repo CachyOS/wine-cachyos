@@ -867,6 +867,17 @@ static NTSTATUS inproc_wait( DWORD count, const HANDLE *handles, BOOLEAN wait_an
         objs[i] = cache[i]->fd;
     }
 
+    /* It's common to wait on the message queue alone. Some applications wait
+     * on it in fast paths, with a zero timeout. Since we take two server calls
+     * instead of one when going through inproc_wait(), and since we only need
+     * to go through that path if we're waiting on other objects, just delegate
+     * to the server if we're only waiting on the message queue. */
+    if (count == 1 && queue)
+    {
+        release_inproc_sync_obj( cache[0] );
+        return server_wait_for_object( handles[0], alertable, timeout );
+    }
+
     if (queue) select_queue();
 
     ret = linux_wait_objs( device, count, objs, wait_any, alertable, timeout );
