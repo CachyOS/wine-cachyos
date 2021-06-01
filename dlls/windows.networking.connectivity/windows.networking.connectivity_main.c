@@ -265,8 +265,10 @@ static HRESULT WINAPI connection_profile_get_ProfileName(IConnectionProfile *ifa
 static HRESULT WINAPI connection_profile_GetNetworkConnectivityLevel(IConnectionProfile *iface,
         enum __x_ABI_CWindows_CNetworking_CConnectivity_CNetworkConnectivityLevel *value)
 {
-    FIXME("iface %p, value %p stub!\n", iface, value);
-    return E_NOTIMPL;
+    struct connection_profile *impl = impl_from_IConnectionProfile(iface);
+    FIXME("iface %p, value %p stub!\n", impl, value);
+    *value = NetworkConnectivityLevel_InternetAccess;
+    return S_OK;
 }
 
 static HRESULT WINAPI connection_profile_GetNetworkNames(IConnectionProfile *iface, __FIVectorView_1_HSTRING **value)
