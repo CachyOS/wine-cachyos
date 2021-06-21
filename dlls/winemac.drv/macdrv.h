@@ -44,6 +44,7 @@ extern BOOL allow_vsync;
 extern BOOL allow_set_gamma;
 extern BOOL allow_software_rendering;
 extern BOOL disable_window_decorations;
+extern BOOL force_backing_store;
 
 extern const char* debugstr_cf(CFTypeRef t);
 
