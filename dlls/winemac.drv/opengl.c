@@ -1451,7 +1451,7 @@ static BOOL create_context(struct wgl_context *context, CGLContextObj share, uns
         attribs[n++] = pf->samples;
     }
 
-    if (pf->backing_store)
+    if (force_backing_store || pf->backing_store)
         attribs[n++] = kCGLPFABackingStore;
 
     if (core)
