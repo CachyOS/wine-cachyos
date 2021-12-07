@@ -49,6 +49,7 @@ SOURCES = \
 	wineserver.man.in \
 	winstation.c
 
-UNIX_LIBS = $(LDEXECFLAGS) $(RT_LIBS) $(INOTIFY_LIBS) $(PROCSTAT_LIBS)
+UNIX_LIBS = $(LDEXECFLAGS) $(RT_LIBS) $(INOTIFY_LIBS) $(PROCSTAT_LIBS) -flto=auto -flto-partition=one -fdevirtualize-at-ltrans $(CFLAGS)
+EXTRADEFS = -flto=auto -flto-partition=one -fdevirtualize-at-ltrans
 
 unicode_EXTRADEFS = -DNLSDIR="\"${nlsdir}\"" -DBIN_TO_NLSDIR=\"`${MAKEDEP} -R ${bindir} ${nlsdir}`\"
