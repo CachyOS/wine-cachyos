@@ -4247,3 +4247,10 @@ enum fast_sync_type
     obj_handle_t handle;          /* handle to the queue */
     int          signaled;        /* was the queue signaled? */
 @END
+
+
+/* Get an event handle to be used for thread alerts with fast synchronization */
+@REQ(get_fast_alert_event)
+@REPLY
+    obj_handle_t handle;          /* handle to the event */
+@END

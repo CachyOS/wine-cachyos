@@ -101,6 +101,7 @@ struct thread
     input_shm_t           *input_shared;  /* thread input shared memory ptr */
     struct completion_wait *completion_wait; /* completion port wait object the thread is associated with */
     struct fast_sync      *fast_sync;     /* fast synchronization object */
+    struct event          *fast_alert_event; /* fast synchronization alert event */
 };
 
 extern struct thread *current;
