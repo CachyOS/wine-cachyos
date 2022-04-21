@@ -4120,3 +4120,10 @@ enum inproc_sync_type
 @REQ(unselect_inproc_queue)
     int          signaled;        /* was the queue signaled? */
 @END
+
+
+/* Get an event handle to be used for thread alerts with in-process synchronization */
+@REQ(get_inproc_alert_event)
+@REPLY
+    obj_handle_t handle;          /* handle to the event */
+@END
