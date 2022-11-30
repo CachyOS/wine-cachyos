@@ -449,6 +449,7 @@ extern BOOL use_primary_selection;
 extern BOOL use_system_cursors;
 extern BOOL grab_fullscreen;
 extern int keyboard_layout;
+extern BOOL keyboard_scancode_detect;
 extern BOOL usexcomposite;
 extern BOOL use_xfixes;
 extern BOOL managed_mode;
