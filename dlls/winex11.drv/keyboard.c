@@ -929,7 +929,6 @@ static const struct {
 
  {0, NULL, NULL, NULL, NULL} /* sentinel */
 };
-static unsigned kbd_layout=0; /* index into above table of layouts */
 
 /* maybe more of these scancodes should be extended? */
                 /* extended must be set for ALT_R, CTRL_R,
@@ -1083,6 +1082,26 @@ static const WORD xfree86_vendor_key_vkey[256] =
     0, 0, 0, 0, 0, 0, 0, 0,                                     /* 1008FFF0 */
     0, 0, 0, 0, 0, 0, 0, 0                                      /* 1008FFF8 */
 };
+
+int x11drv_find_keyboard_layout( const WCHAR *layout )
+{
+    int i, len;
+    char *tmp;
+
+    len = lstrlenW( layout );
+    if (!(tmp = malloc( len * 3 + 1 ))) return -1;
+    ntdll_wcstoumbs( layout, len + 1, tmp, len * 3 + 1, FALSE );
+
+    for (i = 0; main_key_tab[i].comment; i++)
+    {
+        const char *name = main_key_tab[i].comment;
+        if (!strcmp( name, tmp )) break;
+    }
+    free( tmp );
+
+    if (!main_key_tab[i].comment) return -1;
+    return i;
+}
 
 WCHAR *x11drv_get_keyboard_layout_list( DWORD *length )
 {
@@ -1498,11 +1517,11 @@ static char keysym_to_char( KeySym keysym )
  *  whichever matches most closely.
  * kbd_section must be held.
  */
-static void
+static int
 X11DRV_KEYBOARD_DetectLayout( Display *display )
 {
   unsigned current, match, mismatch, seq, i, syms;
-  int score, keyc, key, pkey, ok;
+  int score, keyc, key, pkey, ok, kbd_layout = 0;
   KeySym keysym = 0;
   const char (*lkey)[MAIN_LEN][4];
   unsigned max_seq = 0;
@@ -1598,6 +1617,7 @@ X11DRV_KEYBOARD_DetectLayout( Display *display )
         main_key_tab[kbd_layout].comment);
 
   TRACE("detected layout is \"%s\"\n", main_key_tab[kbd_layout].comment);
+  return kbd_layout;
 }
 
 
@@ -1633,7 +1653,7 @@ void X11DRV_InitKeyboard( Display *display )
         { 0x41, 0x5a }, /* VK_A - VK_Z */
         { 0, 0 }
     };
-    int vkey_range;
+    int vkey_range, kbd_layout;
 
     pthread_mutex_lock( &kbd_mutex );
     XDisplayKeycodes(display, &min_keycode, &max_keycode);
@@ -1665,8 +1685,9 @@ void X11DRV_InitKeyboard( Display *display )
     }
     XFreeModifiermap(mmp);
 
-    /* Detect the keyboard layout */
-    X11DRV_KEYBOARD_DetectLayout( display );
+    /* use the configured layout from registry or auto detect it */
+    kbd_layout = keyboard_layout;
+    if (kbd_layout == -1) kbd_layout = X11DRV_KEYBOARD_DetectLayout( display );
     lkey = main_key_tab[kbd_layout].key;
     syms = (keysyms_per_keycode > 4) ? 4 : keysyms_per_keycode;
 
