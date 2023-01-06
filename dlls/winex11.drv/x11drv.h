@@ -769,6 +769,10 @@ extern void init_recursive_mutex( pthread_mutex_t *mutex );
 
 extern BOOL is_window_rect_full_virtual_screen( const RECT *rect );
 
+/* keyboard.c */
+
+extern WCHAR *x11drv_get_keyboard_layout_list( DWORD *size );
+
 #define DEPTH_COUNT 3
 extern const unsigned int *depths;
 extern RECT native_screen_rect;
