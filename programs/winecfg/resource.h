@@ -234,3 +234,6 @@
 
 /* input tab */
 #define IDC_FULLSCREEN_GRAB             1501
+#define IDC_KEYBOARD_LAYOUT             1502
+
+#define IDS_INPUT_AUTO_DETECT_LAYOUT    8501
