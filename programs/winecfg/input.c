@@ -35,7 +35,9 @@ static BOOL updating_ui;
 
 static void init_dialog( HWND dialog )
 {
-    WCHAR *buffer;
+    WCHAR auto_detect_layout[256];
+    WCHAR *buffer, *layout;
+    HWND layouts;
 
     convert_x11_desktop_key();
 
@@ -46,6 +48,23 @@ static void init_dialog( HWND dialog )
     else CheckDlgButton( dialog, IDC_FULLSCREEN_GRAB, BST_UNCHECKED );
     free( buffer );
 
+    layouts = GetDlgItem( dialog, IDC_KEYBOARD_LAYOUT );
+    LoadStringW( GetModuleHandleW( NULL ), IDS_INPUT_AUTO_DETECT_LAYOUT, auto_detect_layout,
+                 ARRAY_SIZE(auto_detect_layout) );
+
+    SendMessageW( layouts, CB_RESETCONTENT, 0, 0 );
+    SendMessageW( layouts, CB_ADDSTRING, 0, (LPARAM)auto_detect_layout );
+
+    buffer = get_reg_key( config_key, keypath( L"X11 Driver" ), L"KeyboardLayoutList", L"" );
+    for (layout = buffer; *layout; layout += wcslen( layout ) + 1)
+        SendMessageW( layouts, CB_ADDSTRING, 0, (LPARAM)layout );
+    free( buffer );
+
+    buffer = get_reg_key( config_key, keypath( L"X11 Driver" ), L"KeyboardLayout", L"" );
+    if (!buffer || !buffer[0]) SendMessageW( layouts, CB_SETCURSEL, 0, 0 );
+    else SendMessageW( layouts, CB_SELECTSTRING, -1, (LPARAM)buffer );
+    free( buffer );
+
     updating_ui = FALSE;
 }
 
@@ -54,6 +73,24 @@ static void on_fullscreen_grab_clicked( HWND dialog )
     BOOL checked = IsDlgButtonChecked( dialog, IDC_FULLSCREEN_GRAB ) == BST_CHECKED;
     if (checked) set_reg_key( config_key, keypath( L"X11 Driver" ), L"GrabFullscreen", L"Y" );
     else set_reg_key( config_key, keypath( L"X11 Driver" ), L"GrabFullscreen", L"N" );
+}
+
+static void on_keyboard_layout_changed( HWND dialog )
+{
+    int len, index;
+    WCHAR *buffer;
+
+    if (!(index = SendMessageW( GetDlgItem( dialog, IDC_KEYBOARD_LAYOUT ), CB_GETCURSEL, 0, 0 )))
+        set_reg_key( config_key, keypath( L"X11 Driver" ), L"KeyboardLayout", L"" );
+    else
+    {
+        len = SendMessageW( GetDlgItem( dialog, IDC_KEYBOARD_LAYOUT ), CB_GETLBTEXTLEN, index, 0 ) + 1;
+        if (!(buffer = malloc( len * sizeof(WCHAR) ))) return;
+
+        SendMessageW( GetDlgItem( dialog, IDC_KEYBOARD_LAYOUT ), CB_GETLBTEXT, index, (LPARAM)buffer );
+        set_reg_key( config_key, keypath( L"X11 Driver" ), L"KeyboardLayout", buffer );
+        free( buffer );
+    }
 }
 
 INT_PTR CALLBACK InputDlgProc( HWND dialog, UINT message, WPARAM wparam, LPARAM lparam )
@@ -75,6 +112,15 @@ INT_PTR CALLBACK InputDlgProc( HWND dialog, UINT message, WPARAM wparam, LPARAM 
             switch (LOWORD(wparam))
             {
             case IDC_FULLSCREEN_GRAB: on_fullscreen_grab_clicked( dialog ); break;
+            }
+            break;
+
+        case CBN_SELCHANGE:
+            if (updating_ui) break;
+            SendMessageW( GetParent( dialog ), PSM_CHANGED, 0, 0 );
+            switch (LOWORD(wparam))
+            {
+            case IDC_KEYBOARD_LAYOUT: on_keyboard_layout_changed( dialog ); break;
             }
             break;
         }
