@@ -469,6 +469,19 @@ static HKEY create_hkcu_key( const char *name )
     return reg_open_hkcu_key( name, TRUE );
 }
 
+static BOOL set_reg_value( HKEY hkey, const WCHAR *name, UINT type, const void *value, DWORD count )
+{
+    unsigned int name_size = name ? lstrlenW( name ) * sizeof(WCHAR) : 0;
+    UNICODE_STRING nameW = { name_size, name_size, (WCHAR *)name };
+    return !NtSetValueKey( hkey, &nameW, 0, type, value, count );
+}
+
+static void set_reg_string_value( HKEY hkey, const char *name, const WCHAR *value, DWORD count )
+{
+    WCHAR nameW[64];
+    asciiz_to_unicode( nameW, name );
+    set_reg_value( hkey, nameW, REG_MULTI_SZ, value, count );
+}
 
 ULONG query_reg_value( HKEY hkey, const WCHAR *name, KEY_VALUE_PARTIAL_INFORMATION *info, ULONG size )
 {
@@ -580,6 +593,10 @@ static void setup_options(void)
 
     if (!get_config_key( hkey, appkey, "GrabFullscreen", buffer, sizeof(buffer) ))
         grab_fullscreen = IS_OPTION_TRUE( buffer[0] );
+
+    p = x11drv_get_keyboard_layout_list( &len );
+    if (p) set_reg_string_value( hkey, "KeyboardLayoutList", p, len * sizeof(WCHAR) );
+    free( p );
 
     if (!get_config_key( hkey, appkey, "ScreenDepth", buffer, sizeof(buffer) ))
         default_visual.depth = wcstol( buffer, NULL, 0 );

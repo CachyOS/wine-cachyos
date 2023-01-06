@@ -1084,6 +1084,27 @@ static const WORD xfree86_vendor_key_vkey[256] =
     0, 0, 0, 0, 0, 0, 0, 0                                      /* 1008FFF8 */
 };
 
+WCHAR *x11drv_get_keyboard_layout_list( DWORD *length )
+{
+    WCHAR *tmp, *layouts = calloc( 1, sizeof(WCHAR) );
+    int i;
+
+    for (i = 0, *length = 1; main_key_tab[i].comment; i++)
+    {
+        const char *name = main_key_tab[i].comment;
+        int len = strlen( name ) + 1;
+
+        if (!(tmp = realloc( layouts, (*length + len) * sizeof(WCHAR) ))) return layouts;
+        layouts = tmp;
+
+        asciiz_to_unicode( layouts + *length - 1, name );
+        layouts[*length + len - 1] = 0;
+        (*length) += len;
+    }
+
+    return layouts;
+}
+
 /* Returns the Windows virtual key code associated with the X event <e> */
 /* kbd_section must be held */
 static WORD EVENT_event_to_vkey( XIC xic, XKeyEvent *e)
