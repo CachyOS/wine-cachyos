@@ -448,6 +448,7 @@ extern BOOL use_take_focus;
 extern BOOL use_primary_selection;
 extern BOOL use_system_cursors;
 extern BOOL grab_fullscreen;
+extern int keyboard_layout;
 extern BOOL usexcomposite;
 extern BOOL use_xfixes;
 extern BOOL managed_mode;
@@ -771,6 +772,7 @@ extern BOOL is_window_rect_full_virtual_screen( const RECT *rect );
 
 /* keyboard.c */
 
+extern int x11drv_find_keyboard_layout( const WCHAR *layout );
 extern WCHAR *x11drv_get_keyboard_layout_list( DWORD *size );
 
 #define DEPTH_COUNT 3
