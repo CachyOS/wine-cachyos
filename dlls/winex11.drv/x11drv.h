@@ -797,6 +797,10 @@ extern void xinerama_init( unsigned int width, unsigned int height );
 extern void init_recursive_mutex( pthread_mutex_t *mutex );
 extern void init_icm_profile(void);
 
+/* keyboard.c */
+
+extern WCHAR *x11drv_get_keyboard_layout_list( DWORD *size );
+
 #define DEPTH_COUNT 3
 extern const unsigned int *depths;
 extern RECT gamescope_screen_rect;
