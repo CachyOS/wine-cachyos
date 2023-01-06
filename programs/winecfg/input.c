@@ -65,7 +65,7 @@ static void init_dialog( HWND dialog )
     else SendMessageW( layouts, CB_SELECTSTRING, -1, (LPARAM)buffer );
     free( buffer );
 
-    buffer = get_reg_key( config_key, keypath( L"X11 Driver" ), L"KeyboardScancodeDetect", L"Y" );
+    buffer = get_reg_key( config_key, keypath( L"X11 Driver" ), L"KeyboardScancodeDetect", L"N" );
     if (IS_OPTION_TRUE( *buffer )) CheckDlgButton( dialog, IDC_KEYBOARD_SCANCODE_DETECT, BST_CHECKED );
     else CheckDlgButton( dialog, IDC_KEYBOARD_SCANCODE_DETECT, BST_UNCHECKED );
     free( buffer );
