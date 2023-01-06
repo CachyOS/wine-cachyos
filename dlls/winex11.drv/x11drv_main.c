@@ -75,6 +75,7 @@ BOOL use_take_focus = TRUE;
 BOOL use_primary_selection = FALSE;
 BOOL use_system_cursors = TRUE;
 BOOL grab_fullscreen = FALSE;
+int keyboard_layout = -1;
 BOOL managed_mode = TRUE;
 BOOL private_color_map = FALSE;
 int primary_monitor = 0;
@@ -577,6 +578,9 @@ static void setup_options(void)
 
     if (!get_config_key( hkey, appkey, "GrabFullscreen", buffer, sizeof(buffer) ))
         grab_fullscreen = IS_OPTION_TRUE( buffer[0] );
+
+    if (!get_config_key( hkey, appkey, "KeyboardLayout", buffer, sizeof(buffer) ))
+        keyboard_layout = x11drv_find_keyboard_layout( buffer );
 
     p = x11drv_get_keyboard_layout_list( &len );
     if (p) set_reg_string_value( hkey, "KeyboardLayoutList", p, len * sizeof(WCHAR) );
