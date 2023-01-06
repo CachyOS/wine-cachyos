@@ -65,6 +65,11 @@ static void init_dialog( HWND dialog )
     else SendMessageW( layouts, CB_SELECTSTRING, -1, (LPARAM)buffer );
     free( buffer );
 
+    buffer = get_reg_key( config_key, keypath( L"X11 Driver" ), L"KeyboardScancodeDetect", L"Y" );
+    if (IS_OPTION_TRUE( *buffer )) CheckDlgButton( dialog, IDC_KEYBOARD_SCANCODE_DETECT, BST_CHECKED );
+    else CheckDlgButton( dialog, IDC_KEYBOARD_SCANCODE_DETECT, BST_UNCHECKED );
+    free( buffer );
+
     updating_ui = FALSE;
 }
 
@@ -93,6 +98,13 @@ static void on_keyboard_layout_changed( HWND dialog )
     }
 }
 
+static void on_keyboard_scancode_detect_clicked( HWND dialog )
+{
+    BOOL checked = IsDlgButtonChecked( dialog, IDC_KEYBOARD_SCANCODE_DETECT ) == BST_CHECKED;
+    if (checked) set_reg_key( config_key, keypath( L"X11 Driver" ), L"KeyboardScancodeDetect", L"Y" );
+    else set_reg_key( config_key, keypath( L"X11 Driver" ), L"KeyboardScancodeDetect", L"N" );
+}
+
 INT_PTR CALLBACK InputDlgProc( HWND dialog, UINT message, WPARAM wparam, LPARAM lparam )
 {
     TRACE( "dialog %p, message %#x, wparam %#Ix, lparam %#Ix\n", dialog, message, wparam, lparam );
@@ -112,6 +124,7 @@ INT_PTR CALLBACK InputDlgProc( HWND dialog, UINT message, WPARAM wparam, LPARAM 
             switch (LOWORD(wparam))
             {
             case IDC_FULLSCREEN_GRAB: on_fullscreen_grab_clicked( dialog ); break;
+            case IDC_KEYBOARD_SCANCODE_DETECT: on_keyboard_scancode_detect_clicked( dialog ); break;
             }
             break;
 
