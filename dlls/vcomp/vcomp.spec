@@ -56,9 +56,9 @@
 @ cdecl _vcomp_enter_critsect(ptr)
 @ cdecl _vcomp_flush()
 @ cdecl _vcomp_for_dynamic_init(long long long long long)
-@ stub _vcomp_for_dynamic_init_i8
+@ cdecl -arch=win64 _vcomp_for_dynamic_init_i8(int64 int64 int64 int64 int64)
 @ cdecl _vcomp_for_dynamic_next(ptr ptr)
-@ stub _vcomp_for_dynamic_next_i8
+@ cdecl -arch=win64 _vcomp_for_dynamic_next_i8(ptr ptr)
 @ cdecl _vcomp_for_static_end()
 @ cdecl _vcomp_for_static_init(long long long long ptr ptr ptr ptr ptr)
 @ cdecl _vcomp_for_static_init_i8(int64 int64 int64 int64 ptr ptr ptr ptr ptr)
@@ -96,7 +96,7 @@
 @ cdecl omp_get_num_procs()
 @ cdecl omp_get_num_threads()
 @ cdecl omp_get_thread_num()
-@ stub omp_get_wtick
+@ cdecl omp_get_wtick()
 @ cdecl omp_get_wtime()
 @ cdecl omp_in_parallel()
 @ cdecl omp_init_lock(ptr)
