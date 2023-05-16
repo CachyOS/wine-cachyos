@@ -1956,6 +1956,12 @@ static int init_socket( struct sock *sock, int family, int type, int protocol )
         return -1;
     }
 
+    if (unix_family == AF_UNIX && unix_type == SOCK_DGRAM)
+    {
+        set_win32_error(WSAEAFNOSUPPORT);
+        return -1;
+    }
+
     sockfd = socket( unix_family, unix_type, unix_protocol );
 #ifdef linux
     if (sockfd == -1 && errno == EPERM && unix_type == SOCK_RAW
