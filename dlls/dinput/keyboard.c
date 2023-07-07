@@ -265,13 +265,15 @@ static HRESULT keyboard_enum_objects( IDirectInputDevice8W *iface, const DIPROPH
         .dwOfs = DIK_ESCAPE,
         .dwType = DIDFT_PSHBUTTON | DIDFT_MAKEINSTANCE( DIK_ESCAPE ),
     };
+    BOOL ret, mapped[0x100] = {0};
     DWORD index, i, dik;
-    BOOL ret;
 
     for (i = 0, index = 0; i < 512; ++i)
     {
         if (!GetKeyNameTextW( i << 16, instance.tszName, ARRAY_SIZE(instance.tszName) )) continue;
         if (!(dik = map_dik_code( i, 0, subtype, impl->base.dinput->dwVersion ))) continue;
+        if (mapped[dik]) continue;
+        mapped[dik] = TRUE;
         instance.dwOfs = dik;
         instance.dwType = DIDFT_PSHBUTTON | DIDFT_MAKEINSTANCE( dik );
         ret = try_enum_object( &impl->base, filter, flags, callback, index++, &instance, context );
