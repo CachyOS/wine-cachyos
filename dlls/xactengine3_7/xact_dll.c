@@ -329,9 +329,17 @@ static HRESULT WINAPI IXACT3CueImpl_SetOutputVoiceMatrix(IXACT3Cue *iface,
         UINT32 DestinationChannels, const float *pLevelMatrix)
 {
     XACT3CueImpl *This = impl_from_IXACT3Cue(iface);
-    FIXME("(%p)->(%p %u %u %p): stub!\n", This, pDestinationVoice, SourceChannels,
+    uint32_t ret;
+
+    TRACE("(%p)->(%p %u %u %p)\n", This, pDestinationVoice, SourceChannels,
             DestinationChannels, pLevelMatrix);
-    return S_OK;
+    if (pDestinationVoice)
+        WARN("pDestinationVoice currently not supported\n");
+
+    ret = FACTCue_SetOutputVoiceMatrix(This->fact_cue, NULL, SourceChannels,
+        DestinationChannels, pLevelMatrix);
+
+    return ret ? E_FAIL : S_OK;
 }
 #endif
 
