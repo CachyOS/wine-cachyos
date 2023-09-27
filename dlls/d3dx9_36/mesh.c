@@ -4079,7 +4079,8 @@ HRESULT WINAPI D3DXLoadMeshHierarchyFromXInMemory(const void *memory, DWORD memo
     if (anim_controller)
     {
         *anim_controller = NULL;
-        FIXME("Animation controller creation not implemented.\n");
+        /*FIXME("Animation controller creation not implemented.\n");*/
+        D3DXCreateAnimationController(1, 1, 1, 1, anim_controller);
     }
 
 cleanup:
