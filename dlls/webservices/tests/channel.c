@@ -1214,6 +1214,9 @@ static const char send_record_begin[] = {
 static const char send_record_middle[] = { 0x01, 0x56, 0x0e, 0x42 };
 static const char send_record_end[] = { 0x08, 0x02, 0x6e, 0x73, 0x89, 0xff, 0x01, 0x01 };
 
+#pragma GCC diagnostic ignored "-Warray-bounds"
+#pragma GCC diagnostic ignored "-Wstringop-overflow"
+
 static BOOL send_dict_str( int sock, char *addr, const char *str, int dict_str_count )
 {
     char buf[512], dict_buf[256], body_buf[128], dict_size_buf[5];
