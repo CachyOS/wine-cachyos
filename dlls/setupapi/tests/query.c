@@ -513,6 +513,72 @@ static void test_SetupGetTargetPath(void)
     DeleteFileA(inf_filename);
 }
 
+static void test_DriverStoreFindDriverPackageW(void)
+{
+    HMODULE library;
+    HRESULT result;
+    WCHAR buffer[500];
+    DWORD len;
+    HRESULT (WINAPI *pDriverStoreFindDriverPackageW)(const WCHAR*, void*, void*, DWORD, void*, WCHAR*, DWORD*);
+
+    library = LoadLibraryA("setupapi.dll");
+    ok(library != NULL, "Failed to load setupapi.dll\n");
+    if (!library) return;
+
+    pDriverStoreFindDriverPackageW = (void *)GetProcAddress(library, "DriverStoreFindDriverPackageW");
+    if (!pDriverStoreFindDriverPackageW)
+    {
+        win_skip("Can't find DriverStoreFindDriverPackageW\n");
+        return;
+    }
+
+    len = ARRAY_SIZE(buffer);
+
+    /* No invalid parameters, with flags */
+    result = pDriverStoreFindDriverPackageW(L"c:\\nonexistent.inf", 0, 0, 9, 0, buffer, &len);
+    todo_wine
+    ok(result == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND), "Got %lx\n", result);
+
+    /* No invalid parameters, no flags */
+    result = pDriverStoreFindDriverPackageW(L"c:\\nonexistent.inf", 0, 0, 0, 0, buffer, &len);
+    if (sizeof(void *) == 4)
+        todo_wine
+        ok(result == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND), "Got %lx\n", result);
+    else
+        todo_wine
+        ok(result == E_INVALIDARG, "Got %lx\n", result); /* Win64 needs flags 0x9, or it gives invalid parameter */
+
+    /* Invalid parameter tests */
+
+    result = pDriverStoreFindDriverPackageW(L"c:\\nonexistent.inf", 0, 0, 9, 0, 0, &len);
+    ok(result == E_INVALIDARG, "Got %lx\n", result);
+
+    result = pDriverStoreFindDriverPackageW(0, 0, 0, 9, 0, buffer, &len);
+    ok(result == E_INVALIDARG, "Got %lx\n", result);
+
+    result = pDriverStoreFindDriverPackageW(L"", 0, 0, 9, 0, buffer, &len);
+    todo_wine
+    ok(result == HRESULT_FROM_WIN32(ERROR_INVALID_NAME) /* win7 */ || result == E_INVALIDARG /* win10 */, "Got %lx\n", result);
+
+    result = pDriverStoreFindDriverPackageW(L"c:\\nonexistent.inf", 0, 0, 9, 0, buffer, 0);
+    ok(result == E_INVALIDARG, "Got %lx\n", result);
+
+    /* Tests with different length parameter */
+
+    len = 0;
+    result = pDriverStoreFindDriverPackageW(L"c:\\nonexistent.inf", 0, 0, 9, 0, buffer, &len);
+    ok(result == E_INVALIDARG, "Got %lx\n", result);
+
+    len = 259;
+    result = pDriverStoreFindDriverPackageW(L"c:\\nonexistent.inf", 0, 0, 9, 0, buffer, &len);
+    ok(result == E_INVALIDARG, "Got %lx\n", result);
+
+    len = 260;
+    result = pDriverStoreFindDriverPackageW(L"c:\\nonexistent.inf", 0, 0, 9, 0, buffer, &len);
+    todo_wine
+    ok(result == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND), "Got %lx\n", result);
+}
+
 START_TEST(query)
 {
     get_directories();
@@ -521,4 +587,5 @@ START_TEST(query)
     test_SetupGetSourceFileLocation();
     test_SetupGetSourceInfo();
     test_SetupGetTargetPath();
+    test_DriverStoreFindDriverPackageW();
 }
