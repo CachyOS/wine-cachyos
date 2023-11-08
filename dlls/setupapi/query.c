@@ -732,6 +732,16 @@ BOOL WINAPI SetupGetInfDriverStoreLocationW(
     return FALSE;
 }
 
+HRESULT WINAPI DriverStoreFindDriverPackageW(const WCHAR *path_in, void *unk2, void *unk3, DWORD flags, void *unk5, WCHAR *path_out, DWORD *path_size)
+{
+    FIXME("%s, %p, %p, %lu, %p, %p, %p, %lu stub!\n", debugstr_w(path_in), unk2, unk3, flags, unk5, path_out, path_size, path_size ? *path_size : 0);
+    if (!path_in || !path_out || !path_size || *path_size < MAX_PATH)
+        return E_INVALIDARG;
+
+    wcscpy(path_out, path_in);
+    return S_OK;
+}
+
 BOOL WINAPI SetupQueryInfVersionInformationA(SP_INF_INFORMATION *info, UINT index, const char *key, char *buff,
     DWORD size, DWORD *req_size)
 {
