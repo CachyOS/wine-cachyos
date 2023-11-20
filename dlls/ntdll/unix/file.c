@@ -1597,16 +1597,20 @@ static BOOL append_entry( struct dir_data *data, const char *long_name,
     if (long_nameW[long_len - 1] == '?') --long_len;
     long_nameW[long_len] = 0;
 
-    if (short_name)
+    short_len = 0;
+
+    if (!disable_sfn)
     {
-        short_len = ntdll_umbstowcs( short_name, strlen(short_name),
-                                     short_nameW, ARRAY_SIZE( short_nameW ) - 1 );
-    }
-    else  /* generate a short name if necessary */
-    {
-        short_len = 0;
-        if (!is_legal_8dot3_name( long_nameW, long_len ))
-            short_len = hash_short_file_name( long_nameW, long_len, short_nameW );
+        if (short_name)
+        {
+            short_len = ntdll_umbstowcs( short_name, strlen(short_name),
+                                        short_nameW, ARRAY_SIZE( short_nameW ) - 1 );
+        }
+        else  /* generate a short name if necessary */
+        {
+            if (!is_legal_8dot3_name( long_nameW, long_len ))
+                short_len = hash_short_file_name( long_nameW, long_len, short_nameW );
+        }
     }
     short_nameW[short_len] = 0;
     wcsupr( short_nameW );
