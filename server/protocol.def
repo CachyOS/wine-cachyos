@@ -4062,6 +4062,15 @@ struct handle_info
     obj_handle_t handle;          /* handle to the job */
 @END
 
+/* Itererate processes using global process list */
+@REQ(get_next_process)
+    obj_handle_t last;         /* process handle to start with */
+    unsigned int access;       /* desired access for returned handle */
+    unsigned int attributes;   /* returned handle attributes */
+    unsigned int flags;        /* controls iteration direction */
+@REPLY
+    obj_handle_t handle;       /* next process handle */
+@END
 
 /* Assign a job object to a process */
 @REQ(assign_job)
