@@ -792,9 +792,11 @@ static void shader_sm4_read_shader_data(struct vkd3d_shader_instruction *ins, ui
         ins->handler_idx = VKD3DSIH_INVALID;
         return;
     }
+    icb->register_idx = 0;
     icb->data_type = VKD3D_DATA_FLOAT;
     icb->component_count = VKD3D_VEC4_SIZE;
     icb->element_count = icb_size / VKD3D_VEC4_SIZE;
+    icb->is_null = false;
     memcpy(icb->data, tokens, sizeof(*tokens) * icb_size);
     shader_instruction_array_add_icb(&priv->p.instructions, icb);
     ins->declaration.icb = icb;
@@ -1928,6 +1930,15 @@ static bool shader_sm4_read_param(struct vkd3d_shader_sm4_parser *priv, const ui
             default:
                 FIXME("Unhandled dimension %#x.\n", param->dimension);
                 break;
+        }
+    }
+    else if (register_type == VKD3D_SM4_RT_IMMCONSTBUFFER)
+    {
+        if (param->idx_count != 1)
+        {
+            WARN("Unexpected idx count %u.\n", param->idx_count);
+            vkd3d_shader_parser_error(&priv->p, VKD3D_SHADER_ERROR_TPF_INVALID_REGISTER_INDEX_COUNT,
+                    "Invalid index count %u for immediate const buffer register; expected count 1.", param->idx_count);
         }
     }
     else if (!shader_is_sm_5_1(priv) && vsir_register_is_descriptor(param))
