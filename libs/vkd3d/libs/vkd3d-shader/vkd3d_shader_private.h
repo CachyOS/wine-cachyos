@@ -196,6 +196,7 @@ enum vkd3d_shader_error
     VKD3D_SHADER_WARNING_DXIL_ENTRY_POINT_MISMATCH      = 8306,
     VKD3D_SHADER_WARNING_DXIL_INVALID_MASK              = 8307,
     VKD3D_SHADER_WARNING_DXIL_INVALID_OPERATION         = 8308,
+    VKD3D_SHADER_WARNING_DXIL_IGNORING_ATTACHMENT       = 8309,
 
     VKD3D_SHADER_ERROR_VSIR_NOT_IMPLEMENTED             = 9000,
     VKD3D_SHADER_ERROR_VSIR_INVALID_HANDLER             = 9001,
@@ -793,10 +794,12 @@ struct vkd3d_shader_version
 
 struct vkd3d_shader_immediate_constant_buffer
 {
+    unsigned int register_idx;
     enum vkd3d_data_type data_type;
     /* total count is element_count * component_count */
     unsigned int element_count;
     unsigned int component_count;
+    bool is_null;
     uint32_t data[];
 };
 
