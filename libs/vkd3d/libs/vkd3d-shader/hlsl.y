@@ -487,27 +487,27 @@ static void resolve_loop_continue(struct hlsl_ctx *ctx, struct hlsl_block *block
         else if (instr->type == HLSL_IR_JUMP)
         {
             struct hlsl_ir_jump *jump = hlsl_ir_jump(instr);
-            struct hlsl_block block;
+            struct hlsl_block cond_block;
 
             if (jump->type != HLSL_IR_JUMP_UNRESOLVED_CONTINUE)
                 continue;
 
             if (type == LOOP_DO_WHILE)
             {
-                if (!hlsl_clone_block(ctx, &block, cond))
+                if (!hlsl_clone_block(ctx, &cond_block, cond))
                     return;
-                if (!append_conditional_break(ctx, &block))
+                if (!append_conditional_break(ctx, &cond_block))
                 {
-                    hlsl_block_cleanup(&block);
+                    hlsl_block_cleanup(&cond_block);
                     return;
                 }
-                list_move_before(&instr->entry, &block.instrs);
+                list_move_before(&instr->entry, &cond_block.instrs);
             }
             else if (type == LOOP_FOR)
             {
-                if (!hlsl_clone_block(ctx, &block, iter))
+                if (!hlsl_clone_block(ctx, &cond_block, iter))
                     return;
-                list_move_before(&instr->entry, &block.instrs);
+                list_move_before(&instr->entry, &cond_block.instrs);
             }
             jump->type = HLSL_IR_JUMP_CONTINUE;
         }
@@ -3553,7 +3553,7 @@ static bool intrinsic_tex(struct hlsl_ctx *ctx, const struct parse_initializer *
 {
     struct hlsl_resource_load_params load_params = { 0 };
     const struct hlsl_type *sampler_type;
-    struct hlsl_ir_node *coords, *load;
+    struct hlsl_ir_node *coords, *sample;
 
     if (params->args_count != 2 && params->args_count != 4)
     {
@@ -3688,9 +3688,9 @@ static bool intrinsic_tex(struct hlsl_ctx *ctx, const struct parse_initializer *
     load_params.format = hlsl_get_vector_type(ctx, HLSL_TYPE_FLOAT, 4);
     load_params.sampling_dim = dim;
 
-    if (!(load = hlsl_new_resource_load(ctx, &load_params, loc)))
+    if (!(sample = hlsl_new_resource_load(ctx, &load_params, loc)))
         return false;
-    hlsl_block_add_instr(params->instrs, load);
+    hlsl_block_add_instr(params->instrs, sample);
     return true;
 }
 
