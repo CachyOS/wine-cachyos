@@ -91,7 +91,7 @@ enum vkd3d_shader_error
     VKD3D_SHADER_ERROR_SPV_INVALID_REGISTER_TYPE        = 2001,
     VKD3D_SHADER_ERROR_SPV_INVALID_DESCRIPTOR_BINDING   = 2002,
     VKD3D_SHADER_ERROR_SPV_DESCRIPTOR_IDX_UNSUPPORTED   = 2003,
-    VKD3D_SHADER_ERROR_SPV_STENCIL_EXPORT_UNSUPPORTED   = 2004,
+    VKD3D_SHADER_ERROR_SPV_UNSUPPORTED_FEATURE          = 2004,
     VKD3D_SHADER_ERROR_SPV_OUT_OF_MEMORY                = 2005,
     VKD3D_SHADER_ERROR_SPV_INVALID_TYPE                 = 2006,
     VKD3D_SHADER_ERROR_SPV_INVALID_HANDLER              = 2007,
@@ -741,6 +741,7 @@ enum vkd3d_tessellator_domain
 #define VKD3DSI_RESINFO_UINT            0x2
 #define VKD3DSI_SAMPLE_INFO_UINT        0x1
 #define VKD3DSI_SAMPLER_COMPARISON_MODE 0x1
+#define VKD3DSI_SHIFT_UNMASKED          0x1
 
 #define VKD3DSI_PRECISE_X         0x100
 #define VKD3DSI_PRECISE_Y         0x200
@@ -1314,9 +1315,15 @@ struct vkd3d_string_buffer_cache
     size_t count, max_count, capacity;
 };
 
+enum vsir_asm_dialect
+{
+    VSIR_ASM_VSIR,
+    VSIR_ASM_D3D,
+};
+
 enum vkd3d_result vkd3d_dxbc_binary_to_text(const struct vkd3d_shader_instruction_array *instructions,
         const struct vkd3d_shader_version *shader_version, const struct vkd3d_shader_compile_info *compile_info,
-        struct vkd3d_shader_code *out);
+        struct vkd3d_shader_code *out, enum vsir_asm_dialect dialect);
 void vkd3d_string_buffer_cleanup(struct vkd3d_string_buffer *buffer);
 struct vkd3d_string_buffer *vkd3d_string_buffer_get(struct vkd3d_string_buffer_cache *list);
 void vkd3d_string_buffer_init(struct vkd3d_string_buffer *buffer);
