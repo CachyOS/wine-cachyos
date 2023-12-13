@@ -96,6 +96,7 @@ enum vkd3d_shader_error
     VKD3D_SHADER_ERROR_SPV_INVALID_TYPE                 = 2006,
     VKD3D_SHADER_ERROR_SPV_INVALID_HANDLER              = 2007,
     VKD3D_SHADER_ERROR_SPV_NOT_IMPLEMENTED              = 2008,
+    VKD3D_SHADER_ERROR_SPV_INVALID_SHADER               = 2009,
 
     VKD3D_SHADER_WARNING_SPV_INVALID_SWIZZLE            = 2300,
 
@@ -1515,7 +1516,7 @@ static inline enum vkd3d_shader_input_sysval_semantic vkd3d_siv_from_sysval(enum
     return vkd3d_siv_from_sysval_indexed(sysval, 0);
 }
 
-static inline unsigned int vkd3d_write_mask_get_component_idx(DWORD write_mask)
+static inline unsigned int vsir_write_mask_get_component_idx(uint32_t write_mask)
 {
     unsigned int i;
 
@@ -1530,7 +1531,7 @@ static inline unsigned int vkd3d_write_mask_get_component_idx(DWORD write_mask)
     return 0;
 }
 
-static inline unsigned int vkd3d_write_mask_component_count(DWORD write_mask)
+static inline unsigned int vsir_write_mask_component_count(uint32_t write_mask)
 {
     unsigned int count = vkd3d_popcount(write_mask & VKD3DSP_WRITEMASK_ALL);
     assert(1 <= count && count <= VKD3D_VEC4_SIZE);
@@ -1543,15 +1544,15 @@ static inline unsigned int vkd3d_write_mask_from_component_count(unsigned int co
     return (VKD3DSP_WRITEMASK_0 << component_count) - 1;
 }
 
-static inline unsigned int vkd3d_write_mask_64_from_32(DWORD write_mask32)
+static inline uint32_t vsir_write_mask_64_from_32(uint32_t write_mask32)
 {
-    unsigned int write_mask64 = write_mask32 | (write_mask32 >> 1);
+    uint32_t write_mask64 = write_mask32 | (write_mask32 >> 1);
     return (write_mask64 & VKD3DSP_WRITEMASK_0) | ((write_mask64 & VKD3DSP_WRITEMASK_2) >> 1);
 }
 
-static inline unsigned int vkd3d_write_mask_32_from_64(unsigned int write_mask64)
+static inline uint32_t vsir_write_mask_32_from_64(uint32_t write_mask64)
 {
-    unsigned int write_mask32 = (write_mask64 | (write_mask64 << 1))
+    uint32_t write_mask32 = (write_mask64 | (write_mask64 << 1))
             & (VKD3DSP_WRITEMASK_0 | VKD3DSP_WRITEMASK_2);
     return write_mask32 | (write_mask32 << 1);
 }
