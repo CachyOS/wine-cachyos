@@ -1757,9 +1757,23 @@ struct d3d12_device
 
     struct vkd3d_gpu_va_allocator gpu_va_allocator;
 
-    struct vkd3d_mutex mutex;
     struct vkd3d_desc_object_cache view_desc_cache;
     struct vkd3d_desc_object_cache cbuffer_desc_cache;
+
+    VkDescriptorPoolSize vk_pool_sizes[VKD3D_DESCRIPTOR_POOL_COUNT];
+    unsigned int vk_pool_count;
+    struct vkd3d_vk_descriptor_heap_layout vk_descriptor_heap_layouts[VKD3D_SET_INDEX_COUNT];
+    bool use_vk_heaps;
+
+    struct d3d12_descriptor_heap **heaps;
+    size_t heap_capacity;
+    size_t heap_count;
+    union vkd3d_thread_handle worker_thread;
+    struct vkd3d_mutex worker_mutex;
+    struct vkd3d_cond worker_cond;
+    bool worker_should_exit;
+
+    struct vkd3d_mutex pipeline_cache_mutex;
     struct vkd3d_render_pass_cache render_pass_cache;
     VkPipelineCache vk_pipeline_cache;
 
@@ -1799,11 +1813,6 @@ struct d3d12_device
     const struct vkd3d_format_compatibility_list *format_compatibility_lists;
     struct vkd3d_null_resources null_resources;
     struct vkd3d_uav_clear_state uav_clear_state;
-
-    VkDescriptorPoolSize vk_pool_sizes[VKD3D_DESCRIPTOR_POOL_COUNT];
-    unsigned int vk_pool_count;
-    struct vkd3d_vk_descriptor_heap_layout vk_descriptor_heap_layouts[VKD3D_SET_INDEX_COUNT];
-    bool use_vk_heaps;
 };
 
 HRESULT d3d12_device_create(struct vkd3d_instance *instance,
@@ -1813,6 +1822,8 @@ bool d3d12_device_is_uma(struct d3d12_device *device, bool *coherent);
 void d3d12_device_mark_as_removed(struct d3d12_device *device, HRESULT reason,
         const char *message, ...) VKD3D_PRINTF_FUNC(3, 4);
 struct d3d12_device *unsafe_impl_from_ID3D12Device5(ID3D12Device5 *iface);
+HRESULT d3d12_device_add_descriptor_heap(struct d3d12_device *device, struct d3d12_descriptor_heap *heap);
+void d3d12_device_remove_descriptor_heap(struct d3d12_device *device, struct d3d12_descriptor_heap *heap);
 
 static inline HRESULT d3d12_device_query_interface(struct d3d12_device *device, REFIID iid, void **object)
 {
