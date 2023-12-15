@@ -2632,20 +2632,18 @@ void d3d12_desc_flush_vk_heap_updates_locked(struct d3d12_descriptor_heap *descr
     for (; i != UINT_MAX; i = next)
     {
         src = &descriptors[i];
-        next = (int)src->next >> 1;
+        next = vkd3d_atomic_exchange(&src->next, 0);
+        next = (int)next >> 1;
 
+        /* A race exists here between updating src->next and getting the current object. The best
+         * we can do is get the object last, which may result in a harmless rewrite later. */
         u.object = d3d12_desc_get_object_ref(src, device);
 
         if (!u.object)
-        {
-            vkd3d_atomic_exchange(&src->next, 0);
             continue;
-        }
 
         writes.held_refs[writes.held_ref_count++] = u.object;
         d3d12_desc_write_vk_heap(descriptor_heap, i, &writes, u.object, device);
-
-        vkd3d_atomic_exchange(&src->next, 0);
     }
 
     /* Avoid thunk calls wherever possible. */
@@ -3997,6 +3995,9 @@ static ULONG STDMETHODCALLTYPE d3d12_descriptor_heap_Release(ID3D12DescriptorHea
             {
                 struct d3d12_desc *descriptors = (struct d3d12_desc *)heap->descriptors;
 
+                if (heap->use_vk_heaps)
+                    d3d12_device_remove_descriptor_heap(device, heap);
+
                 for (i = 0; i < heap->desc.NumDescriptors; ++i)
                 {
                     d3d12_desc_destroy(&descriptors[i], device);
@@ -4320,6 +4321,12 @@ HRESULT d3d12_descriptor_heap_create(struct d3d12_device *device,
             dst[i].next = 0;
         }
         object->dirty_list_head = UINT_MAX;
+
+        if (object->use_vk_heaps && FAILED(hr = d3d12_device_add_descriptor_heap(device, object)))
+        {
+            vkd3d_free(object);
+            return hr;
+        }
     }
     else
     {
