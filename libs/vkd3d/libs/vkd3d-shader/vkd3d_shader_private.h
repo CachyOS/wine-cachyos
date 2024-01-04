@@ -841,10 +841,10 @@ struct vkd3d_shader_register
     unsigned int alignment;
     union
     {
-        DWORD immconst_uint[VKD3D_VEC4_SIZE];
-        float immconst_float[VKD3D_VEC4_SIZE];
-        uint64_t immconst_uint64[VKD3D_DVEC2_SIZE];
-        double immconst_double[VKD3D_DVEC2_SIZE];
+        uint32_t immconst_u32[VKD3D_VEC4_SIZE];
+        float immconst_f32[VKD3D_VEC4_SIZE];
+        uint64_t immconst_u64[VKD3D_DVEC2_SIZE];
+        double immconst_f64[VKD3D_DVEC2_SIZE];
         unsigned fp_body_idx;
     } u;
 };
@@ -1398,6 +1398,8 @@ void vkd3d_shader_verror(struct vkd3d_shader_message_context *context, const str
         enum vkd3d_shader_error error, const char *format, va_list args);
 void vkd3d_shader_vnote(struct vkd3d_shader_message_context *context, const struct vkd3d_shader_location *location,
         enum vkd3d_shader_log_level level, const char *format, va_list args);
+void vkd3d_shader_warning(struct vkd3d_shader_message_context *context, const struct vkd3d_shader_location *location,
+        enum vkd3d_shader_error error, const char *format, ...) VKD3D_PRINTF_FUNC(4, 5);
 void vkd3d_shader_vwarning(struct vkd3d_shader_message_context *context, const struct vkd3d_shader_location *location,
         enum vkd3d_shader_error error, const char *format, va_list args);
 
