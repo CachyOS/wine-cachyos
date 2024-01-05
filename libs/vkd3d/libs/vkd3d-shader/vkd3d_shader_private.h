@@ -871,14 +871,14 @@ struct vkd3d_shader_dst_param
 {
     struct vkd3d_shader_register reg;
     uint32_t write_mask;
-    DWORD modifiers;
-    DWORD shift;
+    uint32_t modifiers;
+    unsigned int shift;
 };
 
 struct vkd3d_shader_src_param
 {
     struct vkd3d_shader_register reg;
-    DWORD swizzle;
+    uint32_t swizzle;
     enum vkd3d_shader_src_modifier modifiers;
 };
 
@@ -954,6 +954,9 @@ enum vkd3d_shader_input_sysval_semantic
     VKD3D_SIV_LINE_DETAIL_TESS_FACTOR      = 21,
     VKD3D_SIV_LINE_DENSITY_TESS_FACTOR     = 22,
 };
+
+#define SM1_COLOR_REGISTER_OFFSET 8
+#define SM1_RASTOUT_REGISTER_OFFSET 10
 
 #define SIGNATURE_TARGET_LOCATION_UNUSED (~0u)
 
@@ -1120,7 +1123,7 @@ struct vkd3d_shader_instruction
 {
     struct vkd3d_shader_location location;
     enum vkd3d_shader_opcode handler_idx;
-    DWORD flags;
+    uint32_t flags;
     unsigned int dst_count;
     unsigned int src_count;
     const struct vkd3d_shader_dst_param *dst;

@@ -482,9 +482,23 @@ static void shader_sm1_parse_dst_param(uint32_t param, const struct vkd3d_shader
         dst->reg.dimension = VSIR_DIMENSION_SCALAR;
     else
         dst->reg.dimension = VSIR_DIMENSION_VEC4;
-    dst->write_mask = (param & VKD3D_SM1_WRITEMASK_MASK) >> VKD3D_SM1_WRITEMASK_SHIFT;
     dst->modifiers = (param & VKD3D_SM1_DST_MODIFIER_MASK) >> VKD3D_SM1_DST_MODIFIER_SHIFT;
     dst->shift = (param & VKD3D_SM1_DSTSHIFT_MASK) >> VKD3D_SM1_DSTSHIFT_SHIFT;
+
+    switch (dst->reg.dimension)
+    {
+        case VSIR_DIMENSION_SCALAR:
+            dst->write_mask = VKD3DSP_WRITEMASK_0;
+            break;
+
+        case VSIR_DIMENSION_VEC4:
+            dst->write_mask = (param & VKD3D_SM1_WRITEMASK_MASK) >> VKD3D_SM1_WRITEMASK_SHIFT;
+            break;
+
+        default:
+            dst->write_mask = 0;
+            break;
+    }
 }
 
 static struct signature_element *find_signature_element(const struct shader_signature *signature,
@@ -517,8 +531,6 @@ static struct signature_element *find_signature_element_by_register_index(
 
     return NULL;
 }
-
-#define SM1_COLOR_REGISTER_OFFSET 8
 
 static bool add_signature_element(struct vkd3d_shader_sm1_parser *sm1, bool output,
         const char *name, unsigned int index, enum vkd3d_shader_sysval_semantic sysval,
@@ -647,15 +659,15 @@ static bool add_signature_element_from_register(struct vkd3d_shader_sm1_parser *
             {
                 case 0:
                     return add_signature_element(sm1, true, "POSITION", 0,
-                            VKD3D_SHADER_SV_POSITION, register_index, is_dcl, mask);
+                            VKD3D_SHADER_SV_POSITION, SM1_RASTOUT_REGISTER_OFFSET + register_index, is_dcl, mask);
 
                 case 1:
                     return add_signature_element(sm1, true, "FOG", 0,
-                            VKD3D_SHADER_SV_NONE, register_index, is_dcl, 0x1);
+                            VKD3D_SHADER_SV_NONE, SM1_RASTOUT_REGISTER_OFFSET + register_index, is_dcl, 0x1);
 
                 case 2:
                     return add_signature_element(sm1, true, "PSIZE", 0,
-                            VKD3D_SHADER_SV_NONE, register_index, is_dcl, 0x1);
+                            VKD3D_SHADER_SV_NONE, SM1_RASTOUT_REGISTER_OFFSET + register_index, is_dcl, 0x1);
 
                 default:
                     vkd3d_shader_parser_error(&sm1->p, VKD3D_SHADER_ERROR_D3DBC_INVALID_REGISTER_INDEX,
