@@ -263,7 +263,7 @@ static bool types_are_semantic_equivalent(struct hlsl_ctx *ctx, const struct hls
 }
 
 static struct hlsl_ir_var *add_semantic_var(struct hlsl_ctx *ctx, struct hlsl_ir_var *var,
-        struct hlsl_type *type, unsigned int modifiers, struct hlsl_semantic *semantic,
+        struct hlsl_type *type, uint32_t modifiers, struct hlsl_semantic *semantic,
         uint32_t index, bool output, const struct vkd3d_shader_location *loc)
 {
     struct hlsl_semantic new_semantic;
@@ -331,7 +331,7 @@ static struct hlsl_ir_var *add_semantic_var(struct hlsl_ctx *ctx, struct hlsl_ir
 }
 
 static void prepend_input_copy(struct hlsl_ctx *ctx, struct hlsl_block *block, struct hlsl_ir_load *lhs,
-        unsigned int modifiers, struct hlsl_semantic *semantic, uint32_t semantic_index)
+        uint32_t modifiers, struct hlsl_semantic *semantic, uint32_t semantic_index)
 {
     struct hlsl_type *type = lhs->node.data_type, *vector_type_src, *vector_type_dst;
     struct vkd3d_shader_location *loc = &lhs->node.loc;
@@ -395,7 +395,7 @@ static void prepend_input_copy(struct hlsl_ctx *ctx, struct hlsl_block *block, s
 }
 
 static void prepend_input_copy_recurse(struct hlsl_ctx *ctx, struct hlsl_block *block, struct hlsl_ir_load *lhs,
-        unsigned int modifiers, struct hlsl_semantic *semantic, uint32_t semantic_index)
+        uint32_t modifiers, struct hlsl_semantic *semantic, uint32_t semantic_index)
 {
     struct vkd3d_shader_location *loc = &lhs->node.loc;
     struct hlsl_type *type = lhs->node.data_type;
@@ -411,7 +411,7 @@ static void prepend_input_copy_recurse(struct hlsl_ctx *ctx, struct hlsl_block *
 
         for (i = 0; i < hlsl_type_element_count(type); ++i)
         {
-            unsigned int element_modifiers = modifiers;
+            uint32_t element_modifiers = modifiers;
 
             if (type->class == HLSL_CLASS_ARRAY)
             {
@@ -473,7 +473,7 @@ static void prepend_input_var_copy(struct hlsl_ctx *ctx, struct hlsl_block *bloc
 }
 
 static void append_output_copy(struct hlsl_ctx *ctx, struct hlsl_block *block, struct hlsl_ir_load *rhs,
-        unsigned int modifiers, struct hlsl_semantic *semantic, uint32_t semantic_index)
+        uint32_t modifiers, struct hlsl_semantic *semantic, uint32_t semantic_index)
 {
     struct hlsl_type *type = rhs->node.data_type, *vector_type;
     struct vkd3d_shader_location *loc = &rhs->node.loc;
@@ -529,7 +529,7 @@ static void append_output_copy(struct hlsl_ctx *ctx, struct hlsl_block *block, s
 }
 
 static void append_output_copy_recurse(struct hlsl_ctx *ctx, struct hlsl_block *block, struct hlsl_ir_load *rhs,
-        unsigned int modifiers, struct hlsl_semantic *semantic, uint32_t semantic_index)
+        uint32_t modifiers, struct hlsl_semantic *semantic, uint32_t semantic_index)
 {
     struct vkd3d_shader_location *loc = &rhs->node.loc;
     struct hlsl_type *type = rhs->node.data_type;
@@ -1519,7 +1519,7 @@ static void copy_propagation_set_value(struct hlsl_ctx *ctx, struct copy_propaga
 
 static bool copy_propagation_replace_with_single_instr(struct hlsl_ctx *ctx,
         const struct copy_propagation_state *state, const struct hlsl_ir_load *load,
-        unsigned int swizzle, struct hlsl_ir_node *instr)
+        uint32_t swizzle, struct hlsl_ir_node *instr)
 {
     const unsigned int instr_component_count = hlsl_type_component_count(instr->data_type);
     const struct hlsl_deref *deref = &load->src;
@@ -1527,7 +1527,7 @@ static bool copy_propagation_replace_with_single_instr(struct hlsl_ctx *ctx,
     struct hlsl_ir_node *new_instr = NULL;
     unsigned int time = load->node.index;
     unsigned int start, count, i;
-    unsigned int ret_swizzle = 0;
+    uint32_t ret_swizzle = 0;
 
     if (!hlsl_component_index_range_from_deref(ctx, deref, &start, &count))
         return false;
@@ -1573,7 +1573,7 @@ static bool copy_propagation_replace_with_single_instr(struct hlsl_ctx *ctx,
 
 static bool copy_propagation_replace_with_constant_vector(struct hlsl_ctx *ctx,
         const struct copy_propagation_state *state, const struct hlsl_ir_load *load,
-        unsigned int swizzle, struct hlsl_ir_node *instr)
+        uint32_t swizzle, struct hlsl_ir_node *instr)
 {
     const unsigned int instr_component_count = hlsl_type_component_count(instr->data_type);
     const struct hlsl_deref *deref = &load->src;
@@ -2239,7 +2239,7 @@ static bool fold_swizzle_chains(struct hlsl_ctx *ctx, struct hlsl_ir_node *instr
     if (next_instr->type == HLSL_IR_SWIZZLE)
     {
         struct hlsl_ir_node *new_swizzle;
-        unsigned int combined_swizzle;
+        uint32_t combined_swizzle;
 
         combined_swizzle = hlsl_combine_swizzles(hlsl_ir_swizzle(next_instr)->swizzle,
                 swizzle->swizzle, instr->data_type->dimx);
@@ -3145,7 +3145,7 @@ static bool lower_int_dot(struct hlsl_ctx *ctx, struct hlsl_ir_node *instr, stru
 
         for (i = 0; i < dimx; ++i)
         {
-            unsigned int s = hlsl_swizzle_from_writemask(1 << i);
+            uint32_t s = hlsl_swizzle_from_writemask(1 << i);
 
             if (!(comps[i] = hlsl_new_swizzle(ctx, s, 1, mult, &instr->loc)))
                 return false;
