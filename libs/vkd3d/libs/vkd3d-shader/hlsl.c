@@ -920,7 +920,7 @@ bool hlsl_types_are_equal(const struct hlsl_type *t1, const struct hlsl_type *t2
 }
 
 struct hlsl_type *hlsl_type_clone(struct hlsl_ctx *ctx, struct hlsl_type *old,
-        unsigned int default_majority, unsigned int modifiers)
+        unsigned int default_majority, uint32_t modifiers)
 {
     struct hlsl_type *type;
 
@@ -1030,7 +1030,7 @@ struct hlsl_ir_node *hlsl_new_copy(struct hlsl_ctx *ctx, struct hlsl_ir_node *no
 }
 
 struct hlsl_ir_var *hlsl_new_var(struct hlsl_ctx *ctx, const char *name, struct hlsl_type *type,
-        const struct vkd3d_shader_location *loc, const struct hlsl_semantic *semantic, unsigned int modifiers,
+        const struct vkd3d_shader_location *loc, const struct hlsl_semantic *semantic, uint32_t modifiers,
         const struct hlsl_reg_reservation *reg_reservation)
 {
     struct hlsl_ir_var *var;
@@ -1505,7 +1505,7 @@ struct hlsl_ir_node *hlsl_new_resource_store(struct hlsl_ctx *ctx, const struct 
     return &store->node;
 }
 
-struct hlsl_ir_node *hlsl_new_swizzle(struct hlsl_ctx *ctx, DWORD s, unsigned int components,
+struct hlsl_ir_node *hlsl_new_swizzle(struct hlsl_ctx *ctx, uint32_t s, unsigned int components,
         struct hlsl_ir_node *val, const struct vkd3d_shader_location *loc)
 {
     struct hlsl_ir_swizzle *swizzle;
@@ -2246,7 +2246,7 @@ const char *debug_hlsl_type(struct hlsl_ctx *ctx, const struct hlsl_type *type)
     return ret;
 }
 
-struct vkd3d_string_buffer *hlsl_modifiers_to_string(struct hlsl_ctx *ctx, unsigned int modifiers)
+struct vkd3d_string_buffer *hlsl_modifiers_to_string(struct hlsl_ctx *ctx, uint32_t modifiers)
 {
     struct vkd3d_string_buffer *string;
 
@@ -2432,7 +2432,7 @@ const char *debug_hlsl_writemask(unsigned int writemask)
     return vkd3d_dbg_sprintf(".%s", string);
 }
 
-const char *debug_hlsl_swizzle(unsigned int swizzle, unsigned int size)
+const char *debug_hlsl_swizzle(uint32_t swizzle, unsigned int size)
 {
     static const char components[] = {'x', 'y', 'z', 'w'};
     char string[5];
@@ -3147,9 +3147,10 @@ void hlsl_add_function(struct hlsl_ctx *ctx, char *name, struct hlsl_ir_function
     rb_put(&ctx->functions, func->name, &func->entry);
 }
 
-unsigned int hlsl_map_swizzle(unsigned int swizzle, unsigned int writemask)
+uint32_t hlsl_map_swizzle(uint32_t swizzle, unsigned int writemask)
 {
-    unsigned int i, ret = 0;
+    uint32_t ret = 0;
+    unsigned int i;
 
     /* Leave replicate swizzles alone; some instructions need them. */
     if (swizzle == HLSL_SWIZZLE(X, X, X, X)
@@ -3169,7 +3170,7 @@ unsigned int hlsl_map_swizzle(unsigned int swizzle, unsigned int writemask)
     return ret;
 }
 
-unsigned int hlsl_swizzle_from_writemask(unsigned int writemask)
+uint32_t hlsl_swizzle_from_writemask(unsigned int writemask)
 {
     static const unsigned int swizzles[16] =
     {
@@ -3210,9 +3211,10 @@ unsigned int hlsl_combine_writemasks(unsigned int first, unsigned int second)
     return ret;
 }
 
-unsigned int hlsl_combine_swizzles(unsigned int first, unsigned int second, unsigned int dim)
+uint32_t hlsl_combine_swizzles(uint32_t first, uint32_t second, unsigned int dim)
 {
-    unsigned int ret = 0, i;
+    uint32_t ret = 0;
+    unsigned int i;
     for (i = 0; i < dim; ++i)
     {
         unsigned int s = hlsl_swizzle_get_component(second, i);
