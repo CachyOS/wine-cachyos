@@ -785,6 +785,11 @@ enum vkd3d_shader_target_type
      * An 'OpenGL Shading Language' shader. \since 1.3
      */
     VKD3D_SHADER_TARGET_GLSL,
+    /**
+     * Binary format used by Direct3D 9/10.x/11 effects profiles.
+     * Output is a raw FX section without container. \since 1.11
+     */
+    VKD3D_SHADER_TARGET_FX,
 
     VKD3D_FORCE_32_BIT_ENUM(VKD3D_SHADER_TARGET_TYPE),
 };
@@ -1270,6 +1275,8 @@ enum vkd3d_shader_descriptor_range_flags
     VKD3D_SHADER_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE                    = 0x2,
     VKD3D_SHADER_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE = 0x4,
     VKD3D_SHADER_DESCRIPTOR_RANGE_FLAG_DATA_STATIC                      = 0x8,
+    /** \since 1.11 */
+    VKD3D_SHADER_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_STATIC_KEEPING_BUFFER_BOUNDS_CHECKS = 0x10000,
 
     VKD3D_FORCE_32_BIT_ENUM(VKD3D_SHADER_DESCRIPTOR_RANGE_FLAGS),
 };

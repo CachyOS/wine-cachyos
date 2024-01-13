@@ -95,6 +95,8 @@ enum hlsl_base_type
     HLSL_TYPE_UAV,
     HLSL_TYPE_PIXELSHADER,
     HLSL_TYPE_VERTEXSHADER,
+    HLSL_TYPE_TECHNIQUE,
+    HLSL_TYPE_EFFECT_GROUP,
     HLSL_TYPE_STRING,
     HLSL_TYPE_VOID,
 };
@@ -138,8 +140,10 @@ struct hlsl_type
     struct rb_entry scope_entry;
 
     enum hlsl_type_class class;
-    /* If type is <= HLSL_CLASS_LAST_NUMERIC, then base_type is <= HLSL_TYPE_LAST_SCALAR.
-     * If type is HLSL_CLASS_OBJECT, then base_type is > HLSL_TYPE_LAST_SCALAR.
+    /* If class is <= HLSL_CLASS_LAST_NUMERIC, then base_type is <= HLSL_TYPE_LAST_SCALAR.
+     * If class is HLSL_CLASS_OBJECT, then base_type is > HLSL_TYPE_LAST_SCALAR.
+     * If class is HLSL_CLASS_OBJECT and base_type is HLSL_TYPE_TECHNIQUE, additional version
+     * field is used to distinguish between technique types.
      * Otherwise, base_type is not used. */
     enum hlsl_base_type base_type;
 
@@ -191,6 +195,8 @@ struct hlsl_type
         /* Format of the data contained within the type if the base_type is HLSL_TYPE_TEXTURE or
          *   HLSL_TYPE_UAV. */
         struct hlsl_type *resource_format;
+        /* Additional field to distinguish object types. Currently used only for technique types. */
+        unsigned int version;
     } e;
 
     /* Number of numeric register components used by one value of this type, for each regset.
@@ -400,6 +406,8 @@ struct hlsl_ir_var
     struct list scope_entry;
     /* Item entry in hlsl_ctx.extern_vars, if the variable is extern. */
     struct list extern_entry;
+    /* Scope that variable itself defines, used to provide a container for techniques and passes. */
+    struct hlsl_scope *scope;
 
     /* Indexes of the IR instructions where the variable is first written and last read (liveness
      *   range). The IR instructions are numerated starting from 2, because 0 means unused, and 1
@@ -1160,6 +1168,7 @@ void hlsl_dump_function(struct hlsl_ctx *ctx, const struct hlsl_ir_function_decl
 
 int hlsl_emit_bytecode(struct hlsl_ctx *ctx, struct hlsl_ir_function_decl *entry_func,
         enum vkd3d_shader_target_type target_type, struct vkd3d_shader_code *out);
+int hlsl_emit_effect_binary(struct hlsl_ctx *ctx, struct vkd3d_shader_code *out);
 
 bool hlsl_init_deref_from_index_chain(struct hlsl_ctx *ctx, struct hlsl_deref *deref, struct hlsl_ir_node *chain);
 bool hlsl_copy_deref(struct hlsl_ctx *ctx, struct hlsl_deref *deref, const struct hlsl_deref *other);

@@ -1126,8 +1126,8 @@ struct vkd3d_shader_instruction
     uint32_t flags;
     unsigned int dst_count;
     unsigned int src_count;
-    const struct vkd3d_shader_dst_param *dst;
-    const struct vkd3d_shader_src_param *src;
+    struct vkd3d_shader_dst_param *dst;
+    struct vkd3d_shader_src_param *src;
     struct vkd3d_shader_texel_offset texel_offset;
     enum vkd3d_shader_resource_type resource_type;
     unsigned int resource_stride;
@@ -1357,7 +1357,9 @@ struct vkd3d_bytecode_buffer
 /* Align to the next 4-byte offset, and return that offset. */
 size_t bytecode_align(struct vkd3d_bytecode_buffer *buffer);
 size_t bytecode_put_bytes(struct vkd3d_bytecode_buffer *buffer, const void *bytes, size_t size);
+size_t bytecode_reserve_bytes(struct vkd3d_bytecode_buffer *buffer, size_t size);
 void set_u32(struct vkd3d_bytecode_buffer *buffer, size_t offset, uint32_t value);
+void set_string(struct vkd3d_bytecode_buffer *buffer, size_t offset, const char *string, size_t length);
 
 static inline size_t put_u32(struct vkd3d_bytecode_buffer *buffer, uint32_t value)
 {
