@@ -1511,7 +1511,7 @@ enum vkd3d_result vkd3d_shader_normalise(struct vkd3d_shader_parser *parser,
         vkd3d_shader_trace(instructions, &parser->shader_version);
 
     if (result >= 0 && !parser->failed)
-        vsir_validate(parser);
+        result = vsir_validate(parser);
 
     if (result >= 0 && parser->failed)
         result = VKD3D_ERROR_INVALID_SHADER;
@@ -1523,9 +1523,25 @@ struct validation_context
 {
     struct vkd3d_shader_parser *parser;
     size_t instruction_idx;
+    bool invalid_instruction_idx;
     bool dcl_temps_found;
     unsigned int temp_count;
     enum vkd3d_shader_opcode phase;
+
+    struct validation_context_temp_data
+    {
+        enum vsir_dimension dimension;
+        size_t first_seen;
+    } *temps;
+
+    struct validation_context_ssa_data
+    {
+        enum vsir_dimension dimension;
+        size_t first_seen;
+        uint32_t write_mask;
+        uint32_t read_mask;
+        size_t first_assigned;
+    } *ssas;
 
     enum vkd3d_shader_opcode *blocks;
     size_t depth;
@@ -1544,8 +1560,16 @@ static void VKD3D_PRINTF_FUNC(3, 4) validator_error(struct validation_context *c
     vkd3d_string_buffer_vprintf(&buf, format, args);
     va_end(args);
 
-    vkd3d_shader_parser_error(ctx->parser, error, "instruction %zu: %s", ctx->instruction_idx + 1, buf.buffer);
-    ERR("VSIR validation error: instruction %zu: %s\n", ctx->instruction_idx + 1, buf.buffer);
+    if (ctx->invalid_instruction_idx)
+    {
+        vkd3d_shader_parser_error(ctx->parser, error, "%s", buf.buffer);
+        ERR("VSIR validation error: %s\n", buf.buffer);
+    }
+    else
+    {
+        vkd3d_shader_parser_error(ctx->parser, error, "instruction %zu: %s", ctx->instruction_idx + 1, buf.buffer);
+        ERR("VSIR validation error: instruction %zu: %s\n", ctx->instruction_idx + 1, buf.buffer);
+    }
 
     vkd3d_string_buffer_cleanup(&buf);
 }
@@ -1592,30 +1616,101 @@ static void vsir_validate_register(struct validation_context *ctx,
     switch (reg->type)
     {
         case VKD3DSPR_TEMP:
+        {
+            struct validation_context_temp_data *data;
+
             if (reg->idx_count != 1)
+            {
                 validator_error(ctx, VKD3D_SHADER_ERROR_VSIR_INVALID_INDEX_COUNT, "Invalid index count %u for a TEMP register.",
                         reg->idx_count);
+                break;
+            }
 
-            if (reg->idx_count >= 1 && reg->idx[0].rel_addr)
+            if (reg->idx[0].rel_addr)
                 validator_error(ctx, VKD3D_SHADER_ERROR_VSIR_INVALID_INDEX, "Non-NULL relative address for a TEMP register.");
 
-            if (reg->idx_count >= 1 && reg->idx[0].offset >= temp_count)
+            if (reg->idx[0].offset >= temp_count)
+            {
                 validator_error(ctx, VKD3D_SHADER_ERROR_VSIR_INVALID_INDEX, "TEMP register index %u exceeds the maximum count %u.",
                         reg->idx[0].offset, temp_count);
+                break;
+            }
+
+            /* parser->shader_desc.temp_count might be smaller then
+             * temp_count if the parser made a mistake; we still don't
+             * want to overflow the array. */
+            if (reg->idx[0].offset >= ctx->parser->shader_desc.temp_count)
+                break;
+            data = &ctx->temps[reg->idx[0].offset];
+
+            if (reg->dimension == VSIR_DIMENSION_NONE)
+            {
+                validator_error(ctx, VKD3D_SHADER_ERROR_VSIR_INVALID_DIMENSION, "Invalid dimension NONE for a TEMP register.");
+                break;
+            }
+
+            /* TEMP registers can be scalar or vec4, provided that
+             * each individual register always appears with the same
+             * dimension. */
+            if (data->dimension == VSIR_DIMENSION_NONE)
+            {
+                data->dimension = reg->dimension;
+                data->first_seen = ctx->instruction_idx;
+            }
+            else if (data->dimension != reg->dimension)
+            {
+                validator_error(ctx, VKD3D_SHADER_ERROR_VSIR_INVALID_DIMENSION, "Invalid dimension %#x for a TEMP register: "
+                        "it has already been seen with dimension %#x at instruction %zu.",
+                        reg->dimension, data->dimension, data->first_seen);
+            }
             break;
+        }
 
         case VKD3DSPR_SSA:
+        {
+            struct validation_context_ssa_data *data;
+
             if (reg->idx_count != 1)
+            {
                 validator_error(ctx, VKD3D_SHADER_ERROR_VSIR_INVALID_INDEX_COUNT, "Invalid index count %u for a SSA register.",
                         reg->idx_count);
+                break;
+            }
 
-            if (reg->idx_count >= 1 && reg->idx[0].rel_addr)
+            if (reg->idx[0].rel_addr)
                 validator_error(ctx, VKD3D_SHADER_ERROR_VSIR_INVALID_INDEX, "Non-NULL relative address for a SSA register.");
 
-            if (reg->idx_count >= 1 && reg->idx[0].offset >= ctx->parser->shader_desc.ssa_count)
+            if (reg->idx[0].offset >= ctx->parser->shader_desc.ssa_count)
+            {
                 validator_error(ctx, VKD3D_SHADER_ERROR_VSIR_INVALID_INDEX, "SSA register index %u exceeds the maximum count %u.",
                         reg->idx[0].offset, ctx->parser->shader_desc.ssa_count);
+                break;
+            }
+
+            data = &ctx->ssas[reg->idx[0].offset];
+
+            if (reg->dimension == VSIR_DIMENSION_NONE)
+            {
+                validator_error(ctx, VKD3D_SHADER_ERROR_VSIR_INVALID_DIMENSION, "Invalid dimension NONE for a SSA register.");
+                break;
+            }
+
+            /* SSA registers can be scalar or vec4, provided that each
+             * individual register always appears with the same
+             * dimension. */
+            if (data->dimension == VSIR_DIMENSION_NONE)
+            {
+                data->dimension = reg->dimension;
+                data->first_seen = ctx->instruction_idx;
+            }
+            else if (data->dimension != reg->dimension)
+            {
+                validator_error(ctx, VKD3D_SHADER_ERROR_VSIR_INVALID_DIMENSION, "Invalid dimension %#x for a SSA register: "
+                        "it has already been seen with dimension %#x at instruction %zu.",
+                        reg->dimension, data->dimension, data->first_seen);
+            }
             break;
+        }
 
         case VKD3DSPR_NULL:
             if (reg->idx_count != 0)
@@ -1688,6 +1783,23 @@ static void vsir_validate_dst_param(struct validation_context *ctx,
             validator_error(ctx, VKD3D_SHADER_ERROR_VSIR_INVALID_SHIFT, "Destination has invalid shift %#x.",
                     dst->shift);
     }
+
+    if (dst->reg.type == VKD3DSPR_SSA && dst->reg.idx[0].offset < ctx->parser->shader_desc.ssa_count)
+    {
+        struct validation_context_ssa_data *data = &ctx->ssas[dst->reg.idx[0].offset];
+
+        if (data->write_mask == 0)
+        {
+            data->write_mask = dst->write_mask;
+            data->first_assigned = ctx->instruction_idx;
+        }
+        else
+        {
+            validator_error(ctx, VKD3D_SHADER_ERROR_VSIR_INVALID_SSA_USAGE,
+                    "SSA register is already assigned at instruction %zu.",
+                    data->first_assigned);
+        }
+    }
 }
 
 static void vsir_validate_src_param(struct validation_context *ctx,
@@ -1706,6 +1818,15 @@ static void vsir_validate_src_param(struct validation_context *ctx,
     if (src->modifiers >= VKD3DSPSM_COUNT)
         validator_error(ctx, VKD3D_SHADER_ERROR_VSIR_INVALID_MODIFIERS, "Source has invalid modifiers %#x.",
                 src->modifiers);
+
+    if (src->reg.type == VKD3DSPR_SSA && src->reg.idx[0].offset < ctx->parser->shader_desc.ssa_count)
+    {
+        struct validation_context_ssa_data *data = &ctx->ssas[src->reg.idx[0].offset];
+        unsigned int i;
+
+        for (i = 0; i < VKD3D_VEC4_SIZE; ++i)
+            data->read_mask |= (1u << vsir_swizzle_get_component(src->swizzle, i));
+    }
 }
 
 static void vsir_validate_dst_count(struct validation_context *ctx,
@@ -1877,22 +1998,52 @@ static void vsir_validate_instruction(struct validation_context *ctx)
     }
 }
 
-void vsir_validate(struct vkd3d_shader_parser *parser)
+enum vkd3d_result vsir_validate(struct vkd3d_shader_parser *parser)
 {
     struct validation_context ctx =
     {
         .parser = parser,
         .phase = VKD3DSIH_INVALID,
     };
+    unsigned int i;
 
     if (!(parser->config_flags & VKD3D_SHADER_CONFIG_FLAG_FORCE_VALIDATION))
-        return;
+        return VKD3D_OK;
+
+    if (!(ctx.temps = vkd3d_calloc(parser->shader_desc.temp_count, sizeof(*ctx.temps))))
+        goto fail;
+
+    if (!(ctx.ssas = vkd3d_calloc(parser->shader_desc.ssa_count, sizeof(*ctx.ssas))))
+        goto fail;
 
     for (ctx.instruction_idx = 0; ctx.instruction_idx < parser->instructions.count; ++ctx.instruction_idx)
         vsir_validate_instruction(&ctx);
 
+    ctx.invalid_instruction_idx = true;
+
     if (ctx.depth != 0)
         validator_error(&ctx, VKD3D_SHADER_ERROR_VSIR_INVALID_INSTRUCTION_NESTING, "%zu nested blocks were not closed.", ctx.depth);
 
-    free(ctx.blocks);
+    for (i = 0; i < parser->shader_desc.ssa_count; ++i)
+    {
+        struct validation_context_ssa_data *data = &ctx.ssas[i];
+
+        if ((data->write_mask | data->read_mask) != data->write_mask)
+            validator_error(&ctx, VKD3D_SHADER_ERROR_VSIR_INVALID_SSA_USAGE,
+                    "SSA register %u has invalid read mask %#x, which is not a subset of the write mask %#x "
+                    "at the point of definition.", i, data->read_mask, data->write_mask);
+    }
+
+    vkd3d_free(ctx.blocks);
+    vkd3d_free(ctx.temps);
+    vkd3d_free(ctx.ssas);
+
+    return VKD3D_OK;
+
+fail:
+    vkd3d_free(ctx.blocks);
+    vkd3d_free(ctx.temps);
+    vkd3d_free(ctx.ssas);
+
+    return VKD3D_ERROR_OUT_OF_MEMORY;
 }
