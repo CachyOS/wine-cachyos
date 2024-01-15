@@ -821,7 +821,7 @@ static void shader_sm4_read_dcl_resource(struct vkd3d_shader_instruction *ins, u
     const uint32_t *end = &tokens[token_count];
     enum vkd3d_sm4_data_type data_type;
     enum vkd3d_data_type reg_data_type;
-    DWORD components;
+    uint32_t components;
     unsigned int i;
 
     resource_type = (opcode_token & VKD3D_SM4_RESOURCE_TYPE_MASK) >> VKD3D_SM4_RESOURCE_TYPE_SHIFT;
@@ -1759,11 +1759,11 @@ static bool shader_sm4_read_param(struct vkd3d_shader_sm4_parser *priv, const ui
     const struct vkd3d_sm4_register_type_info *register_type_info;
     enum vkd3d_shader_register_type vsir_register_type;
     enum vkd3d_sm4_register_precision precision;
+    uint32_t token, order, extended, addressing;
     enum vkd3d_sm4_register_type register_type;
     enum vkd3d_sm4_extended_operand_type type;
-    enum vkd3d_sm4_register_modifier m;
     enum vkd3d_sm4_dimension sm4_dimension;
-    uint32_t token, order, extended;
+    enum vkd3d_sm4_register_modifier m;
 
     if (*ptr >= end)
     {
@@ -1861,7 +1861,7 @@ static bool shader_sm4_read_param(struct vkd3d_shader_sm4_parser *priv, const ui
 
     if (order >= 1)
     {
-        DWORD addressing = (token & VKD3D_SM4_ADDRESSING_MASK0) >> VKD3D_SM4_ADDRESSING_SHIFT0;
+        addressing = (token & VKD3D_SM4_ADDRESSING_MASK0) >> VKD3D_SM4_ADDRESSING_SHIFT0;
         if (!(shader_sm4_read_reg_idx(priv, ptr, end, addressing, &param->idx[0])))
         {
             ERR("Failed to read register index.\n");
@@ -1871,7 +1871,7 @@ static bool shader_sm4_read_param(struct vkd3d_shader_sm4_parser *priv, const ui
 
     if (order >= 2)
     {
-        DWORD addressing = (token & VKD3D_SM4_ADDRESSING_MASK1) >> VKD3D_SM4_ADDRESSING_SHIFT1;
+        addressing = (token & VKD3D_SM4_ADDRESSING_MASK1) >> VKD3D_SM4_ADDRESSING_SHIFT1;
         if (!(shader_sm4_read_reg_idx(priv, ptr, end, addressing, &param->idx[1])))
         {
             ERR("Failed to read register index.\n");
@@ -1881,7 +1881,7 @@ static bool shader_sm4_read_param(struct vkd3d_shader_sm4_parser *priv, const ui
 
     if (order >= 3)
     {
-        DWORD addressing = (token & VKD3D_SM4_ADDRESSING_MASK2) >> VKD3D_SM4_ADDRESSING_SHIFT2;
+        addressing = (token & VKD3D_SM4_ADDRESSING_MASK2) >> VKD3D_SM4_ADDRESSING_SHIFT2;
         if (!(shader_sm4_read_reg_idx(priv, ptr, end, addressing, &param->idx[2])))
         {
             ERR("Failed to read register index.\n");
@@ -2075,7 +2075,7 @@ static bool shader_sm4_read_src_param(struct vkd3d_shader_sm4_parser *priv, cons
         const uint32_t *end, enum vkd3d_data_type data_type, struct vkd3d_shader_src_param *src_param)
 {
     unsigned int dimension, mask;
-    DWORD token;
+    uint32_t token;
 
     if (*ptr >= end)
     {
@@ -2162,7 +2162,7 @@ static bool shader_sm4_read_dst_param(struct vkd3d_shader_sm4_parser *priv, cons
     enum vkd3d_sm4_swizzle_type swizzle_type;
     enum vkd3d_shader_src_modifier modifier;
     unsigned int dimension, swizzle;
-    DWORD token;
+    uint32_t token;
 
     if (*ptr >= end)
     {
@@ -2242,7 +2242,7 @@ static bool shader_sm4_read_dst_param(struct vkd3d_shader_sm4_parser *priv, cons
     return true;
 }
 
-static void shader_sm4_read_instruction_modifier(DWORD modifier, struct vkd3d_shader_instruction *ins)
+static void shader_sm4_read_instruction_modifier(uint32_t modifier, struct vkd3d_shader_instruction *ins)
 {
     enum vkd3d_sm4_instruction_modifier modifier_type = modifier & VKD3D_SM4_MODIFIER_MASK;
 
@@ -2250,7 +2250,7 @@ static void shader_sm4_read_instruction_modifier(DWORD modifier, struct vkd3d_sh
     {
         case VKD3D_SM4_MODIFIER_AOFFIMMI:
         {
-            static const DWORD recognized_bits = VKD3D_SM4_INSTRUCTION_MODIFIER
+            static const uint32_t recognized_bits = VKD3D_SM4_INSTRUCTION_MODIFIER
                     | VKD3D_SM4_MODIFIER_MASK
                     | VKD3D_SM4_AOFFIMMI_U_MASK
                     | VKD3D_SM4_AOFFIMMI_V_MASK
@@ -2278,7 +2278,7 @@ static void shader_sm4_read_instruction_modifier(DWORD modifier, struct vkd3d_sh
 
         case VKD3D_SM5_MODIFIER_DATA_TYPE:
         {
-            DWORD components = (modifier & VKD3D_SM5_MODIFIER_DATA_TYPE_MASK) >> VKD3D_SM5_MODIFIER_DATA_TYPE_SHIFT;
+            uint32_t components = (modifier & VKD3D_SM5_MODIFIER_DATA_TYPE_MASK) >> VKD3D_SM5_MODIFIER_DATA_TYPE_SHIFT;
             unsigned int i;
 
             for (i = 0; i < VKD3D_VEC4_SIZE; i++)
@@ -2334,9 +2334,9 @@ static void shader_sm4_read_instruction(struct vkd3d_shader_sm4_parser *sm4, str
     struct vkd3d_shader_src_param *src_params;
     const uint32_t **ptr = &sm4->ptr;
     unsigned int i, len;
-    size_t remaining;
     const uint32_t *p;
-    DWORD precise;
+    uint32_t precise;
+    size_t remaining;
 
     if (*ptr >= sm4->end)
     {
