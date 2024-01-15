@@ -216,6 +216,7 @@ enum vkd3d_shader_error
     VKD3D_SHADER_ERROR_VSIR_INVALID_DCL_TEMPS           = 9014,
     VKD3D_SHADER_ERROR_VSIR_INVALID_INDEX               = 9015,
     VKD3D_SHADER_ERROR_VSIR_INVALID_INSTRUCTION_NESTING = 9016,
+    VKD3D_SHADER_ERROR_VSIR_INVALID_SSA_USAGE           = 9017,
 
     VKD3D_SHADER_WARNING_VSIR_DYNAMIC_DESCRIPTOR_ARRAY  = 9300,
 };
@@ -1450,7 +1451,7 @@ int preproc_lexer_parse(const struct vkd3d_shader_compile_info *compile_info,
 int hlsl_compile_shader(const struct vkd3d_shader_code *hlsl, const struct vkd3d_shader_compile_info *compile_info,
         struct vkd3d_shader_code *out, struct vkd3d_shader_message_context *message_context);
 
-void vsir_validate(struct vkd3d_shader_parser *parser);
+enum vkd3d_result vsir_validate(struct vkd3d_shader_parser *parser);
 
 static inline enum vkd3d_shader_component_type vkd3d_component_type_from_data_type(
         enum vkd3d_data_type data_type)
