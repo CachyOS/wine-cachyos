@@ -1000,6 +1000,9 @@ This is an error since --enable-archs=$wine_arch was requested.])])
     WINE_TRY_PE_CFLAGS([-Wno-misleading-indentation],
                        [AS_VAR_APPEND([MSHTML_CFLAGS],[" -Wno-misleading-indentation"])])
 
+    dnl GCC can't handle large files when -Wmisleading-indentation is enabled (https://gcc.gnu.org/bugzilla/show_bug.cgi?id=89549)
+    WINE_TRY_PE_CFLAGS([-flarge-source-files -Wmisleading-indentation],[AS_VAR_APPEND(${wine_arch}_EXTRACFLAGS,[" -Wno-misleading-indentation"])])
+
     case $wine_arch in
       i386) WINE_TRY_PE_CFLAGS([-fno-omit-frame-pointer])
             WINE_TRY_PE_CFLAGS([-mstack-alignment=4])
@@ -1934,6 +1937,9 @@ then
   WINE_TRY_CFLAGS([-Wunused-but-set-parameter])
   WINE_TRY_CFLAGS([-Wvla])
   WINE_TRY_CFLAGS([-Wwrite-strings])
+
+  dnl GCC can't handle large files when -Wmisleading-indentation is enabled (https://gcc.gnu.org/bugzilla/show_bug.cgi?id=89549)
+  WINE_TRY_CFLAGS([-flarge-source-files -Wmisleading-indentation],[EXTRACFLAGS="$EXTRACFLAGS -Wno-misleading-indentation"])
 
   dnl Check for noisy string.h
   WINE_TRY_CFLAGS([-Wpointer-arith],
