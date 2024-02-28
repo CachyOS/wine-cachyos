@@ -710,6 +710,7 @@ extern void *uri_list_to_drop_files( const void *data, size_t size, size_t *ret_
 extern BOOL fs_hack_enabled( HMONITOR monitor );
 extern BOOL fs_hack_mapping_required( HMONITOR monitor );
 extern BOOL fs_hack_is_integer(void);
+extern BOOL fs_hack_is_fsr(float *sharpness);
 extern HMONITOR fs_hack_monitor_from_hwnd( HWND hwnd );
 extern HMONITOR fs_hack_monitor_from_rect( const RECT *rect );
 extern BOOL fs_hack_is_window_rect_fullscreen( HMONITOR monitor, const RECT *rect );
