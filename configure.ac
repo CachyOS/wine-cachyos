@@ -52,6 +52,7 @@ AC_ARG_WITH(oss,       AS_HELP_STRING([--without-oss],[do not use the OSS sound 
 AC_ARG_WITH(pcap,      AS_HELP_STRING([--without-pcap],[do not use the Packet Capture library]),
             [if test "x$withval" = "xno"; then ac_cv_header_pcap_pcap_h=no; fi])
 AC_ARG_WITH(pcsclite,  AS_HELP_STRING([--without-pcsclite],[do not use PCSC lite]))
+AC_ARG_WITH(piper,     AS_HELP_STRING([--without-piper],[do not use the Piper TTS library]))
 AC_ARG_WITH(pthread,   AS_HELP_STRING([--without-pthread],[do not use the pthread library]))
 AC_ARG_WITH(pulse,     AS_HELP_STRING([--without-pulse],[do not use PulseAudio sound support]))
 AC_ARG_WITH(sane,      AS_HELP_STRING([--without-sane],[do not use SANE (scanner support)]))
@@ -1909,6 +1910,18 @@ fi
 WINE_NOTICE_WITH(gcrypt,[test "x$ac_cv_lib_soname_gcrypt" = "x"],
                  [libgcrypt ${notice_platform}development files not found, GCRYPT won't be supported.])
 
+dnl **** Check for libpiper ****
+if test "x$with_piper" != "xno"
+then
+    WINE_PACKAGE_FLAGS(PIPER,[piper],[-lpiper],,,
+        [AC_CHECK_HEADER(piper/piper_c.h,
+            [AC_CHECK_LIB(piper,piperInitialize,[:],[PIPER_LIBS=""],[$PIPER_LIBS])],
+            [PIPER_LIBS=""])])
+fi
+WINE_NOTICE_WITH(piper,[test "$ac_cv_lib_piper_piperInitialize" != "yes"],
+                 [libpiper ${notice_platform}development files not found, protontts won't be supported.],
+                 [enable_protontts])
+
 dnl **** Check for gcc specific options ****
 
 if test "x${GCC}" = "xyes"
@@ -3033,6 +3046,7 @@ WINE_CONFIG_MAKEFILE(dlls/prntvpt)
 WINE_CONFIG_MAKEFILE(dlls/prntvpt/tests)
 WINE_CONFIG_MAKEFILE(dlls/propsys)
 WINE_CONFIG_MAKEFILE(dlls/propsys/tests)
+WINE_CONFIG_MAKEFILE(dlls/protontts)
 WINE_CONFIG_MAKEFILE(dlls/psapi)
 WINE_CONFIG_MAKEFILE(dlls/psapi/tests)
 WINE_CONFIG_MAKEFILE(dlls/pstorec)
