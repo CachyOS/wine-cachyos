@@ -2508,7 +2508,6 @@ void WINAPI RtlSetLastWin32Error( DWORD err )
  */
 NTSTATUS WINAPI __wine_set_unix_env( const char *var, const char *val )
 {
-    if (!val) unsetenv(var);
-    else setenv(var, val, 1);
+    setenv(var, val, 1);
     return 0;
 }
