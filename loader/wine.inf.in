@@ -98,8 +98,7 @@ AddReg=\
     VersionInfo,\
     LicenseInformation,\
     NVIDIANGX, \
-    ProtonOverrides,\
-    SteamClient
+    ProtonOverrides
 
 [DefaultInstall.ntamd64]
 RegisterDlls=RegisterDllsSection
@@ -127,9 +126,7 @@ AddReg=\
     VersionInfo,\
     LicenseInformation,\
     NVIDIANGX, \
-    TTS, \
-    ProtonOverrides,\
-    SteamClient.ntamd64
+    ProtonOverrides
 
 [DefaultInstall.ntarm64]
 RegisterDlls=RegisterDllsSection
@@ -173,8 +170,7 @@ AddReg=\
     VersionInfo,\
     LicenseInformation,\
     NVIDIANGX, \
-    ProtonOverrides,\
-    SteamClient.ntamd64
+    ProtonOverrides
 
 [Wow64Install.ntarm]
 RegisterDlls=RegisterDllsSection
@@ -351,7 +347,6 @@ HKCR,ftp\shell\open\command,,2,"""%11%\winebrowser.exe"" ""%1"""
 HKCR,http\shell\open\command,,2,"""%11%\winebrowser.exe"" ""%1"""
 HKCR,https\shell\open\command,,2,"""%11%\winebrowser.exe"" ""%1"""
 HKCR,mailto\shell\open\command,,2,"""%11%\winebrowser.exe"" ""%1"""
-HKCR,steam\shell\open\command,,,"""%16426%\Steam\Steam.exe"" -- ""%1"""
 
 [ContentIndex]
 HKLM,System\CurrentControlSet\Control\ContentIndex\Language\Neutral,"WBreakerClass",,"{369647e0-17b0-11ce-9950-00aa004bbb1f}"
@@ -466,7 +461,6 @@ HKLM,%CurrentVersionNT%\AeDebug,"Debugger",2,"winedbg --auto %ld %ld"
 HKLM,%CurrentVersionNT%\AeDebug,"Auto",2,"1"
 HKCU,Software\Wine\Debug,"RelayExclude",2,"ntdll.RtlEnterCriticalSection;ntdll.RtlTryEnterCriticalSection;ntdll.RtlLeaveCriticalSection;kernel32.48;kernel32.49;kernel32.94;kernel32.95;kernel32.96;kernel32.97;kernel32.98;kernel32.TlsGetValue;kernel32.TlsSetValue;kernel32.FlsGetValue;kernel32.FlsSetValue;kernel32.SetLastError"
 HKCU,Software\Wine\Debug,"RelayFromExclude",2,"winex11.drv;winemac.drv;user32;gdi32;advapi32;kernel32"
-HKCU,Software\Wine\WineDbg,"ShowCrashDialog",0x00010003,0x00000000
 
 [DirectX]
 HKLM,Software\Microsoft\DirectX,"Version",,"4.09.00.0904"
@@ -2584,6 +2578,7 @@ StartType=3
 ErrorControl=1
 
 [Services]
+HKLM,%CurrentVersion%\RunServices,"winemenubuilder",2,"%11%\winemenubuilder.exe -a -r"
 HKLM,"System\CurrentControlSet\Services\Eventlog\Application",,16
 HKLM,"System\CurrentControlSet\Services\Eventlog\System","Sources",0x10000,""
 HKLM,"System\CurrentControlSet\Services\Tcpip\Parameters","DataBasePath",,"%12%\etc"
@@ -2797,64 +2792,8 @@ InfFiles  = 17
 NlsFiles  = 11
 SortFiles = 10,globalization\sorting
 
-[SteamClient]
-HKCU,Software\Valve\Steam,"SteamPath",,"%16422%\Steam"
-HKCU,Software\Valve\Steam,"SteamExe",,"%16422%\Steam\Steam.exe"
-HKCU,Software\Valve\Steam\ActiveProcess,"PID",0x10001,0x0000fffe
-HKCU,Software\Valve\Steam\ActiveProcess,"SteamClientDll",,"%16422%\Steam\steamclient.dll"
-HKCU,Software\Valve\Steam\ActiveProcess,"SteamPath",,"%16422%\Steam"
-
-[SteamClient.ntamd64]
-HKCU,Software\Valve\Steam,"SteamPath",,"%16422%\Steam"
-HKCU,Software\Valve\Steam,"SteamExe",,"%16422%\Steam\Steam.exe"
-HKCU,Software\Valve\Steam\ActiveProcess,"PID",0x10001,0x0000fffe
-HKCU,Software\Valve\Steam\ActiveProcess,"SteamClientDll",,"%16426%\Steam\steamclient.dll"
-HKCU,Software\Valve\Steam\ActiveProcess,"SteamClientDll64",,"%16426%\Steam\steamclient64.dll"
-HKCU,Software\Valve\Steam\ActiveProcess,"SteamPath",,"%16426%\Steam"
-HKLM,Software\Wow6432Node\Valve\Steam,"InstallPath",,"%16422%\Steam"
-
 [NVIDIANGX]
 HKLM,Software\NVIDIA Corporation\Global\NGXCore,"FullPath",,"C:\Windows\System32"
-
-[TTS]
-HKLM,Software\Microsoft\Speech\Voices,"DefaultDefaultTokenId",,"HKEY_LOCAL_MACHINE\Software\Microsoft\Speech\Voices\Tokens\ProtonTTS_libritts-r_3"
-HKLM,Software\Microsoft\Speech\Voices\Tokens\ProtonTTS_libritts-r_3,,,"Proton Voice - English (United States) - libritts-r 3"
-HKLM,Software\Microsoft\Speech\Voices\Tokens\ProtonTTS_libritts-r_3,"409",,"Proton Voice - English (United States) - libritts-r 3"
-HKLM,Software\Microsoft\Speech\Voices\Tokens\ProtonTTS_libritts-r_3,"CLSID",,"{52808AE1-D977-4CD8-92D2-FEACB92FE276}"
-HKLM,Software\Microsoft\Speech\Voices\Tokens\ProtonTTS_libritts-r_3,"LengthScale",,"1.4"
-HKLM,Software\Microsoft\Speech\Voices\Tokens\ProtonTTS_libritts-r_3,"ModelPath",,"en_US-libritts_r-medium.onnx"
-HKLM,Software\Microsoft\Speech\Voices\Tokens\ProtonTTS_libritts-r_3,"SpeakerID",,"3"
-HKLM,Software\Microsoft\Speech\Voices\Tokens\ProtonTTS_libritts-r_3\Attributes,"Language",,"409"
-HKLM,Software\Microsoft\Speech\Voices\Tokens\ProtonTTS_libritts-r_3\Attributes,"Gender",,"Male"
-HKLM,Software\Microsoft\Speech\Voices\Tokens\ProtonTTS_libritts-r_3\Attributes,"Vendor",,"Wine"
-HKLM,Software\Microsoft\Speech\Voices\Tokens\ProtonTTS_libritts-r_14,,,"Proton Voice - English (United States) - libritts-r 14"
-HKLM,Software\Microsoft\Speech\Voices\Tokens\ProtonTTS_libritts-r_14,"409",,"Proton Voice - English (United States) - libritts-r 14"
-HKLM,Software\Microsoft\Speech\Voices\Tokens\ProtonTTS_libritts-r_14,"CLSID",,"{52808AE1-D977-4CD8-92D2-FEACB92FE276}"
-HKLM,Software\Microsoft\Speech\Voices\Tokens\ProtonTTS_libritts-r_14,"LengthScale",,"1.4"
-HKLM,Software\Microsoft\Speech\Voices\Tokens\ProtonTTS_libritts-r_14,"ModelPath",,"en_US-libritts_r-medium.onnx"
-HKLM,Software\Microsoft\Speech\Voices\Tokens\ProtonTTS_libritts-r_14,"SpeakerID",,"14"
-HKLM,Software\Microsoft\Speech\Voices\Tokens\ProtonTTS_libritts-r_14\Attributes,"Language",,"409"
-HKLM,Software\Microsoft\Speech\Voices\Tokens\ProtonTTS_libritts-r_14\Attributes,"Gender",,"Female"
-HKLM,Software\Microsoft\Speech\Voices\Tokens\ProtonTTS_libritts-r_14\Attributes,"Vendor",,"Wine"
-HKLM,Software\Microsoft\Speech_OneCore\Voices,"DefaultDefaultTokenId",,"HKEY_LOCAL_MACHINE\Software\Microsoft\Speech_OneCore\Voices\Tokens\ProtonTTS_libritts-r_3"
-HKLM,Software\Microsoft\Speech_OneCore\Voices\Tokens\ProtonTTS_libritts-r_3,,,"Proton Voice - English (United States) - libritts-r 3"
-HKLM,Software\Microsoft\Speech_OneCore\Voices\Tokens\ProtonTTS_libritts-r_3,"409",,"Proton Voice - English (United States) - libritts-r 3"
-HKLM,Software\Microsoft\Speech_OneCore\Voices\Tokens\ProtonTTS_libritts-r_3,"CLSID",,"{52808AE1-D977-4CD8-92D2-FEACB92FE276}"
-HKLM,Software\Microsoft\Speech_OneCore\Voices\Tokens\ProtonTTS_libritts-r_3,"LengthScale",,"1.4"
-HKLM,Software\Microsoft\Speech_OneCore\Voices\Tokens\ProtonTTS_libritts-r_3,"ModelPath",,"en_US-libritts_r-medium.onnx"
-HKLM,Software\Microsoft\Speech_OneCore\Voices\Tokens\ProtonTTS_libritts-r_3,"SpeakerID",,"3"
-HKLM,Software\Microsoft\Speech_OneCore\Voices\Tokens\ProtonTTS_libritts-r_3\Attributes,"Language",,"409"
-HKLM,Software\Microsoft\Speech_OneCore\Voices\Tokens\ProtonTTS_libritts-r_3\Attributes,"Gender",,"Male"
-HKLM,Software\Microsoft\Speech_OneCore\Voices\Tokens\ProtonTTS_libritts-r_3\Attributes,"Vendor",,"Wine"
-HKLM,Software\Microsoft\Speech_OneCore\Voices\Tokens\ProtonTTS_libritts-r_14,,,"Proton Voice - English (United States) - libritts-r 14"
-HKLM,Software\Microsoft\Speech_OneCore\Voices\Tokens\ProtonTTS_libritts-r_14,"409",,"Proton Voice - English (United States) - libritts-r 14"
-HKLM,Software\Microsoft\Speech_OneCore\Voices\Tokens\ProtonTTS_libritts-r_14,"CLSID",,"{52808AE1-D977-4CD8-92D2-FEACB92FE276}"
-HKLM,Software\Microsoft\Speech_OneCore\Voices\Tokens\ProtonTTS_libritts-r_14,"LengthScale",,"1.4"
-HKLM,Software\Microsoft\Speech_OneCore\Voices\Tokens\ProtonTTS_libritts-r_14,"ModelPath",,"en_US-libritts_r-medium.onnx"
-HKLM,Software\Microsoft\Speech_OneCore\Voices\Tokens\ProtonTTS_libritts-r_14,"SpeakerID",,"14"
-HKLM,Software\Microsoft\Speech_OneCore\Voices\Tokens\ProtonTTS_libritts-r_14\Attributes,"Language",,"409"
-HKLM,Software\Microsoft\Speech_OneCore\Voices\Tokens\ProtonTTS_libritts-r_14\Attributes,"Gender",,"Female"
-HKLM,Software\Microsoft\Speech_OneCore\Voices\Tokens\ProtonTTS_libritts-r_14\Attributes,"Vendor",,"Wine"
 
 [ProtonOverrides]
 HKLM,Software\Khronos\OpenXR\1,"ActiveRuntime",,"C:\openxr\wineopenxr64.json"
