@@ -21,6 +21,7 @@
 #include "config.h"
 
 #include <assert.h>
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -124,21 +125,34 @@ static enum server_fd_type inproc_sync_get_fd_type( struct fd *fd )
 static struct linux_device *get_linux_device(void)
 {
     struct linux_device *device;
+    static int initialized;
     int unix_fd;
+
+    if (initialized)
+    {
+        if (linux_device_object)
+            grab_object( linux_device_object );
+	else
+	  set_error( STATUS_NOT_IMPLEMENTED );
+        return linux_device_object;
+    }
 
     if (getenv( "WINE_DISABLE_FAST_SYNC" ) && atoi( getenv( "WINE_DISABLE_FAST_SYNC" ) ))
     {
+      static int once;
         set_error( STATUS_NOT_IMPLEMENTED );
+	if (!once++) fprintf(stderr, "ntsync is explicitly disabled.\n");
+	initialized = 1;
         return NULL;
     }
-
-    if (linux_device_object)
-        return (struct linux_device *)grab_object( linux_device_object );
 
     unix_fd = open( "/dev/ntsync", O_CLOEXEC | O_RDONLY );
     if (unix_fd == -1)
     {
+      static int once;
         file_set_error();
+	if (!once++) fprintf(stderr, "Cannot open /dev/ntsync: %s\n", strerror(errno));
+	initialized = 1;
         return NULL;
     }
 
@@ -146,17 +160,20 @@ static struct linux_device *get_linux_device(void)
     {
         close( unix_fd );
         set_error( STATUS_NO_MEMORY );
+	initialized = 1;
         return NULL;
     }
 
     if (!(device->fd = create_anonymous_fd( &inproc_sync_fd_ops, unix_fd, &device->obj, 0 )))
     {
         release_object( device );
+	initialized = 1;
         return NULL;
     }
 
     fprintf( stderr, "wine: using fast synchronization.\n" );
     linux_device_object = device;
+    initialized = 1;
     return device;
 }
 
