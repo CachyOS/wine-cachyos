@@ -1060,8 +1060,17 @@ static void set_initial_wm_hints( Display *display, Window window )
     /* class hints */
     if ((class_hints = XAllocClassHint()))
     {
-        class_hints->res_name = process_name;
-        class_hints->res_class = process_name;
+        const char *wine_wmclass = getenv("WINE_WMCLASS");
+        char window_class[128];
+
+        if (wine_wmclass && *wine_wmclass){
+            snprintf(window_class, sizeof(window_class), "%s", wine_wmclass);
+            class_hints->res_name = window_class;
+            class_hints->res_class = window_class;
+        } else {
+            class_hints->res_name = process_name;
+            class_hints->res_class = process_name;
+        }
         XSetClassHint( display, window, class_hints );
         XFree( class_hints );
     }
