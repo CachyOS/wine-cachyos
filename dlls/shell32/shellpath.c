@@ -3015,7 +3015,12 @@ HRESULT WINAPI SHGetFolderPathAndSubDirW(
 
     /* create symbolic links rather than directories for specific
      * user shell folders */
+    const WCHAR *sandbox = _wgetenv( L"WINEUSERSANDBOX" );
+    int isolate = 0;
+    isolate = sandbox && !strcmp(sandbox, "1");
+    if(!isolate) {
     _SHCreateSymbolicLink(folder, szBuildPath);
+    }
 
     /* create directory/directories */
     ret = SHCreateDirectoryExW(hwndOwner, szBuildPath, NULL);
