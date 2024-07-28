@@ -30,6 +30,8 @@
 #pragma makedep unix
 #endif
 
+#include <sys/prctl.h>
+#include <string.h>
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
 #include "win32u_private.h"
@@ -596,6 +598,38 @@ HWND get_focus(void)
 BOOL WINAPI NtUserAttachThreadInput( DWORD from, DWORD to, BOOL attach )
 {
     BOOL ret;
+    static int visited = 0;
+    static DWORD fromThreadForHack = 0;
+    static DWORD toThreadForHack = 0;
+    static char processNameForHack[16];
+    static const char* DAIprocessName = "DragonAgeInquis";
+    static const char* DAIGameLoopName = "GameLoop";
+    const char *sgi;
+
+    prctl(PR_GET_NAME, processNameForHack);
+
+    TRACE("Process Name: %s\n", processNameForHack);
+
+    if ((sgi = getenv("SteamGameId")) && !strcmp(sgi, "1222690"))
+    {
+        if (strncmp(DAIprocessName, processNameForHack, 15) == 0 || strncmp(DAIGameLoopName, processNameForHack, 8) == 0)
+        {
+            if (!visited)
+            {
+                TRACE("First Visit Process Name: %s\n", processNameForHack);
+                fromThreadForHack = from;
+                toThreadForHack = to;
+                visited = 1;
+            }
+
+            if (from == 0 && to == 0 && visited)
+            {
+                TRACE("00 Process Name: %s\n", processNameForHack);
+                from = fromThreadForHack;
+                to = toThreadForHack;
+            }
+        }
+    }
 
     SERVER_START_REQ( attach_thread_input )
     {
