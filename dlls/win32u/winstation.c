@@ -724,7 +724,10 @@ const desktop_shm_t *get_desktop_shared_memory(void)
     if (thread_info->desktop_shm) return thread_info->desktop_shm;
 
     handles[0] = NtUserGetProcessWindowStation();
+    if (!handles[0]) return NULL;
+
     handles[1] = NtUserGetThreadDesktop( GetCurrentThreadId() );
+    if (!handles[1]) return NULL;
 
     memcpy( buf, dir_desktop_maps, wcslen(dir_desktop_maps) * sizeof(WCHAR) );
     ptr = buf + wcslen(dir_desktop_maps);
