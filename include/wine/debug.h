@@ -114,7 +114,7 @@ extern DECLSPEC_EXPORT const char * __cdecl __wine_dbg_strdup( const char *str )
 extern DECLSPEC_EXPORT int __cdecl __wine_dbg_output( const char *str );
 extern DECLSPEC_EXPORT int __cdecl __wine_dbg_header( enum __wine_debug_class cls, struct __wine_debug_channel *channel,
                                                       const char *function );
-extern unsigned int WINAPI __wine_dbg_ftrace( char *str, unsigned int str_size, unsigned int ctx );
+extern DECLSPEC_EXPORT unsigned int WINAPI __wine_dbg_ftrace( char *str, unsigned int str_size, unsigned int ctx );
 
 /*
  * Exported definitions and macros
