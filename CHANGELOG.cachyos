@@ -1,6 +1,8 @@
 # Changelog
 
 ## Version 9.0-20241115
+* Wine
+  - rebase-only
 * Proton
   - dropped: (in-upstream) Revert "gdi32: Add stub for D3DKMTEnumAdapters2()."
   - dropped: (in-upstream) gdi32,win32u,winex11: Implement D3DKMTEnumAdapters2.
@@ -11,18 +13,24 @@
 --
 
 ## Version 9.0-20241031
+* Wine
+  - rebase-only
 * Proton
   - rebase-only
 
 --
 
 ## Version 9.0-20240928
+* Wine
+  - rebase-only
 * Proton
   -   added: ntdll: Downgrade 'using kernel write watches' from MESSAGE to TRACE.
 
 --
 
 ## Version 9.0-20240918
+* Wine
+  - rebase-only
 * Proton
   - removed: (staging) d3dx11_43-D3DX11CreateTextureFromMemory
   - removed: (staging) d3dx9_36-BumpLuminance
@@ -36,6 +44,8 @@
 ---
 
 ## Version 9.0-20240905
+* Wine
+  - removed: Revert "fastsync: Implement fastsync synchronization (winesync)"
 * Proton
   - removed: fastsync: Implement fastsync synchronization (winesync)
   - added: ntdll: fix compilation with link-time optimizations
