@@ -1,0 +1,41 @@
+# Changelog
+
+## Version 9.0-20241115
+* Proton
+  - dropped: (in-upstream) Revert "gdi32: Add stub for D3DKMTEnumAdapters2()."
+  - dropped: (in-upstream) gdi32,win32u,winex11: Implement D3DKMTEnumAdapters2.
+  - dropped: (in-upstream) win32u: Allow faking HAGS in QueryAdapterInfo.
+  - removed: (in-pkgbuild) server: Enable link-time optimization.
+  -   added: winex11.drv: disable wm decorations by default
+
+--
+
+## Version 9.0-20241031
+* Proton
+  - rebase-only
+
+--
+
+## Version 9.0-20240928
+* Proton
+  -   added: ntdll: Downgrade 'using kernel write watches' from MESSAGE to TRACE.
+
+--
+
+## Version 9.0-20240918
+* Proton
+  - removed: (staging) d3dx11_43-D3DX11CreateTextureFromMemory
+  - removed: (staging) d3dx9_36-BumpLuminance
+  - removed: (staging) shell32-SHFileOperation_Move
+  - removed: (staging) shell32-registry-lookup-app
+  - dropped: (in-upstream) include: Add TCP_KEEPCNT and TCP_KEEPINTVL definitions.
+  - dropped: (in-upstream) include: ws2_32: Implement TCP_KEEP{ALIVE,CNT,INTVL} options.
+  -   added: gdi32,win32u,winex11: Implement D3DKMTEnumAdapters2.
+  -   added: win32u: Allow faking HAGS in QueryAdapterInfo.
+
+---
+
+## Version 9.0-20240905
+* Proton
+  - removed: fastsync: Implement fastsync synchronization (winesync)
+  - added: ntdll: fix compilation with link-time optimizations
