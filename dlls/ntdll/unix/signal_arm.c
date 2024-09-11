@@ -1631,7 +1631,7 @@ void signal_init_process(void)
 /***********************************************************************
  *           call_init_thunk
  */
-void call_init_thunk( LPTHREAD_START_ROUTINE entry, void *arg, BOOL suspend, TEB *teb,
+__attribute__((used)) void call_init_thunk( LPTHREAD_START_ROUTINE entry, void *arg, BOOL suspend, TEB *teb,
                       struct syscall_frame *frame, void *syscall_cfa )
 {
     struct arm_thread_data *thread_data = (struct arm_thread_data *)&teb->GdiTebBatch;

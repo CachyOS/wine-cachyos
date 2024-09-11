@@ -183,7 +183,7 @@ void __bb_init_func(void) { return; }
 
 /* data for setting up the glibc-style thread-local storage in %gs */
 
-static int thread_data[256];
+static int thread_data[256] __attribute__((used));
 
 struct
 {
@@ -198,7 +198,7 @@ struct
     unsigned int  seg_not_present : 1;
     unsigned int  usable : 1;
     unsigned int  garbage : 25;
-} thread_ldt = { -1, (unsigned long)thread_data, 0xfffff, 1, 0, 0, 1, 0, 1, 0 };
+} thread_ldt __attribute__((used)) = { -1, (unsigned long)thread_data, 0xfffff, 1, 0, 0, 1, 0, 1, 0 };
 
 
 /*
@@ -337,7 +337,7 @@ static inline int wld_prctl( int code, long arg )
 
 #elif defined(__x86_64__)
 
-void *thread_data[256];
+void *thread_data[256] __attribute__((used));
 
 /*
  * The _start function is the entry and exit point of this program
@@ -426,7 +426,7 @@ SYSCALL_NOERR( wld_getegid, 108 /* SYS_getegid */ );
 
 #elif defined(__aarch64__)
 
-void *thread_data[256];
+void *thread_data[256] __attribute__((used));
 
 /*
  * The _start function is the entry and exit point of this program
@@ -1432,7 +1432,7 @@ static void init_r_debug( struct wld_auxv *av )
  *  Load the binary and then its ELF interpreter.
  *  Note, we assume that the binary is a dynamically linked ELF shared object.
  */
-void* wld_start( void **stack )
+__attribute__((used)) void* wld_start( void **stack )
 {
     long i, *pargc;
     char **argv, **p;
