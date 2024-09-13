@@ -1266,6 +1266,243 @@ static void release_display_device_init_mutex(HANDLE mutex)
     NtClose( mutex );
 }
 
+/* Find the Vulkan device LUID corresponding to a GUID */
+static BOOL get_vulkan_luid_from_uuid( const GUID *uuid, LUID *luid )
+{
+    static const WCHAR class_guidW[] = {'C','l','a','s','s','G','U','I','D',0};
+    static const WCHAR devpropkey_gpu_vulkan_uuidW[] =
+    {
+        'P','r','o','p','e','r','t','i','e','s',
+        '\\','{','2','3','3','A','9','E','F','3','-','A','F','C','4','-','4','A','B','D',
+        '-','B','5','6','4','-','C','3','2','F','2','1','F','1','5','3','5','C','}',
+        '\\','0','0','0','2'
+    };
+    static const WCHAR devpropkey_gpu_luidW[] =
+    {
+        'P','r','o','p','e','r','t','i','e','s',
+        '\\','{','6','0','B','1','9','3','C','B','-','5','2','7','6','-','4','D','0','F',
+        '-','9','6','F','C','-','F','1','7','3','A','B','A','D','3','E','C','6','}',
+        '\\','0','0','0','2'
+    };
+    static const WCHAR guid_devclass_displayW[] =
+        {'{','4','D','3','6','E','9','6','8','-','E','3','2','5','-','1','1','C','E','-',
+         'B','F','C','1','-','0','8','0','0','2','B','E','1','0','3','1','8','}',0};
+    static const WCHAR pci_keyW[] =
+    {
+        '\\','R','e','g','i','s','t','r','y',
+        '\\','M','a','c','h','i','n','e',
+        '\\','S','y','s','t','e','m',
+        '\\','C','u','r','r','e','n','t','C','o','n','t','r','o','l','S','e','t',
+        '\\','E','n','u','m',
+        '\\','P','C','I'
+    };
+    char buffer[4096];
+    KEY_VALUE_PARTIAL_INFORMATION *value = (void *)buffer;
+    HKEY subkey, device_key, prop_key, pci_key;
+    KEY_NODE_INFORMATION *key = (void *)buffer;
+    DWORD size, i = 0;
+    HANDLE mutex;
+
+    mutex = get_display_device_init_mutex();
+
+    pci_key = reg_open_key(NULL, pci_keyW, sizeof(pci_keyW));
+    while (!NtEnumerateKey(pci_key, i++, KeyNodeInformation, key, sizeof(buffer), &size))
+    {
+        unsigned int j = 0;
+
+        if (!(subkey = reg_open_key(pci_key, key->Name, key->NameLength)))
+            continue;
+
+        while (!NtEnumerateKey(subkey, j++, KeyNodeInformation, key, sizeof(buffer), &size))
+        {
+            if (!(device_key = reg_open_key(subkey, key->Name, key->NameLength)))
+                continue;
+
+            size = query_reg_value(device_key, class_guidW, value, sizeof(buffer));
+            if (size != sizeof(guid_devclass_displayW) ||
+                wcscmp((WCHAR *)value->Data, guid_devclass_displayW))
+            {
+                NtClose(device_key);
+                continue;
+            }
+
+            if (!(prop_key = reg_open_key(device_key, devpropkey_gpu_vulkan_uuidW,
+                                          sizeof(devpropkey_gpu_vulkan_uuidW))))
+            {
+                NtClose(device_key);
+                continue;
+            }
+
+            size = query_reg_value(prop_key, NULL, value, sizeof(buffer));
+            NtClose(prop_key);
+            if (size != sizeof(GUID) || memcmp(value->Data, uuid, sizeof(GUID)))
+            {
+                NtClose(device_key);
+                continue;
+            }
+
+            if (!(prop_key = reg_open_key(device_key, devpropkey_gpu_luidW,
+                                          sizeof(devpropkey_gpu_luidW))))
+            {
+                NtClose(device_key);
+                continue;
+            }
+
+            size = query_reg_value(prop_key, NULL, value, sizeof(buffer));
+            NtClose(prop_key);
+            if (size != sizeof(LUID))
+            {
+                NtClose(device_key);
+                continue;
+            }
+
+            *luid = *(const LUID *)value->Data;
+            NtClose(device_key);
+            NtClose(subkey);
+            NtClose(pci_key);
+            release_display_device_init_mutex(mutex);
+            return TRUE;
+        }
+        NtClose(subkey);
+    }
+    NtClose(pci_key);
+
+    release_display_device_init_mutex(mutex);
+    return FALSE;
+}
+
+NTSTATUS X11DRV_D3DKMTEnumAdapters2( D3DKMT_ENUMADAPTERS2 *desc )
+{
+    static const char *extensions[] =
+    {
+        VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME,
+    };
+    const struct vulkan_funcs *vulkan_funcs;
+    PFN_vkGetPhysicalDeviceProperties2KHR pvkGetPhysicalDeviceProperties2KHR;
+    PFN_vkEnumeratePhysicalDevices pvkEnumeratePhysicalDevices;
+    VkPhysicalDevice *vk_physical_devices = NULL;
+    VkPhysicalDeviceProperties2 properties2;
+    NTSTATUS status = STATUS_UNSUCCESSFUL;
+    UINT device_count = 0, device_idx = 0;
+    struct x11_d3dkmt_adapter *adapter;
+    VkInstanceCreateInfo create_info;
+    VkPhysicalDeviceIDProperties id;
+    VkResult vr;
+    LUID luid;
+
+    if (!(vulkan_funcs = get_vulkan_driver(WINE_VULKAN_DRIVER_VERSION)))
+    {
+        WARN("Vulkan is unavailable.\n");
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    pthread_mutex_lock(&d3dkmt_mutex);
+
+    if (!d3dkmt_vk_instance)
+    {
+        memset(&create_info, 0, sizeof(create_info));
+        create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+        create_info.enabledExtensionCount = ARRAY_SIZE(extensions);
+        create_info.ppEnabledExtensionNames = extensions;
+
+        vr = vulkan_funcs->p_vkCreateInstance(&create_info, NULL, &d3dkmt_vk_instance);
+        if (vr != VK_SUCCESS)
+        {
+            WARN("Failed to create a Vulkan instance, vr %d.\n", vr);
+            goto done;
+        }
+    }
+
+#define LOAD_VK_FUNC(f)                                                                  \
+    if (!(p##f = (void *)vulkan_funcs->p_vkGetInstanceProcAddr(d3dkmt_vk_instance, #f))) \
+    {                                                                                    \
+        WARN("Failed to load " #f ".\n");                                                \
+        goto done;                                                                       \
+    }
+
+    LOAD_VK_FUNC(vkEnumeratePhysicalDevices)
+    LOAD_VK_FUNC(vkGetPhysicalDeviceProperties2KHR)
+#undef LOAD_VK_FUNC
+
+    vr = pvkEnumeratePhysicalDevices(d3dkmt_vk_instance, &device_count, NULL);
+    if (vr != VK_SUCCESS || !device_count)
+    {
+        WARN("No Vulkan device found, vr %d, device_count %d.\n", vr, device_count);
+        goto done;
+    }
+
+    if (!desc->pAdapters)
+    {
+        status = STATUS_SUCCESS;
+        goto done;
+    }
+    else if (desc->NumAdapters < device_count)
+    {
+        status = STATUS_BUFFER_TOO_SMALL;
+        goto done;
+    }
+
+    if (!(vk_physical_devices = calloc(device_count, sizeof(*vk_physical_devices))))
+    {
+        status = STATUS_NO_MEMORY;
+        goto done;
+    }
+
+    vr = pvkEnumeratePhysicalDevices(d3dkmt_vk_instance, &device_count, vk_physical_devices);
+    if (vr != VK_SUCCESS)
+    {
+        WARN("vkEnumeratePhysicalDevices failed, vr %d.\n", vr);
+        goto done;
+    }
+
+    for (device_idx = 0; device_idx < device_count; ++device_idx)
+    {
+        memset(&id, 0, sizeof(id));
+        id.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
+        properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        properties2.pNext = &id;
+
+        pvkGetPhysicalDeviceProperties2KHR(vk_physical_devices[device_idx], &properties2);
+
+        if (!(adapter = malloc(sizeof(*adapter))))
+        {
+            status = STATUS_NO_MEMORY;
+            goto done;
+        }
+
+        adapter->handle = desc->pAdapters[device_idx].hAdapter;
+        adapter->vk_device = vk_physical_devices[device_idx];
+        list_add_tail(&x11_d3dkmt_adapters, &adapter->entry);
+
+        if (get_vulkan_luid_from_uuid((const GUID *)id.deviceUUID, &luid))
+        {
+            memcpy(&desc->pAdapters[device_idx].AdapterLuid, &luid, sizeof(LUID));
+        }
+        else
+        {
+            WARN("get_vulkan_luid_from_uuid failed, AdapterLuid will remain empty.\n");
+            memset(&desc->pAdapters[device_idx].AdapterLuid, 0, sizeof(LUID));
+        }
+
+        desc->pAdapters[device_idx].NumOfSources = 1;
+        desc->pAdapters[device_idx].bPrecisePresentRegionsPreferred = FALSE;
+    }
+
+    status = STATUS_SUCCESS;
+
+done:
+    desc->NumAdapters = device_count;
+    if (d3dkmt_vk_instance && list_empty(&x11_d3dkmt_adapters))
+    {
+        vulkan_funcs->p_vkDestroyInstance(d3dkmt_vk_instance, NULL);
+        d3dkmt_vk_instance = NULL;
+    }
+    pthread_mutex_unlock(&d3dkmt_mutex);
+    free(vk_physical_devices);
+    return status;
+}
+
 /* Find the Vulkan device UUID corresponding to a LUID */
 static BOOL get_vulkan_uuid_from_luid( const LUID *luid, GUID *uuid )
 {

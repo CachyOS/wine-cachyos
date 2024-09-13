@@ -709,6 +709,7 @@ const struct gdi_dc_funcs dib_driver =
     NULL,                               /* pUnrealizePalette */
     NULL,                               /* pD3DKMTCheckVidPnExclusiveOwnership */
     NULL,                               /* pD3DKMTCloseAdapter */
+    NULL,                               /* pD3DKMTEnumAdapters2 */
     NULL,                               /* pD3DKMTOpenAdapterFromLuid */
     NULL,                               /* pD3DKMTQueryVideoMemoryInfo */
     NULL,                               /* pD3DKMTSetVidPnSourceOwner */
@@ -1270,6 +1271,7 @@ static const struct gdi_dc_funcs window_driver =
     NULL,                               /* pUnrealizePalette */
     NULL,                               /* pD3DKMTCheckVidPnExclusiveOwnership */
     NULL,                               /* pD3DKMTCloseAdapter */
+    NULL,                               /* pD3DKMTEnumAdapters2 */
     NULL,                               /* pD3DKMTOpenAdapterFromLuid */
     NULL,                               /* pD3DKMTQueryVideoMemoryInfo */
     NULL,                               /* pD3DKMTSetVidPnSourceOwner */

@@ -54,6 +54,7 @@ static struct user_driver_funcs null_user_driver;
 
 static struct list d3dkmt_adapters = LIST_INIT( d3dkmt_adapters );
 static struct list d3dkmt_devices = LIST_INIT( d3dkmt_devices );
+static D3DKMT_HANDLE handle_start = 0;
 
 static pthread_mutex_t driver_lock = PTHREAD_MUTEX_INITIALIZER;
 static WCHAR driver_load_error[80];
@@ -549,6 +550,11 @@ static NTSTATUS nulldrv_D3DKMTCloseAdapter( const D3DKMT_CLOSEADAPTER *desc )
     return STATUS_PROCEDURE_NOT_FOUND;
 }
 
+static NTSTATUS nulldrv_D3DKMTEnumAdapters2( D3DKMT_ENUMADAPTERS2 *desc )
+{
+    return STATUS_PROCEDURE_NOT_FOUND;
+}
+
 static NTSTATUS nulldrv_D3DKMTOpenAdapterFromLuid( D3DKMT_OPENADAPTERFROMLUID *desc )
 {
     return STATUS_PROCEDURE_NOT_FOUND;
@@ -657,6 +663,7 @@ const struct gdi_dc_funcs null_driver =
     nulldrv_UnrealizePalette,           /* pUnrealizePalette */
     nulldrv_D3DKMTCheckVidPnExclusiveOwnership, /* pD3DKMTCheckVidPnExclusiveOwnership */
     nulldrv_D3DKMTCloseAdapter,         /* pD3DKMTCloseAdapter */
+    nulldrv_D3DKMTEnumAdapters2,        /* pD3DKMTEnumAdapters2 */
     nulldrv_D3DKMTOpenAdapterFromLuid,  /* pD3DKMTOpenAdapterFromLuid */
     nulldrv_D3DKMTQueryVideoMemoryInfo, /* pD3DKMTQueryVideoMemoryInfo */
     nulldrv_D3DKMTSetVidPnSourceOwner,  /* pD3DKMTSetVidPnSourceOwner */
@@ -1514,6 +1521,46 @@ NTSTATUS WINAPI NtGdiDdDDICloseAdapter( const D3DKMT_CLOSEADAPTER *desc )
 }
 
 /******************************************************************************
+ *           NtGdiDdDDIEnumAdapters2    (win32u.@)
+ */
+NTSTATUS WINAPI NtGdiDdDDIEnumAdapters2( D3DKMT_ENUMADAPTERS2 *desc )
+{
+    NTSTATUS status = STATUS_UNSUCCESSFUL;
+    struct d3dkmt_adapter *adapter;
+    ULONG i;
+
+    TRACE("(%p)\n", desc);
+
+    if (!desc) return STATUS_INVALID_PARAMETER;
+
+    if (get_display_driver()->pD3DKMTEnumAdapters2)
+    {
+        if (desc->pAdapters)
+        {
+            pthread_mutex_lock( &driver_lock );
+
+            for (i = 0; i < desc->NumAdapters; ++i)
+            {
+                if (!(adapter = malloc( sizeof( *adapter ) )))
+                {
+                    pthread_mutex_unlock( &driver_lock );
+                    return STATUS_NO_MEMORY;
+                }
+
+                desc->pAdapters[i].hAdapter = adapter->handle = ++handle_start;
+                list_add_tail( &d3dkmt_adapters, &adapter->entry );
+            }
+
+            pthread_mutex_unlock( &driver_lock );
+        }
+
+        status = get_display_driver()->pD3DKMTEnumAdapters2( desc );
+    }
+
+    return status;
+}
+
+/******************************************************************************
  *           NtGdiDdDDIOpenAdapterFromDeviceName    (win32u.@)
  */
 NTSTATUS WINAPI NtGdiDdDDIOpenAdapterFromDeviceName( D3DKMT_OPENADAPTERFROMDEVICENAME *desc )
@@ -1538,7 +1585,6 @@ NTSTATUS WINAPI NtGdiDdDDIOpenAdapterFromDeviceName( D3DKMT_OPENADAPTERFROMDEVIC
  */
 NTSTATUS WINAPI NtGdiDdDDIOpenAdapterFromLuid( D3DKMT_OPENADAPTERFROMLUID *desc )
 {
-    static D3DKMT_HANDLE handle_start = 0;
     struct d3dkmt_adapter *adapter;
 
     if (!(adapter = malloc( sizeof( *adapter ) ))) return STATUS_NO_MEMORY;
