@@ -521,6 +521,7 @@ static const struct gdi_dc_funcs emfdrv_driver =
     NULL,                            /* pUnrealizePalette */
     NULL,                            /* pD3DKMTCheckVidPnExclusiveOwnership */
     NULL,                            /* pD3DKMTCloseAdapter */
+    NULL,                            /* pD3DKMTEnumAdapters2 */
     NULL,                            /* pD3DKMTOpenAdapterFromLuid */
     NULL,                            /* pD3DKMTQueryVideoMemoryInfo */
     NULL,                            /* pD3DKMTSetVidPnSourceOwner */

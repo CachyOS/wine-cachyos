@@ -388,6 +388,7 @@ static const struct user_driver_funcs x11drv_funcs =
     .dc_funcs.pUnrealizePalette = X11DRV_UnrealizePalette,
     .dc_funcs.pD3DKMTCheckVidPnExclusiveOwnership = X11DRV_D3DKMTCheckVidPnExclusiveOwnership,
     .dc_funcs.pD3DKMTCloseAdapter = X11DRV_D3DKMTCloseAdapter,
+    .dc_funcs.pD3DKMTEnumAdapters2 = X11DRV_D3DKMTEnumAdapters2,
     .dc_funcs.pD3DKMTOpenAdapterFromLuid = X11DRV_D3DKMTOpenAdapterFromLuid,
     .dc_funcs.pD3DKMTQueryVideoMemoryInfo = X11DRV_D3DKMTQueryVideoMemoryInfo,
     .dc_funcs.pD3DKMTSetVidPnSourceOwner = X11DRV_D3DKMTSetVidPnSourceOwner,
