@@ -1678,16 +1678,43 @@ NTSTATUS WINAPI NtGdiDdDDIDestroyDevice( const D3DKMT_DESTROYDEVICE *desc )
     return status;
 }
 
+static BOOL check_hags_enabled( void )
+{
+    const char *winehags = getenv( "WINEHAGS" );
+    return winehags && *winehags && *winehags != '0';
+}
+
 /******************************************************************************
  *           NtGdiDdDDIQueryAdapterInfo    (win32u.@)
  */
 NTSTATUS WINAPI NtGdiDdDDIQueryAdapterInfo( D3DKMT_QUERYADAPTERINFO *desc )
 {
+    D3DKMT_WDDM_2_7_CAPS *d3dkmt_wddm_2_7_caps;
+
     if (!desc)
         return STATUS_INVALID_PARAMETER;
 
-    FIXME("desc %p, type %d stub\n", desc, desc->Type);
-    return STATUS_NOT_IMPLEMENTED;
+    TRACE("desc %p, type %d\n", desc, desc->Type);
+
+    switch (desc->Type)
+    {
+        case KMTQAITYPE_WDDM_2_7_CAPS:
+            if (!desc->pPrivateDriverData || desc->PrivateDriverDataSize != sizeof(D3DKMT_WDDM_2_7_CAPS))
+                return STATUS_INVALID_PARAMETER;
+
+            d3dkmt_wddm_2_7_caps = desc->pPrivateDriverData;
+            d3dkmt_wddm_2_7_caps->HwSchSupported = 1;
+            d3dkmt_wddm_2_7_caps->HwSchEnabled = check_hags_enabled() ? 1 : 0;
+            d3dkmt_wddm_2_7_caps->HwSchEnabledByDefault = 0;
+            d3dkmt_wddm_2_7_caps->IndependentVidPnVSyncControl = 0;
+            break;
+
+        default:
+            FIXME("type %d not supported\n", desc->Type);
+            return STATUS_NOT_IMPLEMENTED;
+    }
+
+    return STATUS_SUCCESS;
 }
 
 /******************************************************************************
