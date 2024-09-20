@@ -971,12 +971,6 @@ done:
     return status;
 }
 
-NTSTATUS WINAPI D3DKMTEnumAdapters2( const void *param )
-{
-    FIXME( "param %p stub.\n", param );
-    return STATUS_NOT_SUPPORTED;
-}
-
 /***********************************************************************
  *           SetObjectOwner    (GDI32.@)
  */
