@@ -4522,7 +4522,7 @@ int main( int argc, char *argv[] )
         arch_dirs[arch] = strmake( "%s-windows/", archs.str[arch] );
         arch_pe_dirs[arch] = arch_dirs[arch];
         arch_install_dirs[arch] = strmake( "$(dlldir)/%s", arch_dirs[arch] );
-        strip_progs[arch] = strmake( "%s-strip", target );
+        strip_progs[arch] = get_expanded_arch_var( top_makefile, "STRIP", arch );
         dll_ext[arch] = "";
     }
 
