@@ -145,19 +145,15 @@ static void update_gpu_monitor_list( struct gdi_gpu *gpu, struct list *monitors 
     while (count--)
     {
         struct gdi_adapter *adapter = adapters + count;
-        BOOL is_primary = adapter->state_flags & DISPLAY_DEVICE_PRIMARY_DEVICE;
         x11drv_settings_id settings_id;
         DEVMODEW mode = {0};
-        WCHAR devname[32];
-        char buffer[32];
 
         TRACE( "adapter %p id %p\n", adapter, (void *)adapter->id );
 
-        /* Get the settings handler id for the adapter */
-        snprintf( buffer, sizeof(buffer), "\\\\.\\DISPLAY%d", count + 1 );
-        asciiz_to_unicode( devname, buffer );
-        if (!real_settings_handler.get_id( devname, is_primary, &settings_id )) break;
-
+        /* FIXME: this assumes that setting id equals adapter id which is currently the case for xrandr.
+         * real_settings_handler.get_id() is not a good fit because it assumes devname allocation order across GPUs
+         * which is also backend specific but in a less obvious way. */
+        settings_id.id = adapter->id;
         if (!real_settings_handler.get_current_mode( settings_id, &mode ))
         {
             WARN( "Failed to get current display mode\n" );
