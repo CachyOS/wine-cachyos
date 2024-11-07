@@ -323,7 +323,7 @@ static bool amt_from_wg_format_audio_wma(AM_MEDIA_TYPE *mt, const struct wg_form
             return false;
     }
 
-    size = sizeof(WAVEFORMATEX) + codec_data_len;
+    size = sizeof(WAVEFORMATEX) + format->u.audio.codec_data_len;
     if (!(wave_format = CoTaskMemAlloc(size)))
         return false;
     memset(wave_format, 0, size);
@@ -339,12 +339,13 @@ static bool amt_from_wg_format_audio_wma(AM_MEDIA_TYPE *mt, const struct wg_form
     wave_format->nAvgBytesPerSec = format->u.audio.bitrate / 8;
     wave_format->nBlockAlign = format->u.audio.block_align;
     wave_format->wBitsPerSample = format->u.audio.depth;
-    wave_format->cbSize = codec_data_len;
+    wave_format->cbSize = format->u.audio.codec_data_len;
 
-    if (format->u.audio.codec_data_len == codec_data_len)
-        memcpy(wave_format+1, format->u.audio.codec_data, format->u.audio.codec_data_len);
-    else
+    memcpy(wave_format + 1, format->u.audio.codec_data, format->u.audio.codec_data_len);
+
+    if (format->u.audio.codec_data_len != codec_data_len)
         FIXME("Unexpected codec_data length; got %u, expected %lu\n", format->u.audio.codec_data_len, codec_data_len);
+
     return true;
 }
 
