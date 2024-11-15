@@ -264,6 +264,118 @@ static NTSTATUS wg_parser_stream_get_current_type(void *args)
     return caps_to_media_type(stream->current_caps, &params->media_type, 0);
 }
 
+struct app_codec_info
+{
+    const char *game_id;
+    const char *wmv_format;
+    int wma_version;
+}
+kirikiri_games[] =
+{
+    {"1083650", "WMV3", 0}, /* Super Naughty Maid */
+    {"1097880", "WMV3", 0}, /* Super Naughty Maid 2 */
+    {"1230140", "WMV3", 2}, /* ATRI -My Dear Moments- */
+    {"2515070", "WVC1", 3}, /* AQUARIUM */
+};
+
+static void caps_to_wmv(GstCaps *caps, const char *format)
+{
+    GstStructure *structure = gst_caps_get_structure(caps, 0);
+    int version = 0;
+
+    if (!strcmp(format, "WMV1"))
+        version = 1;
+    else if (!strcmp(format, "WMV2"))
+        version = 2;
+    else if (!strcmp(format, "WMV3")
+            || !strcmp(format, "WMVA")
+            || !strcmp(format, "WVC1"))
+        version = 3;
+    else
+        GST_ERROR("Unknown WMV format: %s", format);
+
+    gst_structure_set_name(structure, "video/x-wmv");
+    gst_caps_set_simple(caps, "format", G_TYPE_STRING, format, NULL);
+    gst_caps_set_simple(caps, "wmvversion", G_TYPE_INT, version, NULL);
+}
+
+static void caps_to_wma(GstCaps *caps, int version)
+{
+    GstStructure *structure = gst_caps_get_structure(caps, 0);
+    gint rate, channels;
+
+    if (!gst_structure_get_int(structure, "rate", &rate))
+        GST_WARNING("Missing \"rate\" value in %"GST_PTR_FORMAT".", caps);
+    if (!gst_structure_get_int(structure, "channels", &channels))
+        GST_WARNING("Missing \"channels\" value in %"GST_PTR_FORMAT".", caps);
+
+    gst_structure_set_name(structure, "audio/x-wma");
+    gst_caps_set_simple(caps, "wmaversion", G_TYPE_INT, version, NULL);
+    gst_caps_set_simple(caps, "depth", G_TYPE_INT, 32, NULL);
+    gst_caps_set_simple(caps, "bitrate", G_TYPE_INT, rate * channels * 32, NULL);
+    gst_caps_set_simple(caps, "block_align", G_TYPE_INT, channels * 4, NULL);
+}
+
+static bool stream_get_untranscoded_format(struct wg_parser_stream *stream, struct wg_format *out_format)
+{
+    GstCaps *caps = gst_caps_copy(stream->current_caps);
+    GstStreamType type = stream_type_from_caps(caps);
+    const char *magic = "TRANSCODED";
+    GstBuffer *codec_data_buffer;
+    bool codec_found;
+
+    if (!stream->current_caps)
+        return false;
+    if (type != GST_STREAM_TYPE_VIDEO && type != GST_STREAM_TYPE_AUDIO)
+    {
+        GST_ERROR("Unsupported stream type: %d", type);
+        return false;
+    }
+
+    if ((codec_found = get_untranscoded_stream_format(stream->parser->container, stream->number, caps)))
+    {
+        GST_TRACE("Get codec caps from media-converter: %"GST_PTR_FORMAT, caps);
+    }
+    else
+    {
+        const char *game_id = getenv("SteamGameId");
+        unsigned int i;
+
+        for (i = 0; i < ARRAY_SIZE(kirikiri_games); ++i)
+        {
+            if (!strcmp(game_id, kirikiri_games[i].game_id))
+            {
+                if (type == GST_STREAM_TYPE_VIDEO && kirikiri_games[i].wmv_format)
+                    caps_to_wmv(caps, kirikiri_games[i].wmv_format);
+                if (type == GST_STREAM_TYPE_AUDIO && kirikiri_games[i].wma_version)
+                    caps_to_wma(caps, kirikiri_games[i].wma_version);
+                codec_found = true;
+                break;
+            }
+        }
+    }
+
+    if (!codec_found)
+    {
+        GST_WARNING("Failed to get untranscoded codec format for stream %u.\n", stream->number);
+        gst_caps_unref(caps);
+        return false;
+    }
+
+    /* Setting a custom codec data which contains a magic string,
+     * making us be able to know the format is transcoded in front side. */
+    codec_data_buffer = gst_buffer_new_and_alloc(16);
+    gst_buffer_fill(codec_data_buffer, 0, magic, strlen(magic) + 1);
+    gst_caps_set_simple(caps, "codec_data", GST_TYPE_BUFFER, codec_data_buffer, NULL);
+    gst_buffer_unref(codec_data_buffer);
+
+    GST_TRACE("Returning untranscoded caps %"GST_PTR_FORMAT, caps);
+
+    wg_format_from_caps(out_format, caps);
+    gst_caps_unref(caps);
+    return true;
+}
+
 static NTSTATUS wg_parser_stream_get_codec_format(void *args)
 {
     struct wg_parser_stream_get_codec_format_params *params = args;
@@ -271,22 +383,9 @@ static NTSTATUS wg_parser_stream_get_codec_format(void *args)
 
     GST_TRACE("caps %" GST_PTR_FORMAT, stream->current_caps);
 
-    if (stream->current_caps)
-    {
-        /* HACK: Return untranscoded codec format for transcoded stream. */
-        GstCaps *caps = gst_caps_copy(stream->current_caps);
-
-        if (get_untranscoded_stream_format(stream->parser->container, stream->number, caps))
-        {
-            GST_TRACE("returning caps %" GST_PTR_FORMAT, caps);
-            wg_format_from_caps(params->format, caps);
-            gst_caps_unref(caps);
-            return S_OK;
-        }
-        gst_caps_unref(caps);
-
-        GST_WARNING("Failed to get untranscoded codec format for stream %u.\n", stream->number);
-    }
+    /* HACK: Return untranscoded codec format for transcoded stream. */
+    if (stream_get_untranscoded_format(stream, params->format))
+        return S_OK;
 
     if (caps_is_compressed(stream->codec_caps))
         wg_format_from_caps(params->format, stream->codec_caps);
