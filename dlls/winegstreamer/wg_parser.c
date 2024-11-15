@@ -278,6 +278,17 @@ kirikiri_games[] =
     {"2515070", "WVC1", 3}, /* AQUARIUM */
 };
 
+static bool is_kirikiri_game(const char *game_id)
+{
+    unsigned int i;
+    for (i = 0; i < ARRAY_SIZE(kirikiri_games); ++i)
+    {
+        if (!strcmp(game_id, kirikiri_games[i].game_id))
+            return true;
+    }
+    return false;
+}
+
 static void caps_to_wmv(GstCaps *caps, const char *format)
 {
     GstStructure *structure = gst_caps_get_structure(caps, 0);
@@ -2367,6 +2378,14 @@ static NTSTATUS wg_parser_create(void *args)
     struct wg_parser_create_params *params = args;
     struct wg_parser *parser;
     GError *error;
+
+    /* HACK: Don't use OpenGL elements for KiriKiri games,
+     * otherwise there be assertion failures, resulting in crashes. */
+    {
+        const char *game_id = getenv("SteamGameId");
+        if (is_kirikiri_game(game_id))
+            params->use_opengl = false;
+    }
 
     if (!(parser = calloc(1, sizeof(*parser))))
         return E_OUTOFMEMORY;
