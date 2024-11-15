@@ -26,6 +26,8 @@
 #include "wmcodecdsp.h"
 #include "mediaerr.h"
 #include "dmort.h"
+#include "ks.h"
+#include "ksmedia.h"
 
 #include "wine/debug.h"
 
@@ -820,6 +822,51 @@ static HRESULT WINAPI media_object_SetOutputType(IMediaObject *iface, DWORD inde
         wg_transform_destroy(decoder->wg_transform);
         decoder->wg_transform = 0;
     }
+
+    do
+    {
+        /* Hack: Try F32LE if format is transcoded.
+         *
+         * Transcoded audios are in vorbis format.
+         * Gstreamer vorbis decoder will finally output F32LE,
+         * so we try using F32LE input here. */
+        const char *transcoded_magic = "TRANSCODED";
+        WAVEFORMATEXTENSIBLE *wave_format_ex;
+        WAVEFORMATEX *orig_format;
+        DMO_MEDIA_TYPE input_type;
+
+        if (!(orig_format = (WAVEFORMATEX *)decoder->input_type.pbFormat))
+            break;
+        if (orig_format->cbSize < strlen(transcoded_magic) + 1)
+            break;
+        if (strcmp((const char *)(orig_format + 1), transcoded_magic) != 0)
+            break;
+
+        TRACE("Got transcoded input.");
+
+        input_type = decoder->input_type;;
+        input_type.subtype = MEDIASUBTYPE_IEEE_FLOAT;
+        input_type.formattype = FORMAT_WaveFormatEx;
+
+        if (!(wave_format_ex = CoTaskMemAlloc(sizeof(*wave_format_ex))))
+            break;
+        input_type.cbFormat = sizeof(*wave_format_ex);
+        input_type.pbFormat = (BYTE *)wave_format_ex;
+        memset(wave_format_ex, 0, sizeof(*wave_format_ex));
+        wave_format_ex->Format = *orig_format;
+        wave_format_ex->Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+        wave_format_ex->Format.cbSize = sizeof(*wave_format_ex) - sizeof(wave_format_ex->Format);
+        wave_format_ex->Samples.wValidBitsPerSample = wave_format_ex->Format.wBitsPerSample;
+        wave_format_ex->dwChannelMask = KSAUDIO_SPEAKER_STEREO;
+        wave_format_ex->SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
+
+        hr = wg_transform_create_quartz(&input_type, &decoder->output_type,
+                &attrs, &decoder->wg_transform);
+        FreeMediaType(&input_type);
+        if (SUCCEEDED(hr))
+            return hr;
+    } while(0);
+
     if (FAILED(hr = wg_transform_create_quartz(&decoder->input_type, &decoder->output_type,
             &attrs, &decoder->wg_transform)))
         return hr;
