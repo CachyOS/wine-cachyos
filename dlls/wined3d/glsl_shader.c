@@ -5431,26 +5431,30 @@ static void shader_glsl_atomic(const struct wined3d_shader_instruction *ins)
                 op = "imageAtomicAdd";
             break;
         case WINED3DSIH_ATOMIC_IMAX:
+        case WINED3DSIH_ATOMIC_UMAX:
         case WINED3DSIH_IMM_ATOMIC_IMAX:
+        case WINED3DSIH_IMM_ATOMIC_UMAX:
             if (is_tgsm)
                 op = "atomicMax";
             else
                 op = "imageAtomicMax";
-            if (data_type != WINED3D_DATA_INT)
+            if (data_type != WINED3D_DATA_INT && data_type != WINED3D_DATA_UINT)
             {
-                FIXME("Unhandled opcode %#x for unsigned integers.\n", ins->handler_idx);
+                FIXME("Unhandled opcode %#x for integers.\n", ins->handler_idx);
                 return;
             }
             break;
         case WINED3DSIH_ATOMIC_IMIN:
+        case WINED3DSIH_ATOMIC_UMIN:
         case WINED3DSIH_IMM_ATOMIC_IMIN:
+        case WINED3DSIH_IMM_ATOMIC_UMIN:
             if (is_tgsm)
                 op = "atomicMin";
             else
                 op = "imageAtomicMin";
-            if (data_type != WINED3D_DATA_INT)
+            if (data_type != WINED3D_DATA_INT && data_type != WINED3D_DATA_UINT)
             {
-                FIXME("Unhandled opcode %#x for unsigned integers.\n", ins->handler_idx);
+                FIXME("Unhandled opcode %#x for integers.\n", ins->handler_idx);
                 return;
             }
             break;
@@ -5460,30 +5464,6 @@ static void shader_glsl_atomic(const struct wined3d_shader_instruction *ins)
                 op = "atomicOr";
             else
                 op = "imageAtomicOr";
-            break;
-        case WINED3DSIH_ATOMIC_UMAX:
-        case WINED3DSIH_IMM_ATOMIC_UMAX:
-            if (is_tgsm)
-                op = "atomicMax";
-            else
-                op = "imageAtomicMax";
-            if (data_type != WINED3D_DATA_UINT)
-            {
-                FIXME("Unhandled opcode %#x for signed integers.\n", ins->handler_idx);
-                return;
-            }
-            break;
-        case WINED3DSIH_ATOMIC_UMIN:
-        case WINED3DSIH_IMM_ATOMIC_UMIN:
-            if (is_tgsm)
-                op = "atomicMin";
-            else
-                op = "imageAtomicMin";
-            if (data_type != WINED3D_DATA_UINT)
-            {
-                FIXME("Unhandled opcode %#x for signed integers.\n", ins->handler_idx);
-                return;
-            }
             break;
         case WINED3DSIH_ATOMIC_XOR:
         case WINED3DSIH_IMM_ATOMIC_XOR:

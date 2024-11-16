@@ -91,11 +91,12 @@ enum vkd3d_shader_error
     VKD3D_SHADER_ERROR_SPV_INVALID_REGISTER_TYPE        = 2001,
     VKD3D_SHADER_ERROR_SPV_INVALID_DESCRIPTOR_BINDING   = 2002,
     VKD3D_SHADER_ERROR_SPV_DESCRIPTOR_IDX_UNSUPPORTED   = 2003,
-    VKD3D_SHADER_ERROR_SPV_STENCIL_EXPORT_UNSUPPORTED   = 2004,
+    VKD3D_SHADER_ERROR_SPV_UNSUPPORTED_FEATURE          = 2004,
     VKD3D_SHADER_ERROR_SPV_OUT_OF_MEMORY                = 2005,
     VKD3D_SHADER_ERROR_SPV_INVALID_TYPE                 = 2006,
     VKD3D_SHADER_ERROR_SPV_INVALID_HANDLER              = 2007,
     VKD3D_SHADER_ERROR_SPV_NOT_IMPLEMENTED              = 2008,
+    VKD3D_SHADER_ERROR_SPV_INVALID_SHADER               = 2009,
 
     VKD3D_SHADER_WARNING_SPV_INVALID_SWIZZLE            = 2300,
 
@@ -196,6 +197,7 @@ enum vkd3d_shader_error
     VKD3D_SHADER_WARNING_DXIL_ENTRY_POINT_MISMATCH      = 8306,
     VKD3D_SHADER_WARNING_DXIL_INVALID_MASK              = 8307,
     VKD3D_SHADER_WARNING_DXIL_INVALID_OPERATION         = 8308,
+    VKD3D_SHADER_WARNING_DXIL_IGNORING_ATTACHMENT       = 8309,
 
     VKD3D_SHADER_ERROR_VSIR_NOT_IMPLEMENTED             = 9000,
     VKD3D_SHADER_ERROR_VSIR_INVALID_HANDLER             = 9001,
@@ -214,6 +216,7 @@ enum vkd3d_shader_error
     VKD3D_SHADER_ERROR_VSIR_INVALID_DCL_TEMPS           = 9014,
     VKD3D_SHADER_ERROR_VSIR_INVALID_INDEX               = 9015,
     VKD3D_SHADER_ERROR_VSIR_INVALID_INSTRUCTION_NESTING = 9016,
+    VKD3D_SHADER_ERROR_VSIR_INVALID_SSA_USAGE           = 9017,
 
     VKD3D_SHADER_WARNING_VSIR_DYNAMIC_DESCRIPTOR_ARRAY  = 9300,
 };
@@ -618,6 +621,11 @@ static inline bool data_type_is_bool(enum vkd3d_data_type data_type)
     return data_type == VKD3D_DATA_BOOL;
 }
 
+static inline bool data_type_is_64_bit(enum vkd3d_data_type data_type)
+{
+    return data_type == VKD3D_DATA_DOUBLE || data_type == VKD3D_DATA_UINT64;
+}
+
 enum vsir_dimension
 {
     VSIR_DIMENSION_NONE,
@@ -740,6 +748,7 @@ enum vkd3d_tessellator_domain
 #define VKD3DSI_RESINFO_UINT            0x2
 #define VKD3DSI_SAMPLE_INFO_UINT        0x1
 #define VKD3DSI_SAMPLER_COMPARISON_MODE 0x1
+#define VKD3DSI_SHIFT_UNMASKED          0x1
 
 #define VKD3DSI_PRECISE_X         0x100
 #define VKD3DSI_PRECISE_Y         0x200
@@ -793,10 +802,12 @@ struct vkd3d_shader_version
 
 struct vkd3d_shader_immediate_constant_buffer
 {
+    unsigned int register_idx;
     enum vkd3d_data_type data_type;
     /* total count is element_count * component_count */
     unsigned int element_count;
     unsigned int component_count;
+    bool is_null;
     uint32_t data[];
 };
 
@@ -831,10 +842,10 @@ struct vkd3d_shader_register
     unsigned int alignment;
     union
     {
-        DWORD immconst_uint[VKD3D_VEC4_SIZE];
-        float immconst_float[VKD3D_VEC4_SIZE];
-        uint64_t immconst_uint64[VKD3D_DVEC2_SIZE];
-        double immconst_double[VKD3D_DVEC2_SIZE];
+        uint32_t immconst_u32[VKD3D_VEC4_SIZE];
+        float immconst_f32[VKD3D_VEC4_SIZE];
+        uint64_t immconst_u64[VKD3D_DVEC2_SIZE];
+        double immconst_f64[VKD3D_DVEC2_SIZE];
         unsigned fp_body_idx;
     } u;
 };
@@ -861,14 +872,14 @@ struct vkd3d_shader_dst_param
 {
     struct vkd3d_shader_register reg;
     uint32_t write_mask;
-    DWORD modifiers;
-    DWORD shift;
+    uint32_t modifiers;
+    unsigned int shift;
 };
 
 struct vkd3d_shader_src_param
 {
     struct vkd3d_shader_register reg;
-    DWORD swizzle;
+    uint32_t swizzle;
     enum vkd3d_shader_src_modifier modifiers;
 };
 
@@ -944,6 +955,9 @@ enum vkd3d_shader_input_sysval_semantic
     VKD3D_SIV_LINE_DETAIL_TESS_FACTOR      = 21,
     VKD3D_SIV_LINE_DENSITY_TESS_FACTOR     = 22,
 };
+
+#define SM1_COLOR_REGISTER_OFFSET 8
+#define SM1_RASTOUT_REGISTER_OFFSET 10
 
 #define SIGNATURE_TARGET_LOCATION_UNUSED (~0u)
 
@@ -1110,11 +1124,11 @@ struct vkd3d_shader_instruction
 {
     struct vkd3d_shader_location location;
     enum vkd3d_shader_opcode handler_idx;
-    DWORD flags;
+    uint32_t flags;
     unsigned int dst_count;
     unsigned int src_count;
-    const struct vkd3d_shader_dst_param *dst;
-    const struct vkd3d_shader_src_param *src;
+    struct vkd3d_shader_dst_param *dst;
+    struct vkd3d_shader_src_param *src;
     struct vkd3d_shader_texel_offset texel_offset;
     enum vkd3d_shader_resource_type resource_type;
     unsigned int resource_stride;
@@ -1311,9 +1325,15 @@ struct vkd3d_string_buffer_cache
     size_t count, max_count, capacity;
 };
 
+enum vsir_asm_dialect
+{
+    VSIR_ASM_VSIR,
+    VSIR_ASM_D3D,
+};
+
 enum vkd3d_result vkd3d_dxbc_binary_to_text(const struct vkd3d_shader_instruction_array *instructions,
         const struct vkd3d_shader_version *shader_version, const struct vkd3d_shader_compile_info *compile_info,
-        struct vkd3d_shader_code *out);
+        struct vkd3d_shader_code *out, enum vsir_asm_dialect dialect);
 void vkd3d_string_buffer_cleanup(struct vkd3d_string_buffer *buffer);
 struct vkd3d_string_buffer *vkd3d_string_buffer_get(struct vkd3d_string_buffer_cache *list);
 void vkd3d_string_buffer_init(struct vkd3d_string_buffer *buffer);
@@ -1338,7 +1358,9 @@ struct vkd3d_bytecode_buffer
 /* Align to the next 4-byte offset, and return that offset. */
 size_t bytecode_align(struct vkd3d_bytecode_buffer *buffer);
 size_t bytecode_put_bytes(struct vkd3d_bytecode_buffer *buffer, const void *bytes, size_t size);
+size_t bytecode_reserve_bytes(struct vkd3d_bytecode_buffer *buffer, size_t size);
 void set_u32(struct vkd3d_bytecode_buffer *buffer, size_t offset, uint32_t value);
+void set_string(struct vkd3d_bytecode_buffer *buffer, size_t offset, const char *string, size_t length);
 
 static inline size_t put_u32(struct vkd3d_bytecode_buffer *buffer, uint32_t value)
 {
@@ -1382,6 +1404,8 @@ void vkd3d_shader_verror(struct vkd3d_shader_message_context *context, const str
         enum vkd3d_shader_error error, const char *format, va_list args);
 void vkd3d_shader_vnote(struct vkd3d_shader_message_context *context, const struct vkd3d_shader_location *location,
         enum vkd3d_shader_log_level level, const char *format, va_list args);
+void vkd3d_shader_warning(struct vkd3d_shader_message_context *context, const struct vkd3d_shader_location *location,
+        enum vkd3d_shader_error error, const char *format, ...) VKD3D_PRINTF_FUNC(4, 5);
 void vkd3d_shader_vwarning(struct vkd3d_shader_message_context *context, const struct vkd3d_shader_location *location,
         enum vkd3d_shader_error error, const char *format, va_list args);
 
@@ -1427,7 +1451,7 @@ int preproc_lexer_parse(const struct vkd3d_shader_compile_info *compile_info,
 int hlsl_compile_shader(const struct vkd3d_shader_code *hlsl, const struct vkd3d_shader_compile_info *compile_info,
         struct vkd3d_shader_code *out, struct vkd3d_shader_message_context *message_context);
 
-void vsir_validate(struct vkd3d_shader_parser *parser);
+enum vkd3d_result vsir_validate(struct vkd3d_shader_parser *parser);
 
 static inline enum vkd3d_shader_component_type vkd3d_component_type_from_data_type(
         enum vkd3d_data_type data_type)
@@ -1444,6 +1468,8 @@ static inline enum vkd3d_shader_component_type vkd3d_component_type_from_data_ty
             return VKD3D_SHADER_COMPONENT_INT;
         case VKD3D_DATA_DOUBLE:
             return VKD3D_SHADER_COMPONENT_DOUBLE;
+        case VKD3D_DATA_UINT64:
+            return VKD3D_SHADER_COMPONENT_UINT64;
         case VKD3D_DATA_BOOL:
             return VKD3D_SHADER_COMPONENT_BOOL;
         default:
@@ -1505,7 +1531,7 @@ static inline enum vkd3d_shader_input_sysval_semantic vkd3d_siv_from_sysval(enum
     return vkd3d_siv_from_sysval_indexed(sysval, 0);
 }
 
-static inline unsigned int vkd3d_write_mask_get_component_idx(DWORD write_mask)
+static inline unsigned int vsir_write_mask_get_component_idx(uint32_t write_mask)
 {
     unsigned int i;
 
@@ -1520,7 +1546,7 @@ static inline unsigned int vkd3d_write_mask_get_component_idx(DWORD write_mask)
     return 0;
 }
 
-static inline unsigned int vkd3d_write_mask_component_count(DWORD write_mask)
+static inline unsigned int vsir_write_mask_component_count(uint32_t write_mask)
 {
     unsigned int count = vkd3d_popcount(write_mask & VKD3DSP_WRITEMASK_ALL);
     assert(1 <= count && count <= VKD3D_VEC4_SIZE);
@@ -1533,32 +1559,30 @@ static inline unsigned int vkd3d_write_mask_from_component_count(unsigned int co
     return (VKD3DSP_WRITEMASK_0 << component_count) - 1;
 }
 
-static inline unsigned int vkd3d_write_mask_64_from_32(DWORD write_mask32)
+static inline uint32_t vsir_write_mask_64_from_32(uint32_t write_mask32)
 {
-    unsigned int write_mask64 = write_mask32 | (write_mask32 >> 1);
+    uint32_t write_mask64 = write_mask32 | (write_mask32 >> 1);
     return (write_mask64 & VKD3DSP_WRITEMASK_0) | ((write_mask64 & VKD3DSP_WRITEMASK_2) >> 1);
 }
 
-static inline unsigned int vkd3d_write_mask_32_from_64(unsigned int write_mask64)
+static inline uint32_t vsir_write_mask_32_from_64(uint32_t write_mask64)
 {
-    unsigned int write_mask32 = (write_mask64 | (write_mask64 << 1))
+    uint32_t write_mask32 = (write_mask64 | (write_mask64 << 1))
             & (VKD3DSP_WRITEMASK_0 | VKD3DSP_WRITEMASK_2);
     return write_mask32 | (write_mask32 << 1);
 }
 
-static inline unsigned int vkd3d_swizzle_get_component(DWORD swizzle,
-        unsigned int idx)
+static inline unsigned int vsir_swizzle_get_component(uint32_t swizzle, unsigned int idx)
 {
     return (swizzle >> VKD3D_SHADER_SWIZZLE_SHIFT(idx)) & VKD3D_SHADER_SWIZZLE_MASK;
 }
 
-static inline unsigned int vkd3d_swizzle_get_component64(DWORD swizzle,
-        unsigned int idx)
+static inline unsigned int vsir_swizzle_get_component64(uint32_t swizzle, unsigned int idx)
 {
     return ((swizzle >> VKD3D_SHADER_SWIZZLE_SHIFT(idx * 2)) & VKD3D_SHADER_SWIZZLE_MASK) / 2u;
 }
 
-static inline unsigned int vkd3d_compact_swizzle(unsigned int swizzle, unsigned int write_mask)
+static inline unsigned int vkd3d_compact_swizzle(uint32_t swizzle, uint32_t write_mask)
 {
     unsigned int i, compacted_swizzle = 0;
 
@@ -1567,7 +1591,7 @@ static inline unsigned int vkd3d_compact_swizzle(unsigned int swizzle, unsigned 
         if (write_mask & (VKD3DSP_WRITEMASK_0 << i))
         {
             compacted_swizzle <<= VKD3D_SHADER_SWIZZLE_SHIFT(1);
-            compacted_swizzle |= vkd3d_swizzle_get_component(swizzle, i);
+            compacted_swizzle |= vsir_swizzle_get_component(swizzle, i);
         }
     }
 

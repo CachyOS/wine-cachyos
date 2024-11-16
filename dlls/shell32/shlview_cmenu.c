@@ -62,6 +62,8 @@ typedef struct
     BOOL desktop;
 } ContextMenu;
 
+static HRESULT DoPaste(ContextMenu *This);
+
 static inline ContextMenu *impl_from_IContextMenu3(IContextMenu3 *iface)
 {
     return CONTAINING_RECORD(iface, ContextMenu, IContextMenu3_iface);
@@ -171,6 +173,30 @@ static UINT max_menu_id(HMENU hmenu, UINT offset, UINT last)
     return max_id;
 }
 
+static BOOL CheckClipboard(void)
+{
+    IDataObject *pda;
+    BOOL ret = FALSE;
+
+    if (SUCCEEDED(OleGetClipboard(&pda)))
+    {
+        STGMEDIUM medium;
+        FORMATETC formatetc;
+
+        /* Set the FORMATETC structure*/
+        InitFormatEtc(formatetc, RegisterClipboardFormatW(CFSTR_SHELLIDLISTW), TYMED_HGLOBAL);
+
+        /* Get the pidls from IDataObject */
+        if (SUCCEEDED(IDataObject_GetData(pda, &formatetc, &medium)))
+        {
+            ReleaseStgMedium(&medium);
+            ret = TRUE;
+        }
+        IDataObject_Release(pda);
+    }
+    return ret;
+}
+
 static HRESULT WINAPI ItemMenu_QueryContextMenu(
 	IContextMenu3 *iface,
 	HMENU hmenu,
@@ -181,6 +207,7 @@ static HRESULT WINAPI ItemMenu_QueryContextMenu(
 {
     ContextMenu *This = impl_from_IContextMenu3(iface);
     INT uIDMax;
+    DWORD attr = SFGAO_CANRENAME;
 
     TRACE("(%p)->(%p %d 0x%x 0x%x 0x%x )\n", This, hmenu, indexMenu, idCmdFirst, idCmdLast, uFlags);
 
@@ -218,6 +245,9 @@ static HRESULT WINAPI ItemMenu_QueryContextMenu(
 
         SetMenuDefaultItem(hmenu, 0, MF_BYPOSITION);
 
+        if (This->apidl && This->cidl == 1)
+            IShellFolder_GetAttributesOf(This->parent, 1, (LPCITEMIDLIST*)This->apidl, &attr);
+
         if(uFlags & ~CMF_CANRENAME)
             RemoveMenu(hmenu, FCIDM_SHVIEW_RENAME - FCIDM_BASE + idCmdFirst, MF_BYCOMMAND);
         else
@@ -228,15 +258,13 @@ static HRESULT WINAPI ItemMenu_QueryContextMenu(
             if (!This->apidl || This->cidl > 1)
                 enable |= MFS_DISABLED;
             else
-            {
-                DWORD attr = SFGAO_CANRENAME;
-
-                IShellFolder_GetAttributesOf(This->parent, 1, (LPCITEMIDLIST*)This->apidl, &attr);
                 enable |= (attr & SFGAO_CANRENAME) ? MFS_ENABLED : MFS_DISABLED;
-            }
 
             EnableMenuItem(hmenu, FCIDM_SHVIEW_RENAME - FCIDM_BASE + idCmdFirst, enable);
         }
+
+        if ((attr & (SFGAO_FILESYSTEM|SFGAO_FOLDER)) != (SFGAO_FILESYSTEM|SFGAO_FOLDER) || !CheckClipboard())
+            RemoveMenu(hmenu, FCIDM_SHVIEW_INSERT - FCIDM_BASE + idCmdFirst, MF_BYCOMMAND);
 
         return MAKE_HRESULT(SEVERITY_SUCCESS, 0, uIDMax-idCmdFirst);
     }
@@ -296,8 +324,66 @@ static void DoDelete(ContextMenu *This)
     IShellFolder_QueryInterface(This->parent, &IID_ISFHelper, (void**)&helper);
     if (helper)
     {
-        ISFHelper_DeleteItems(helper, This->cidl, (LPCITEMIDLIST*)This->apidl);
+        ISFHelper_DeleteItems(helper, This->cidl, (LPCITEMIDLIST *)This->apidl, TRUE);
         ISFHelper_Release(helper);
+    }
+}
+
+/**************************************************************************
+ * SetDropEffect
+ *
+ * Set the drop effect in a IDataObject object
+ */
+static void SetDropEffect(IDataObject *dataobject, DWORD value)
+{
+    FORMATETC formatetc;
+    STGMEDIUM medium;
+    DWORD *effect;
+
+    InitFormatEtc(formatetc, RegisterClipboardFormatW(CFSTR_PREFERREDDROPEFFECTW), TYMED_HGLOBAL);
+
+    medium.tymed = TYMED_HGLOBAL;
+    medium.pUnkForRelease = NULL;
+    medium.hGlobal = GlobalAlloc(GHND|GMEM_SHARE, sizeof(DWORD));
+    if (!medium.hGlobal) return;
+
+    effect = GlobalLock(medium.hGlobal);
+    if (!effect)
+    {
+        ReleaseStgMedium(&medium);
+        return;
+    }
+    *effect = value;
+    GlobalUnlock(effect);
+
+    IDataObject_SetData(dataobject, &formatetc, &medium, FALSE);
+    ReleaseStgMedium(&medium);
+}
+
+/**************************************************************************
+ * GetDropEffect
+ *
+ * Get the drop effect from a IDataObject object
+ */
+static void GetDropEffect(IDataObject *dataobject, DWORD *value)
+{
+    FORMATETC formatetc;
+    STGMEDIUM medium;
+    DWORD *effect;
+
+    *value = DROPEFFECT_NONE;
+
+    InitFormatEtc(formatetc, RegisterClipboardFormatW(CFSTR_PREFERREDDROPEFFECTW), TYMED_HGLOBAL);
+
+    if (SUCCEEDED(IDataObject_GetData(dataobject, &formatetc, &medium)))
+    {
+        effect = GlobalLock(medium.hGlobal);
+        if (effect)
+        {
+            *value = *effect;
+            GlobalUnlock(effect);
+        }
+        ReleaseStgMedium(&medium);
     }
 }
 
@@ -314,6 +400,7 @@ static void DoCopyOrCut(ContextMenu *This, HWND hwnd, BOOL cut)
 
     if (SUCCEEDED(IShellFolder_GetUIObjectOf(This->parent, hwnd, This->cidl, (LPCITEMIDLIST*)This->apidl, &IID_IDataObject, 0, (void**)&dataobject)))
     {
+        SetDropEffect(dataobject, cut ? DROPEFFECT_MOVE : DROPEFFECT_COPY);
         OleSetClipboard(dataobject);
         IDataObject_Release(dataobject);
     }
@@ -796,6 +883,10 @@ static HRESULT WINAPI ItemMenu_InvokeCommand(
             TRACE("Verb FCIDM_SHVIEW_CUT\n");
             DoCopyOrCut(This, lpcmi->hwnd, TRUE);
             break;
+        case FCIDM_SHVIEW_INSERT:
+            TRACE("Verb FCIDM_SHVIEW_INSERT\n");
+            DoPaste(This);
+            break;
         case FCIDM_SHVIEW_PROPERTIES:
             TRACE("Verb FCIDM_SHVIEW_PROPERTIES\n");
             DoOpenProperties(This, lpcmi->hwnd);
@@ -816,6 +907,12 @@ static HRESULT WINAPI ItemMenu_InvokeCommand(
             DoCopyOrCut(This, lpcmi->hwnd, TRUE);
         else if (strcmp(lpcmi->lpVerb,"properties")==0)
             DoOpenProperties(This, lpcmi->hwnd);
+        else if (strcmp(lpcmi->lpVerb,"cut")==0)
+            DoCopyOrCut(This, lpcmi->hwnd, TRUE);
+        else if (strcmp(lpcmi->lpVerb,"copy")==0)
+            DoCopyOrCut(This, lpcmi->hwnd, FALSE);
+        else if (strcmp(lpcmi->lpVerb,"paste")==0)
+            DoPaste(This);
         else {
             FIXME("Unhandled string verb %s\n",debugstr_a(lpcmi->lpVerb));
             return E_FAIL;
@@ -855,6 +952,9 @@ static HRESULT WINAPI ItemMenu_GetCommandString(IContextMenu3 *iface, UINT_PTR c
             break;
         case FCIDM_SHVIEW_COPY:
             cmdW = L"copy";
+            break;
+        case FCIDM_SHVIEW_INSERT:
+            cmdW = L"paste";
             break;
         case FCIDM_SHVIEW_CREATELINK:
             cmdW = L"link";
@@ -1108,7 +1208,7 @@ static void DoNewFolder(ContextMenu *This, IShellView *view)
     }
 }
 
-static HRESULT paste_pidls(ContextMenu *This, ITEMIDLIST **pidls, UINT count)
+static HRESULT paste_pidls(ContextMenu *This, IDataObject *pda, ITEMIDLIST **pidls, UINT count)
 {
     IShellFolder *psfDesktop;
     UINT i;
@@ -1140,10 +1240,12 @@ static HRESULT paste_pidls(ContextMenu *This, ITEMIDLIST **pidls, UINT count)
             /* do the copy/move */
             if (psfhlpdst && psfhlpsrc)
             {
+                DWORD dropEffect;
+                GetDropEffect(pda, &dropEffect);
+
                 hr = ISFHelper_CopyItems(psfhlpdst, psfFrom, 1, (LPCITEMIDLIST*)&pidl_item);
-                /* FIXME handle move
-                ISFHelper_DeleteItems(psfhlpsrc, 1, &pidl_item);
-                */
+                if (SUCCEEDED(hr) && dropEffect == DROPEFFECT_MOVE)
+                    hr = ISFHelper_DeleteItems(psfhlpsrc, 1, (LPCITEMIDLIST*)&pidl_item, FALSE);
             }
             if(psfhlpdst) ISFHelper_Release(psfhlpdst);
             if(psfhlpsrc) ISFHelper_Release(psfhlpsrc);
@@ -1189,7 +1291,7 @@ static HRESULT DoPaste(ContextMenu *This)
 	      apidl = _ILCopyCidaToaPidl(&pidl, lpcida);
 	      if (apidl)
 	      {
-	        hr = paste_pidls(This, apidl, lpcida->cidl);
+                hr = paste_pidls(This, pda, apidl, lpcida->cidl);
 	        _ILFreeaPidl(apidl, lpcida->cidl);
 	        SHFree(pidl);
 	      }
@@ -1227,7 +1329,7 @@ static HRESULT DoPaste(ContextMenu *This)
 	          }
 	        }
 	        if (SUCCEEDED(hr))
-	          hr = paste_pidls(This, pidls, count);
+                  hr = paste_pidls(This, pda, pidls, count);
 	        _ILFreeaPidl(pidls, count);
 	      }
 	      else
