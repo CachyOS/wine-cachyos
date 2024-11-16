@@ -6407,6 +6407,13 @@ void sysparams_init(void)
         emulate_modeset = IS_OPTION_TRUE( buffer[0] );
 
     {
+        const char *decorate = NULL;
+
+        decorate = getenv( "WINE_NO_WM_DECORATION" );
+        if (decorate && decorate[0] == '1') decorated_mode = FALSE;
+    }
+
+    {
         const char *s;
 
         if ((s = getenv( "PROTON_LIMIT_RESOLUTIONS" )))
