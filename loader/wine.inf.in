@@ -101,6 +101,7 @@ AddReg=\
     LicenseInformation,\
     NVIDIANGX, \
     WineNonSteamController, \
+    WineDecorateWindows, \
     ProtonOverrides
 
 [DefaultInstall.ntamd64]
@@ -131,6 +132,7 @@ AddReg=\
     LicenseInformation,\
     NVIDIANGX, \
     WineNonSteamController, \
+    WineDecorateWindows, \
     ProtonOverrides
 
 [DefaultInstall.ntarm64]
@@ -177,6 +179,7 @@ AddReg=\
     LicenseInformation,\
     NVIDIANGX, \
     WineNonSteamController, \
+    WineDecorateWindows, \
     ProtonOverrides
 
 [Wow64Install.ntarm]
@@ -3055,6 +3058,9 @@ HKLM,Software\NVIDIA Corporation\Global\NGXCore,"FullPath",,"C:\Windows\System32
 [WineNonSteamController]
 HKLM,System\CurrentControlSet\Services\winebus,"DisableHidraw",0x10001,"1"
 HKLM,System\CurrentControlSet\Services\winebus,"Enable SDL",0x10001,"1"
+
+[WineDecorateWindows]
+HKCU,Software\Wine\AppDefaults\DarkSoulsIII.exe\X11 Driver,"Decorated",,"N"
 
 [ProtonOverrides]
 HKLM,Software\Khronos\OpenXR\1,"ActiveRuntime",,"C:\openxr\wineopenxr64.json"
