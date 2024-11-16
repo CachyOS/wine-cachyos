@@ -405,6 +405,10 @@ static unsigned long get_mwm_decorations( struct x11drv_win_data *data,
                                           const RECT *client_rect )
 {
     unsigned long ret = 0;
+    const char *decorate = NULL;
+
+    decorate = getenv( "WINE_NO_WM_DECORATION" );
+    if (decorate && decorate[0] == '1') decorated_mode = FALSE;
 
     if (!decorated_mode) return 0;
 
