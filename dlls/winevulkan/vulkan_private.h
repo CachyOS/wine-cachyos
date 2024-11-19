@@ -374,6 +374,56 @@ static inline void free_conversion_context(struct conversion_context *pool)
         free(entry);
 }
 
+#if defined(__clang__) && !defined(__x86_64__)
+#define NEED_SPLIT_ATOMICS
+#endif
+
+#ifdef NEED_SPLIT_ATOMICS
+
+/* 
+ * Split 64-bit struct to work with 32-bit atomics to avoid
+ * linking with libatomic on 32-bit targets when compiling with clang
+ */
+struct split_uint64 {
+    unsigned int lo;
+    unsigned int hi;
+    unsigned int seq;
+} __attribute__((aligned(4)));
+
+static inline uint64_t atomic_load_u64(const volatile uint64_t *ptr)
+{
+    const volatile struct split_uint64 *split = (const volatile struct split_uint64 *)ptr;
+    unsigned int seq1, hi, lo, seq2;
+
+    do
+    {
+        seq1 = __atomic_load_n(&split->seq, __ATOMIC_ACQUIRE);
+        hi = __atomic_load_n(&split->hi, __ATOMIC_ACQUIRE);
+        lo = __atomic_load_n(&split->lo, __ATOMIC_ACQUIRE);
+        seq2 = __atomic_load_n(&split->seq, __ATOMIC_ACQUIRE);
+    } while (seq1 != seq2);
+
+    return ((uint64_t)hi << 32) | lo;
+}
+
+static inline void atomic_store_u64(volatile uint64_t *ptr, uint64_t val)
+{
+    volatile struct split_uint64 *split = (volatile struct split_uint64 *)ptr;
+    unsigned int seq = __atomic_load_n(&split->seq, __ATOMIC_RELAXED);
+
+    __atomic_store_n(&split->hi, val >> 32, __ATOMIC_RELAXED);
+    __atomic_store_n(&split->lo, val & 0xFFFFFFFF, __ATOMIC_RELAXED);
+    __atomic_store_n(&split->seq, seq + 1, __ATOMIC_RELEASE);
+}
+
+#define __atomic_load_u64(ptr, memorder)  atomic_load_u64(ptr)
+#define __atomic_store_u64(ptr, val, memorder)  atomic_store_u64(ptr, val)
+
+#else
+#define __atomic_load_u64(ptr, memorder)  __atomic_load_n(ptr, memorder)
+#define __atomic_store_u64(ptr, val, memorder)  __atomic_store_n(ptr, val, memorder)
+#endif
+
 struct wine_semaphore
 {
     VkSemaphore semaphore;
@@ -392,7 +442,18 @@ struct wine_semaphore
     {
         /* Shared mem access mutex. The non-shared parts access is guarded with device global signaller_mutex. */
         pthread_mutex_t mutex;
+#ifdef NEED_SPLIT_ATOMICS
+        union {
+            uint64_t virtual_value;
+            struct split_uint64 split_virtual;
+        };
+        union {
+            uint64_t physical_value;
+            struct split_uint64 split_physical;
+        };
+#else
         uint64_t virtual_value, physical_value;
+#endif
         uint64_t last_reset_physical;
         uint64_t last_dropped_reset_physical;
         struct
