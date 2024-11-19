@@ -158,7 +158,7 @@ static void signal_timeline_sem(struct wine_device *device, VkSemaphore sem, uin
     info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO;
     info.semaphore = sem;
     info.value = *value + 1;
-    __atomic_store_n(value, info.value, __ATOMIC_RELEASE);
+    __atomic_store_u64(value, info.value, __ATOMIC_RELEASE);
     if (device->phys_dev->api_version < VK_API_VERSION_1_2 || device->phys_dev->instance->api_version < VK_API_VERSION_1_2)
         res = device->funcs.p_vkSignalSemaphoreKHR(device->host_device, &info);
     else
@@ -4578,7 +4578,7 @@ static void add_sem_wait_op(struct wine_device *device, struct wine_semaphore *s
     if ((op = get_free_fence_op(device)))
     {
         op->virtual_value = virtual_value;
-        op->shared_physical_value = __atomic_load_n(&semaphore->d3d12_fence_shm->physical_value, __ATOMIC_ACQUIRE) + 1;
+        op->shared_physical_value = __atomic_load_u64(&semaphore->d3d12_fence_shm->physical_value, __ATOMIC_ACQUIRE) + 1;
         *phys_semaphore = op->local_sem.sem;
         *phys_wait_value = op->local_sem.value + 1;
         list_add_tail(&semaphore->pending_waits, &op->entry);
