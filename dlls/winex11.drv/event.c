@@ -1221,9 +1221,11 @@ static BOOL X11DRV_ConfigureNotify( HWND hwnd, XEvent *xev )
         const char *preserve_window_size = getenv( "FULLSCREEN_PRESERVE_WINDOW_SIZE" );
 
         if ((preserve_window_size && *preserve_window_size == '1') ||
-            (steamgameid && (!strcmp( steamgameid, "590380" ) || !strcmp( steamgameid, "307690" ))))
+            (steamgameid && (!strcmp( steamgameid, "590380" )       /* Into The Breach */
+                             || !strcmp( steamgameid, "307690" )    /* Sleeping Dogs */
+                             || !strcmp( steamgameid, "493200" )))) /* RiME */
         {
-            /* Into The Breach and Sleeping Dogs are extremely picky about the size of its window. */
+            /* These games are extremely picky about the size of its window. */
             if (NtUserIsWindowRectFullScreen( &data->whole_rect ) && NtUserIsWindowRectFullScreen( &rect ))
             {
                 TRACE( "window is fullscreen and new size is also fullscreen, so preserving window size\n" );
