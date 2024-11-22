@@ -1011,6 +1011,7 @@ This is an error since --enable-archs=$wine_arch was requested.])])
 
     case $wine_arch in
       i386) WINE_TRY_PE_CFLAGS([-fno-omit-frame-pointer])
+            WINE_TRY_PE_CFLAGS([-mstack-alignment=4])
             WINE_TRY_PE_CFLAGS([-mpreferred-stack-boundary=2])
             WINE_TRY_PE_CFLAGS([-Wl,--disable-stdcall-fixup],
                                [AS_VAR_APPEND([${wine_arch}_LDFLAGS],[" -Wl,--disable-stdcall-fixup"])]) ;;
