@@ -945,12 +945,13 @@ NTSTATUS WINAPI RtlCreateTimer(HANDLE TimerQueue, HANDLE *NewTimer,
     if (q->quit)
         status = STATUS_INVALID_HANDLE;
     else
+    {
+        *NewTimer = t;
         queue_add_timer(t, queue_current_time() + DueTime, TRUE);
+    }
     RtlLeaveCriticalSection(&q->cs);
 
-    if (status == STATUS_SUCCESS)
-        *NewTimer = t;
-    else
+    if (status != STATUS_SUCCESS)
         RtlFreeHeap(GetProcessHeap(), 0, t);
 
     return status;

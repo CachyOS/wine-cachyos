@@ -82,8 +82,6 @@ DWORD	                dbg_curr_pid = 0;
 dbg_ctx_t               dbg_context;
 BOOL    	        dbg_interactiveP = FALSE;
 HANDLE                  dbg_houtput = 0;
-HANDLE                  dbg_crash_report_file = INVALID_HANDLE_VALUE;
-BOOL                    dbg_use_wine_dbg_output = FALSE;
 
 static struct list      dbg_process_list = LIST_INIT(dbg_process_list);
 
@@ -95,9 +93,6 @@ static void dbg_outputA(const char* buffer, int len)
     static unsigned int line_pos;
 
     DWORD w, i;
-
-    if (dbg_use_wine_dbg_output)
-        __wine_dbg_output(buffer);
 
     while (len > 0)
     {
@@ -112,10 +107,7 @@ static void dbg_outputA(const char* buffer, int len)
             if (len > 0) i = line_pos;  /* buffer is full, flush anyway */
             else break;
         }
-        if (!dbg_use_wine_dbg_output)
-            WriteFile(dbg_houtput, line_buff, i, &w, NULL);
-        if (dbg_crash_report_file != INVALID_HANDLE_VALUE)
-            WriteFile(dbg_crash_report_file, line_buff, i, &w, NULL);
+        WriteFile(dbg_houtput, line_buff, i, &w, NULL);
         memmove( line_buff, line_buff + i, line_pos - i );
         line_pos -= i;
     }
