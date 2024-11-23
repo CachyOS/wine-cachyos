@@ -257,11 +257,11 @@ static void *get_shm( unsigned int idx )
 
 struct fsync_cache
 {
-    enum fsync_type type;
-    unsigned int shm_idx;
+    unsigned int type:3;
+    unsigned int shm_idx:29;
 };
 
-C_ASSERT(sizeof(struct fsync_cache) == sizeof(uint64_t));
+C_ASSERT(sizeof(struct fsync_cache) == sizeof(uint32_t));
 
 static struct fsync_cache *fsync_list[FSYNC_LIST_ENTRIES];
 static struct fsync_cache fsync_list_initial_block[FSYNC_LIST_BLOCK_SIZE];
@@ -299,7 +299,7 @@ static void add_to_list( HANDLE handle, enum fsync_type type, unsigned int shm_i
 
     cache.type = type;
     cache.shm_idx = shm_idx;
-    __atomic_store_n( (uint64_t *)&fsync_list[entry][idx], *(uint64_t *)&cache, __ATOMIC_SEQ_CST );
+    __atomic_store_n( (uint32_t *)&fsync_list[entry][idx], *(uint32_t *)&cache, __ATOMIC_SEQ_CST );
 }
 
 static void grab_object( struct fsync *obj )
@@ -362,7 +362,7 @@ static BOOL get_cached_object( HANDLE handle, struct fsync *obj )
     if (entry >= FSYNC_LIST_ENTRIES || !fsync_list[entry]) return FALSE;
 
 again:
-    *(uint64_t *)&cache = __atomic_load_n( (uint64_t *)&fsync_list[entry][idx], __ATOMIC_SEQ_CST );
+    *(uint32_t *)&cache = __atomic_load_n( (uint32_t *)&fsync_list[entry][idx], __ATOMIC_SEQ_CST );
 
     if (!cache.type || !cache.shm_idx) return FALSE;
 
@@ -370,7 +370,7 @@ again:
     obj->shm = get_shm( cache.shm_idx );
     grab_object( obj );
     if (((int *)obj->shm)[2] < 2 ||
-        *(uint64_t *)&cache != __atomic_load_n( (uint64_t *)&fsync_list[entry][idx], __ATOMIC_SEQ_CST ))
+        *(uint32_t *)&cache != __atomic_load_n( (uint32_t *)&fsync_list[entry][idx], __ATOMIC_SEQ_CST ))
     {
         /* This check does not strictly guarantee that we avoid the potential race but is supposed to greatly
          * reduce the probability of that. */
@@ -469,8 +469,8 @@ NTSTATUS fsync_close( HANDLE handle )
 
         cache.type = 0;
         cache.shm_idx = 0;
-        *(uint64_t *)&cache = __atomic_exchange_n( (uint64_t *)&fsync_list[entry][idx],
-                                                   *(uint64_t *)&cache, __ATOMIC_SEQ_CST );
+        *(uint32_t *)&cache = __atomic_exchange_n( (uint32_t *)&fsync_list[entry][idx],
+                                                   *(uint32_t *)&cache, __ATOMIC_SEQ_CST );
         if (cache.type) return STATUS_SUCCESS;
     }
 

@@ -131,9 +131,8 @@ case $host in
       host_cpu="i386"
       notice_platform="32-bit "
       TARGETFLAGS="$TARGETFLAGS -m32"
-      PKG_CONFIG_LIBDIR=${PKG_CONFIG_LIBDIR:-/usr/lib/i386-linux-gnu/pkgconfig:/usr/lib32/pkgconfig:/usr/lib/pkgconfig}
+      PKG_CONFIG_LIBDIR=${PKG_CONFIG_LIBDIR:-/usr/lib/i386-linux-gnu/pkgconfig:/usr/lib32/pkgconfig:/usr/lib/pkgconfig:/usr/share/pkgconfig}
       export PKG_CONFIG_LIBDIR
-      with_unwind=${with_unwind:-no}
     else
       CC="$CC -m64"
       CXX="$CXX -m64"
@@ -178,9 +177,6 @@ case $host in
     esac
     CFLAGS="$CFLAGS -mfloat-abi=$float_abi"
     TARGETFLAGS="$TARGETFLAGS -mfloat-abi=$float_abi"
-    ;;
-  i[[3456789]]86*)
-    with_unwind=${with_unwind:-no}
     ;;
 esac
 
@@ -843,6 +839,10 @@ AS_VAR_SET_IF([enable_archs],
          test $HOST_ARCH = unknown || cross_archs=$HOST_ARCH
      fi])
 
+saved_CC=$CC
+saved_CFLAGS=$CFLAGS
+saved_LDFLAGS=$LDFLAGS
+
 for wine_arch in $cross_archs
 do
     case "x$with_mingw" in
@@ -869,10 +869,6 @@ do
             ;;
         esac])
 
-    saved_CC=$CC
-    saved_CFLAGS=$CFLAGS
-    saved_LDFLAGS=$LDFLAGS
-
     CFLAGS=${CROSSCFLAGS:-"-g -O2"}
     LDFLAGS=$CROSSLDFLAGS
     AS_VAR_COPY([CC],[${wine_arch}_CC])
@@ -881,65 +877,64 @@ do
     AS_VAR_SET([${wine_arch}_EXTRACFLAGS],["-D__WINE_PE_BUILD -Wall"])
 
     target=""
-    AS_VAR_PUSHDEF([wine_cv_crosscc],[ac_cv_${wine_arch}_crosscc])
-    AS_VAR_IF([${wine_arch}_CC],[false],[],
-        [AC_CACHE_CHECK([whether $CC works],[wine_cv_crosscc],
-            [AC_COMPILE_IFELSE([AC_LANG_PROGRAM([])],
-                [AS_VAR_SET([wine_cv_crosscc],[yes])],[AS_VAR_SET([wine_cv_crosscc],[no])])])])
-    AS_VAR_IF([wine_cv_crosscc],[yes],
-       [set x $CC
-        shift
-        while test $# -ge 1
-        do
-            case "$1" in
-                *-gcc) target=`expr "$1" : '\(.*\)-gcc'` ;;
-                *-clang) target=`expr "$1" : '\(.*\)-clang'` ;;
-            esac
-            shift
-        done
-
-        dnl Check if cross compiler supports -target argument
-        llvm_target=$target
-        if test -z "$llvm_target"
-        then
-            case $wine_arch in
-            i386) llvm_target=i686-windows ;;
-            arm)  llvm_target=armv7-windows ;;
-            *)    llvm_target=$wine_arch-windows ;;
-            esac
-        fi
-        llvm_extra_cflags="-target $llvm_target -fuse-ld=lld"
-        llvm_extra_ldflags=""
-        case $llvm_target in
-          *windows) llvm_cflags="-Wl,-subsystem:console -Wl,-WX" ;;
+    set x $CC
+    shift
+    while test $# -ge 1
+    do
+        case "$1" in
+            */*-gcc) target=`expr "$1" : '.*/\(.*\)-gcc'` ;;
+            */*-clang) target=`expr "$1" : '.*/\(.*\)-clang'` ;;
+            *-gcc) target=`expr "$1" : '\(.*\)-gcc'` ;;
+            *-clang) target=`expr "$1" : '\(.*\)-clang'` ;;
         esac
-        WINE_TRY_PE_CFLAGS([$llvm_extra_cflags $llvm_cflags --no-default-config],
-                           [llvm_extra_cflags="$llvm_extra_cflags --no-default-config"
-                            llvm_extra_ldflags="--no-default-config"],
-                           [WINE_TRY_PE_CFLAGS([$llvm_extra_cflags $llvm_cflags],[:],
-                                               [llvm_extra_cflags=""])])
-        if test -n "$llvm_extra_cflags"
-        then
-            target=$llvm_target
-            AS_VAR_SET([${wine_arch}_DELAYLOADFLAG],["-Wl,-delayload,"])
-            AS_VAR_APPEND([${wine_arch}_EXTRACFLAGS],[" $llvm_extra_cflags"])
-            AS_VAR_APPEND([${wine_arch}_LDFLAGS],[" $llvm_extra_ldflags"])
-            CFLAGS="$llvm_extra_cflags $llvm_cflags"
-        fi
-        AS_VAR_SET([${wine_arch}_TARGET],[$target])])
-    AS_VAR_POPDEF([wine_cv_crosscc])
+        shift
+    done
+
+    dnl Check if cross compiler supports -target argument
+    llvm_target=$target
+    if test -z "$llvm_target"
+    then
+        case $wine_arch in
+        i386) llvm_target=i686-windows ;;
+        arm)  llvm_target=armv7-windows ;;
+        *)    llvm_target=$wine_arch-windows ;;
+        esac
+    fi
+    llvm_extra_cflags="-target $llvm_target -fuse-ld=lld"
+    llvm_extra_ldflags=""
+    llvm_cflags=""
+    case $llvm_target in
+      *windows) llvm_cflags="-Wl,-subsystem:console -Wl,-WX" ;;
+    esac
+    WINE_TRY_PE_CFLAGS([$llvm_extra_cflags $llvm_cflags --no-default-config],
+                       [llvm_extra_cflags="$llvm_extra_cflags --no-default-config"
+                        llvm_extra_ldflags="--no-default-config"],
+                       [WINE_TRY_PE_CFLAGS([$llvm_extra_cflags $llvm_cflags],[:],
+                                           [llvm_extra_cflags=""])])
+    if test -n "$llvm_extra_cflags"
+    then
+        target=$llvm_target
+        AS_VAR_SET([${wine_arch}_DELAYLOADFLAG],["-Wl,-delayload,"])
+        AS_VAR_APPEND([${wine_arch}_EXTRACFLAGS],[" $llvm_extra_cflags"])
+        AS_VAR_APPEND([${wine_arch}_LDFLAGS],[" $llvm_extra_ldflags"])
+        CFLAGS="$llvm_extra_cflags $llvm_cflags"
+    else
+        AS_VAR_PUSHDEF([wine_cv_crosscc], [wine_cv_${wine_arch}_crosscc])
+        AC_CACHE_CHECK([whether $CC works], wine_cv_crosscc,
+            [AC_COMPILE_IFELSE([AC_LANG_PROGRAM([])], [AS_VAR_SET([wine_cv_crosscc],[yes])], [AS_VAR_SET([wine_cv_crosscc],[no])])])
+        AS_VAR_IF([wine_cv_crosscc], [no], [AS_VAR_SET([target],[])])
+        AS_VAR_POPDEF([wine_cv_crosscc])
+    fi
 
     if test -z "$target"
     then
         AS_VAR_SET_IF([enable_archs],
-            [AC_MSG_ERROR([MinGW $wine_arch compiler not found.
+            [AC_MSG_ERROR([$wine_arch PE cross-compiler not found.
 This is an error since --enable-archs=$wine_arch was requested.])])
-        CC=$saved_CC
-        CFLAGS=$saved_CFLAGS
-        LDFLAGS=$saved_LDFLAGS
         continue
     fi
 
+    AS_VAR_SET([${wine_arch}_TARGET],[$target])
     AS_VAR_PUSHDEF([wine_cv_crosscc_c99],[ac_cv_${wine_arch}_crosscc_c99])
     AC_MSG_CHECKING([for $CC option to enable C99 features])
     AC_CACHE_VAL([wine_cv_crosscc_c99],
@@ -958,11 +953,8 @@ This is an error since --enable-archs=$wine_arch was requested.])])
     case "x$res" in
       x) AC_MSG_RESULT([none needed]) ;;
       xno) AC_MSG_RESULT([unsupported])
-           CC=$saved_CC
-           CFLAGS=$saved_CFLAGS
-           LDFLAGS=$saved_LDFLAGS
            AS_VAR_SET_IF([enable_archs],
-                [AC_MSG_ERROR([MinGW $wine_arch compiler supporting C99 not found.
+                [AC_MSG_ERROR([$wine_arch PE cross-compiler supporting C99 not found.
 This is an error since --enable-archs=$wine_arch was requested.])])
            continue
            ;;
@@ -979,7 +971,7 @@ This is an error since --enable-archs=$wine_arch was requested.])])
                AS_VAR_POPDEF([wine_cv_seh_support])
                AS_VAR_IF([res],[yes],[],
                          [AS_VAR_SET_IF([enable_archs],
-                             [AC_MSG_ERROR([The $wine_arch cross-compiler doesn't support SEH directives.
+                             [AC_MSG_ERROR([The $wine_arch PE cross-compiler doesn't support SEH directives.
 This is an error since --enable-archs=$wine_arch was requested.])])
                           continue])])
 
@@ -1004,12 +996,22 @@ This is an error since --enable-archs=$wine_arch was requested.])])
     WINE_TRY_PE_CFLAGS([-Wpointer-arith])
     WINE_TRY_PE_CFLAGS([-Wlogical-op])
     WINE_TRY_PE_CFLAGS([-Wabsolute-value])
-    WINE_TRY_PE_CFLAGS([-Wenum-conversion])
+    WINE_TRY_PE_CFLAGS([-Wenum-enum-conversion],[:],WINE_TRY_PE_CFLAGS([-Wenum-conversion]))
+    WINE_TRY_PE_CFLAGS([-ffunction-sections])
     WINE_TRY_PE_CFLAGS([-Wno-misleading-indentation],
                        [AS_VAR_APPEND([MSHTML_CFLAGS],[" -Wno-misleading-indentation"])])
 
+    dnl clang had broken -fms-hotpatch support before version 18 (https://github.com/llvm/llvm-project/pull/77245)
+    WINE_TRY_PE_CFLAGS([-fms-hotpatch -DMIN_CLANG_VERSION=18],
+                       [AS_VAR_APPEND([${wine_arch}_EXTRACFLAGS],[" -fms-hotpatch"])
+                        AS_VAR_APPEND([${wine_arch}_LDFLAGS],[" -fms-hotpatch"])])
+
+    dnl GCC can't handle large files when -Wmisleading-indentation is enabled (https://gcc.gnu.org/bugzilla/show_bug.cgi?id=89549)
+    WINE_TRY_PE_CFLAGS([-flarge-source-files -Wmisleading-indentation],[AS_VAR_APPEND(${wine_arch}_EXTRACFLAGS,[" -Wno-misleading-indentation"])])
+
     case $wine_arch in
       i386) WINE_TRY_PE_CFLAGS([-fno-omit-frame-pointer])
+            WINE_TRY_PE_CFLAGS([-mstack-alignment=4])
             WINE_TRY_PE_CFLAGS([-mpreferred-stack-boundary=2])
             WINE_TRY_PE_CFLAGS([-Wl,--disable-stdcall-fixup],
                                [AS_VAR_APPEND([${wine_arch}_LDFLAGS],[" -Wl,--disable-stdcall-fixup"])]) ;;
@@ -1052,16 +1054,17 @@ This is an error since --enable-archs=$wine_arch was requested.])])
                                          [AS_VAR_APPEND([${wine_arch}_CFLAGS],[" -Wl,--build-id"])
                                           AS_VAR_APPEND([${wine_arch}_LDFLAGS],[" -Wl,--build-id"])])
 
-    CC=$saved_CC
-    CFLAGS=$saved_CFLAGS
-    LDFLAGS=$saved_LDFLAGS
 done
 
-if test $HOST_ARCH = aarch64
-then
-    test "x$PE_ARCHS" != x || AC_MSG_ERROR([PE cross-compilation is required for ARM64, please install clang/llvm-dlltool/lld, or llvm-mingw.])
-    DLLEXT=""
-fi
+CC=$saved_CC
+CFLAGS=$saved_CFLAGS
+LDFLAGS=$saved_LDFLAGS
+
+case $HOST_ARCH in
+  arm|aarch64)
+    test "x$PE_ARCHS" != x || AC_MSG_ERROR([PE cross-compilation is required for $HOST_ARCH, please install clang/llvm-dlltool/lld, or llvm-mingw.])
+    DLLEXT="" ;;
+esac
 
 dnl **** External libraries ****
 
@@ -1724,8 +1727,10 @@ WINE_NOTICE_WITH(udev,[test "x$UDEV_LIBS" = "x"],
                  [libudev ${notice_platform}development files not found, plug and play won't be supported.])
 
 dnl **** Check for libunwind ****
-if test "x$with_unwind" != xno
+if test $HOST_ARCH = x86_64
 then
+  if test "x$with_unwind" != xno
+  then
     WINE_PACKAGE_FLAGS(UNWIND,[libunwind],[-lunwind],,,
        [AC_CACHE_CHECK([for unw_step],wine_cv_have_unw_step,
            [AC_LINK_IFELSE([AC_LANG_PROGRAM([[#define UNW_LOCAL_ONLY
@@ -1751,12 +1756,13 @@ then
         then
             AC_DEFINE(HAVE_LIBUNWIND,1,[Define to 1 if you have the `unwind' library (-lunwind).])
         fi])
-fi
-case $host in
-  aarch64*|*-darwin*)
+  fi
+  case $host in
+  *-darwin*)
     WINE_NOTICE_WITH(unwind,[test "x$wine_cv_have_unw_step$wine_cv_have_libunwind_unw_step" = xnono],
                      [libunwind ${notice_platform}development files not found, stack unwinding won't work.]) ;;
-esac
+  esac
+fi
 
 dnl **** Check for libSDL2 ****
 if test "x$with_sdl" != "xno"
@@ -1938,6 +1944,9 @@ then
   WINE_TRY_CFLAGS([-Wvla])
   WINE_TRY_CFLAGS([-Wwrite-strings])
 
+  dnl GCC can't handle large files when -Wmisleading-indentation is enabled (https://gcc.gnu.org/bugzilla/show_bug.cgi?id=89549)
+  WINE_TRY_CFLAGS([-flarge-source-files -Wmisleading-indentation],[EXTRACFLAGS="$EXTRACFLAGS -Wno-misleading-indentation"])
+
   dnl Check for noisy string.h
   WINE_TRY_CFLAGS([-Wpointer-arith],
      [saved_string_h_CFLAGS=$CFLAGS
@@ -2015,17 +2024,16 @@ char*f(const char *h,char n) {return strchr(h,n);}]])],[ac_cv_c_logicalop_noisy=
         dnl Mingw uses Windows 64-bit types, not Unix ones
         cygwin*|mingw32*) WINE_TRY_CFLAGS([-Wno-format]) ;;
         dnl Default to ms_abi on 64-bit
-        *) if test -z "$PE_ARCHS"
-           then
-               AC_CACHE_CHECK([for working -mabi=ms], ac_cv_mabi_ms,
-                   [CFLAGS="$CFLAGS -mabi=ms"
-                    AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include <stdarg.h>
+        *) AC_CACHE_CHECK([for working -mabi=ms], ac_cv_mabi_ms,
+               [CFLAGS="$CFLAGS -mabi=ms"
+                AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include <stdarg.h>
 int a(int b, ...) { __builtin_ms_va_list list; __builtin_ms_va_start(list,b); }]])],
-                       [ac_cv_mabi_ms=yes],[ac_cv_mabi_ms=no])
-                    CFLAGS=$saved_CFLAGS])
-               test $ac_cv_mabi_ms = yes || AC_MSG_ERROR([The compiler doesn't support -mabi=ms. Use gcc instead of clang, or install mingw-w64.])
-           fi
-           MSVCRTFLAGS="$MSVCRTFLAGS -mabi=ms" ;;
+                   [ac_cv_mabi_ms=yes],[ac_cv_mabi_ms=no])
+                CFLAGS=$saved_CFLAGS])
+           AS_VAR_IF([ac_cv_mabi_ms],[yes],
+                     [MSVCRTFLAGS="$MSVCRTFLAGS -mabi=ms"],
+                     [test -n "$PE_ARCHS" || AC_MSG_ERROR([The compiler doesn't support -mabi=ms. Use gcc instead of clang, or install mingw-w64.])
+                      DLLEXT=""]) ;;
       esac ;;
     arm)
       WINE_TRY_CFLAGS([-Wincompatible-function-pointer-types],[EXTRACFLAGS="$EXTRACFLAGS -Wno-error=incompatible-function-pointer-types"]) ;;
