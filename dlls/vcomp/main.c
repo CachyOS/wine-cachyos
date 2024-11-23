@@ -1034,6 +1034,26 @@ double CDECL omp_get_wtime(void)
     return GetTickCount() / 1000.0;
 }
 
+/*****************************************************
+*      omp_get_wtick - Taken from:
+*      https://gist.github.com/Randl/45bcca59720f661fa033a67d5f44bff0
+*/
+double CDECL omp_get_wtick (void)
+{
+     /*return GetTickCount();*/
+    FILETIME createTime;
+    FILETIME exitTime;
+    FILETIME kernelTime;
+    FILETIME userTime;
+    ULARGE_INTEGER li;
+
+    GetProcessTimes(GetCurrentProcess(), &createTime, &exitTime, &kernelTime, &userTime);
+    li.LowPart = userTime.dwLowDateTime;
+    li.HighPart = userTime.dwHighDateTime;
+
+    return (double)li.QuadPart / 10000000.0;
+}
+
 void CDECL omp_set_dynamic(int val)
 {
     TRACE("(%d): stub\n", val);
@@ -1486,12 +1506,127 @@ void CDECL _vcomp_for_dynamic_init(unsigned int flags, unsigned int first, unsig
     }
 }
 
+void CDECL _vcomp_for_dynamic_init_i8(ULONG64 flags, ULONG64 first, ULONG64 last,
+                                   ULONG64 step, ULONG64 chunksize)
+{
+    ULONG64 iterations, per_thread, remaining;
+    struct vcomp_thread_data *thread_data = vcomp_init_thread_data();
+    struct vcomp_team_data *team_data = thread_data->team;
+    struct vcomp_task_data *task_data = thread_data->task;
+    LONG64 num_threads = team_data ? team_data->num_threads : 1;
+    LONG64 thread_num = thread_data->thread_num;
+    unsigned int type = flags & ~VCOMP_DYNAMIC_FLAGS_INCREMENT;
+
+    TRACE("(%llu, %llu, %llu, %lld, %llu)\n", flags, first, last, step, chunksize);
+
+    if (step <= 0)
+    {
+        thread_data->dynamic_type = 0;
+        return;
+    }
+
+    if (flags & VCOMP_DYNAMIC_FLAGS_INCREMENT)
+        iterations = 1 + (last - first) / step;
+    else
+    {
+        iterations = 1 + (first - last) / step;
+        step *= -1;
+    }
+
+    if (type == VCOMP_DYNAMIC_FLAGS_STATIC)
+    {
+        per_thread = iterations / num_threads;
+        remaining  = iterations - per_thread * num_threads;
+
+        if (thread_num < remaining)
+            per_thread++;
+        else if (per_thread)
+            first += remaining * step;
+        else
+        {
+            thread_data->dynamic_type = 0;
+            return;
+        }
+
+        thread_data->dynamic_type   = VCOMP_DYNAMIC_FLAGS_STATIC;
+        thread_data->dynamic_begin  = first + per_thread * thread_num * step;
+        thread_data->dynamic_end    = thread_data->dynamic_begin + (per_thread - 1) * step;
+    }
+    else
+    {
+        if (type != VCOMP_DYNAMIC_FLAGS_CHUNKED &&
+            type != VCOMP_DYNAMIC_FLAGS_GUIDED)
+        {
+            FIXME("unsupported flags %llu\n", flags);
+            type = VCOMP_DYNAMIC_FLAGS_GUIDED;
+        }
+
+        EnterCriticalSection(&vcomp_section);
+        thread_data->dynamic++;
+        thread_data->dynamic_type = type;
+        if ((LONG64)(thread_data->dynamic - task_data->dynamic) > 0)
+        {
+            task_data->dynamic              = thread_data->dynamic;
+            task_data->dynamic_first        = first;
+            task_data->dynamic_last         = last;
+            task_data->dynamic_iterations   = iterations;
+            task_data->dynamic_step         = step;
+            task_data->dynamic_chunksize    = chunksize;
+        }
+        LeaveCriticalSection(&vcomp_section);
+    }
+}
+
 int CDECL _vcomp_for_dynamic_next(unsigned int *begin, unsigned int *end)
 {
     struct vcomp_thread_data *thread_data = vcomp_init_thread_data();
     struct vcomp_task_data *task_data = thread_data->task;
     struct vcomp_team_data *team_data = thread_data->team;
     int num_threads = team_data ? team_data->num_threads : 1;
+
+    TRACE("(%p, %p)\n", begin, end);
+
+    if (thread_data->dynamic_type == VCOMP_DYNAMIC_FLAGS_STATIC)
+    {
+        *begin = thread_data->dynamic_begin;
+        *end   = thread_data->dynamic_end;
+        thread_data->dynamic_type = 0;
+        return 1;
+    }
+    else if (thread_data->dynamic_type == VCOMP_DYNAMIC_FLAGS_CHUNKED ||
+             thread_data->dynamic_type == VCOMP_DYNAMIC_FLAGS_GUIDED)
+    {
+        unsigned int iterations = 0;
+        EnterCriticalSection(&vcomp_section);
+        if (thread_data->dynamic == task_data->dynamic &&
+            task_data->dynamic_iterations != 0)
+        {
+            iterations = min(task_data->dynamic_iterations, task_data->dynamic_chunksize);
+            if (thread_data->dynamic_type == VCOMP_DYNAMIC_FLAGS_GUIDED &&
+                task_data->dynamic_iterations > num_threads * task_data->dynamic_chunksize)
+            {
+                iterations = (task_data->dynamic_iterations + num_threads - 1) / num_threads;
+            }
+            *begin = task_data->dynamic_first;
+            *end   = task_data->dynamic_first + (iterations - 1) * task_data->dynamic_step;
+            task_data->dynamic_iterations -= iterations;
+            task_data->dynamic_first      += iterations * task_data->dynamic_step;
+            if (!task_data->dynamic_iterations)
+                *end = task_data->dynamic_last;
+        }
+        LeaveCriticalSection(&vcomp_section);
+        return iterations != 0;
+    }
+
+    return 0;
+}
+
+LONG64 CDECL _vcomp_for_dynamic_next_i8(LONG64 *begin, LONG64 *end)
+{
+    struct vcomp_thread_data *thread_data = vcomp_init_thread_data();
+    struct vcomp_task_data *task_data = thread_data->task;
+    struct vcomp_team_data *team_data = thread_data->team;
+    LONG64 num_threads = team_data ? team_data->num_threads : 1;
 
     TRACE("(%p, %p)\n", begin, end);
 
