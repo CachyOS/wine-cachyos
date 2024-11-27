@@ -2000,12 +2000,20 @@ static const IMFAsyncCallbackVtbl stream_handler_callback_vtbl =
 HRESULT gstreamer_byte_stream_handler_2_create(REFIID riid, void **obj)
 {
     struct stream_handler *handler;
-    const char *sgi;
+    const char *env, *sgi;
     HRESULT hr;
 
     TRACE("%s, %p.\n", debugstr_guid(riid), obj);
 
-    if ((sgi = getenv("SteamGameId")) && (!strcmp(sgi, "418370") || !strcmp(sgi, "1196590")))
+    env = getenv("WINE_OLD_MEDIA_SOURCE");
+    sgi = getenv("SteamGameId");
+    if (!env && sgi)
+    {
+         if (!strcmp(sgi, "418370") /* Resident Evil 7 Biohazard */) env = "1";
+         if (!strcmp(sgi, "1196590") /* Resident Evil Village */) env = "1";
+         if (!strcmp(sgi, "686810") /* Hell Let Loose */) env = "1";
+    }
+    if (env && atoi(env))
         return gstreamer_byte_stream_handler_create(riid, obj);
 
     if (!(handler = calloc(1, sizeof(*handler))))
