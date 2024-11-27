@@ -53,6 +53,7 @@ struct wg_transform
     GstQuery *drain_query;
 
     GstAtomicQueue *input_queue;
+    GstBuffer *head_buffer;
     MFVideoInfo input_info;
     MFVideoInfo output_info;
 
@@ -64,6 +65,7 @@ struct wg_transform
     GstCaps *input_caps;
 
     bool draining;
+    bool do_small_push;
 };
 
 static struct wg_transform *get_transform(wg_transform_t trans)
@@ -549,6 +551,7 @@ NTSTATUS wg_transform_create(void *args)
     if (!(transform->allocator = wg_allocator_create()))
         goto out;
     transform->attrs = params->attrs;
+    transform->do_small_push = !strcmp(getenv("SteamGameId"), "255390");
 
     if (!(transform->input_caps = caps_from_media_type(&params->input_type)))
         goto out;
@@ -1138,18 +1141,38 @@ error:
 
 static bool get_transform_output(struct wg_transform *transform, struct wg_sample *sample)
 {
-    GstBuffer *input_buffer;
     GstFlowReturn ret;
 
     wg_allocator_provide_sample(transform->allocator, sample);
 
-    while (!(transform->output_sample = gst_atomic_queue_pop(transform->output_queue))
-            && (input_buffer = gst_atomic_queue_pop(transform->input_queue)))
+    while (!(transform->output_sample = gst_atomic_queue_pop(transform->output_queue)))
     {
-        if ((ret = gst_pad_push(transform->my_src, input_buffer)))
-            GST_WARNING("Failed to push transform input, error %d", ret);
+        // TODO: find a reasonable push size
+        gsize push_size = 4096, size, maxsize, offset;
+        GstBuffer *submit_buffer = NULL;
 
-        complete_drain(transform);
+        if (!transform->head_buffer)
+            transform->head_buffer = gst_atomic_queue_pop(transform->input_queue);
+        if (!transform->head_buffer)
+            break;
+
+        size = gst_buffer_get_sizes(transform->head_buffer, &offset, &maxsize);
+        if (size < push_size || !transform->do_small_push)
+            push_size = size;
+
+        submit_buffer = gst_buffer_copy_region(transform->head_buffer,
+            GST_BUFFER_COPY_METADATA | GST_BUFFER_COPY_MEMORY, 0, push_size);
+        if ((ret = gst_pad_push(transform->my_src, submit_buffer)))
+            GST_WARNING("Failed to push transform input, error %d", ret);
+        if (push_size < size)
+            gst_buffer_resize(transform->head_buffer, push_size, -1);
+        else
+        {
+            gst_buffer_unref(transform->head_buffer);
+            transform->head_buffer = NULL;
+            complete_drain(transform);
+        }
+
     }
 
     /* Remove the sample so the allocator cannot use it */
