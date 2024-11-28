@@ -299,9 +299,9 @@ static HRESULT WINAPI dmo_wrapper_sink_Receive(struct strmbase_sink *iface, IMed
     struct dmo_wrapper *filter = impl_from_strmbase_filter(iface->pin.filter);
     DWORD index = iface - filter->sinks;
     REFERENCE_TIME start = 0, stop = 0;
+    HRESULT process_hr, hr;
     IMediaObject *dmo;
     DWORD flags = 0;
-    HRESULT hr;
 
     if (filter->filter.state == State_Stopped)
         return VFW_E_WRONG_STATE;
@@ -323,7 +323,11 @@ static HRESULT WINAPI dmo_wrapper_sink_Receive(struct strmbase_sink *iface, IMed
          * states that we should call ProcessOutput() again in this case. */
         if (FAILED(hr = get_output_samples(filter)))
             goto out;
-        process_output(filter, dmo);
+        if (FAILED(process_hr = process_output(filter, dmo)))
+        {
+            hr = process_hr;
+            goto out;
+        }
     }
 
     if (FAILED(hr = get_output_samples(filter)))
@@ -347,7 +351,8 @@ static HRESULT WINAPI dmo_wrapper_sink_Receive(struct strmbase_sink *iface, IMed
         goto out;
     }
 
-    process_output(filter, dmo);
+    if (FAILED(process_hr = process_output(filter, dmo)))
+        hr = process_hr;
 
 out:
     filter->input_buffer.sample = NULL;
