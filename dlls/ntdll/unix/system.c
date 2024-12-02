@@ -685,7 +685,7 @@ static void fill_cpu_override(unsigned int host_cpu_count)
 
     if (host_cpu_count > MAXIMUM_PROCESSORS)
     {
-        FIXME( "%ld CPUs reported, clamping to supported count %d.\n", host_cpu_count, MAXIMUM_PROCESSORS );
+        FIXME( "%d CPUs reported, clamping to supported count %d.\n", host_cpu_count, MAXIMUM_PROCESSORS );
         host_cpu_count = MAXIMUM_PROCESSORS;
     }
 
