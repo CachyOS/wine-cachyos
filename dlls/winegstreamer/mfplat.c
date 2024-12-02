@@ -348,6 +348,7 @@ HRESULT mfplat_DllRegisterServer(void)
     MFT_REGISTER_TYPE_INFO audio_decoder_input_types[] =
     {
         {MFMediaType_Audio, MFAudioFormat_GStreamer},
+        {MFMediaType_Audio, MFAudioFormat_MP3},
     };
     MFT_REGISTER_TYPE_INFO audio_decoder_output_types[] =
     {
