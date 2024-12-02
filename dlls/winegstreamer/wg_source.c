@@ -483,7 +483,7 @@ static gboolean sink_event_tag(struct wg_source *source, GstPad *pad, GstEvent *
 static gboolean sink_event_stream_start(struct wg_source *source, GstPad *pad, GstEvent *event)
 {
     struct source_stream *stream = source_stream_from_pad(source, pad);
-    const gchar *new_id, *old_id = gst_stream_get_stream_id(stream->stream);
+    const gchar *new_id;
     GstStream *new_stream, *old_stream = stream->stream;
     guint group, flags;
     gint64 duration;
@@ -496,13 +496,14 @@ static gboolean sink_event_stream_start(struct wg_source *source, GstPad *pad, G
     if (!gst_event_parse_group_id(event, &group))
         group = -1;
 
-    if (strcmp(old_id, new_id))
+    if (!old_stream || strcmp(gst_stream_get_stream_id(old_stream), new_id))
     {
         if (!(stream->stream = new_stream))
             stream->stream = gst_stream_new(new_id, NULL, GST_STREAM_TYPE_UNKNOWN, 0);
         else
             gst_object_ref(stream->stream);
-        gst_object_unref(old_stream);
+        if (old_stream)
+            gst_object_unref(old_stream);
     }
 
     if (gst_pad_peer_query_duration(pad, GST_FORMAT_TIME, &duration) && GST_CLOCK_TIME_IS_VALID(duration))
