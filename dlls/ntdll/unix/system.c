@@ -683,6 +683,12 @@ static void fill_cpu_override(unsigned int host_cpu_count)
     if (!env_override)
         return;
 
+    if (host_cpu_count > MAXIMUM_PROCESSORS)
+    {
+        FIXME( "%ld CPUs reported, clamping to supported count %d.\n", host_cpu_count, MAXIMUM_PROCESSORS );
+        host_cpu_count = MAXIMUM_PROCESSORS;
+    }
+
     cpu_override.mapping.cpu_count = strtol(env_override, &s, 10);
     if (s == env_override)
         goto error;
