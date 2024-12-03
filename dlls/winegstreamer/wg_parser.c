@@ -714,8 +714,14 @@ static gboolean autoplug_continue_cb(GstElement * decodebin, GstPad *pad, GstCap
     gboolean parsed;
     const char *sgi;
 
-    if ((sgi = getenv("SteamGameId")) && (!strcmp(sgi, "1083650") || !strcmp(sgi, "1097880")))
+    /* For now, We can't decode theora and vorbis with dmo, if we output compressed
+     * samples, it can't be decoded by downstream dmowrapper filter. So we output
+     * uncompressed samples, then downstream dmo will be able to accept it.*/
+    if ((sgi = getenv("SteamGameId")) && is_kirikiri_game(sgi))
+    {
+        GST_FIXME("HACK: Always output uncompressed samples for kirikiri games.");
         return true;
+    }
 
     if (!parser->output_compressed)
         return true;
