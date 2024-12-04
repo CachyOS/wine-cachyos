@@ -4127,8 +4127,11 @@ DECLSPEC_EXPORT VkInstance __wine_get_native_VkInstance(VkInstance handle)
 
 DECLSPEC_EXPORT VkPhysicalDevice __wine_get_native_VkPhysicalDevice(VkPhysicalDevice handle)
 {
-    struct wine_phys_dev *phys_dev = wine_phys_dev_from_handle(handle);
+    struct wine_phys_dev *phys_dev;
 
+    if (!handle) return NULL;
+
+    phys_dev = wine_phys_dev_from_handle(handle);
     return phys_dev->host_physical_device;
 }
 
