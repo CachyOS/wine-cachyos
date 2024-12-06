@@ -7250,7 +7250,7 @@ static FORCEINLINE unsigned char InterlockedCompareExchange128( volatile __int64
 
 static FORCEINLINE void YieldProcessor(void)
 {
-#ifdef __GNUC__
+#if defined(__GNUC__) || defined(__clang__)
 #if defined(__i386__) || defined(__x86_64__)
     __asm__ __volatile__( "rep; nop" : : : "memory" );
 #elif defined(__arm__) || defined(__aarch64__)
