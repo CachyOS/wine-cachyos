@@ -145,7 +145,7 @@ static void init_dialog(HWND dialog)
 	CheckDlgButton(dialog, IDC_ENABLE_MANAGED, BST_UNCHECKED);
     free(buf);
 
-    buf = get_reg_key(config_key, keypath(L"X11 Driver"), L"Decorated", L"Y");
+    buf = get_reg_key(config_key, keypath(L"X11 Driver"), L"Decorated", L"N");
     if (IS_OPTION_TRUE(*buf))
 	CheckDlgButton(dialog, IDC_ENABLE_DECORATED, BST_CHECKED);
     else
