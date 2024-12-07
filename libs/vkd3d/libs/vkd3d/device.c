@@ -94,6 +94,7 @@ static const struct vkd3d_optional_extension_info optional_device_extensions[] =
     VK_EXTENSION(EXT_DEBUG_MARKER, EXT_debug_marker),
     VK_EXTENSION(EXT_DEPTH_CLIP_ENABLE, EXT_depth_clip_enable),
     VK_EXTENSION(EXT_DESCRIPTOR_INDEXING, EXT_descriptor_indexing),
+    VK_EXTENSION(EXT_MUTABLE_DESCRIPTOR_TYPE, EXT_mutable_descriptor_type),
     VK_EXTENSION(EXT_ROBUSTNESS_2, EXT_robustness2),
     VK_EXTENSION(EXT_SHADER_DEMOTE_TO_HELPER_INVOCATION, EXT_shader_demote_to_helper_invocation),
     VK_EXTENSION(EXT_SHADER_STENCIL_EXPORT, EXT_shader_stencil_export),
@@ -106,13 +107,32 @@ static HRESULT vkd3d_create_vk_descriptor_heap_layout(struct d3d12_device *devic
 {
     const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
     VkDescriptorSetLayoutBindingFlagsCreateInfoEXT flags_info;
+    VkMutableDescriptorTypeCreateInfoEXT mutable_info;
+    VkMutableDescriptorTypeListEXT type_list;
     VkDescriptorSetLayoutCreateInfo set_desc;
     VkDescriptorBindingFlagsEXT set_flags;
     VkDescriptorSetLayoutBinding binding;
     VkResult vr;
 
+    static const VkDescriptorType descriptor_types[] =
+    {
+        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,
+        VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+        VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,
+        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+    };
+
+    if (device->vk_info.EXT_mutable_descriptor_type && index && index != VKD3D_SET_INDEX_UAV_COUNTER
+            && device->vk_descriptor_heap_layouts[index].applicable_heap_type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV)
+    {
+        device->vk_descriptor_heap_layouts[index].vk_set_layout = VK_NULL_HANDLE;
+        return S_OK;
+    }
+
     binding.binding = 0;
-    binding.descriptorType = device->vk_descriptor_heap_layouts[index].type;
+    binding.descriptorType = (device->vk_info.EXT_mutable_descriptor_type && !index)
+            ? VK_DESCRIPTOR_TYPE_MUTABLE_EXT : device->vk_descriptor_heap_layouts[index].type;
     binding.descriptorCount = device->vk_descriptor_heap_layouts[index].count;
     binding.stageFlags = VK_SHADER_STAGE_ALL;
     binding.pImmutableSamplers = NULL;
@@ -131,6 +151,17 @@ static HRESULT vkd3d_create_vk_descriptor_heap_layout(struct d3d12_device *devic
     flags_info.pNext = NULL;
     flags_info.bindingCount = 1;
     flags_info.pBindingFlags = &set_flags;
+
+    if (binding.descriptorType == VK_DESCRIPTOR_TYPE_MUTABLE_EXT)
+    {
+        type_list.descriptorTypeCount = ARRAY_SIZE(descriptor_types);
+        type_list.pDescriptorTypes = descriptor_types;
+        mutable_info.sType = VK_STRUCTURE_TYPE_MUTABLE_DESCRIPTOR_TYPE_CREATE_INFO_EXT;
+        mutable_info.pNext = NULL;
+        mutable_info.mutableDescriptorTypeListCount = 1;
+        mutable_info.pMutableDescriptorTypeLists = &type_list;
+        flags_info.pNext = &mutable_info;
+    }
 
     if ((vr = VK_CALL(vkCreateDescriptorSetLayout(device->vk_device, &set_desc, NULL,
             &device->vk_descriptor_heap_layouts[index].vk_set_layout))) < 0)
@@ -763,6 +794,7 @@ struct vkd3d_physical_device_info
     VkPhysicalDeviceTransformFeedbackFeaturesEXT xfb_features;
     VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT vertex_divisor_features;
     VkPhysicalDeviceTimelineSemaphoreFeaturesKHR timeline_semaphore_features;
+    VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT mutable_features;
 
     VkPhysicalDeviceFeatures2 features2;
 };
@@ -780,6 +812,7 @@ static void vkd3d_physical_device_info_init(struct vkd3d_physical_device_info *i
     VkPhysicalDeviceTexelBufferAlignmentFeaturesEXT *buffer_alignment_features;
     VkPhysicalDeviceShaderDemoteToHelperInvocationFeaturesEXT *demote_features;
     VkPhysicalDeviceTimelineSemaphoreFeaturesKHR *timeline_semaphore_features;
+    VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT *mutable_features;
     VkPhysicalDeviceDepthClipEnableFeaturesEXT *depth_clip_features;
     VkPhysicalDeviceMaintenance3Properties *maintenance3_properties;
     VkPhysicalDeviceTransformFeedbackPropertiesEXT *xfb_properties;
@@ -800,6 +833,7 @@ static void vkd3d_physical_device_info_init(struct vkd3d_physical_device_info *i
     vertex_divisor_features = &info->vertex_divisor_features;
     vertex_divisor_properties = &info->vertex_divisor_properties;
     timeline_semaphore_features = &info->timeline_semaphore_features;
+    mutable_features = &info->mutable_features;
     xfb_features = &info->xfb_features;
     xfb_properties = &info->xfb_properties;
 
@@ -823,6 +857,8 @@ static void vkd3d_physical_device_info_init(struct vkd3d_physical_device_info *i
     vk_prepend_struct(&info->features2, vertex_divisor_features);
     timeline_semaphore_features->sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES_KHR;
     vk_prepend_struct(&info->features2, timeline_semaphore_features);
+    mutable_features->sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT;
+    vk_prepend_struct(&info->features2, mutable_features);
 
     if (vulkan_info->KHR_get_physical_device_properties2)
         VK_CALL(vkGetPhysicalDeviceFeatures2KHR(physical_device, &info->features2));
@@ -1594,6 +1630,8 @@ static HRESULT vkd3d_init_device_caps(struct d3d12_device *device,
         vulkan_info->EXT_shader_demote_to_helper_invocation = false;
     if (!physical_device_info->texel_buffer_alignment_features.texelBufferAlignment)
         vulkan_info->EXT_texel_buffer_alignment = false;
+    if (!physical_device_info->mutable_features.mutableDescriptorType)
+        vulkan_info->EXT_mutable_descriptor_type = false;
     if (!physical_device_info->timeline_semaphore_features.timelineSemaphore)
         vulkan_info->KHR_timeline_semaphore = false;
 
@@ -2056,7 +2094,7 @@ static HRESULT d3d12_device_init_pipeline_cache(struct d3d12_device *device)
     VkPipelineCacheCreateInfo cache_info;
     VkResult vr;
 
-    vkd3d_mutex_init(&device->mutex);
+    vkd3d_mutex_init(&device->pipeline_cache_mutex);
 
     cache_info.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
     cache_info.pNext = NULL;
@@ -2080,7 +2118,7 @@ static void d3d12_device_destroy_pipeline_cache(struct d3d12_device *device)
     if (device->vk_pipeline_cache)
         VK_CALL(vkDestroyPipelineCache(device->vk_device, device->vk_pipeline_cache, NULL));
 
-    vkd3d_mutex_destroy(&device->mutex);
+    vkd3d_mutex_destroy(&device->pipeline_cache_mutex);
 }
 
 #define VKD3D_VA_FALLBACK_BASE      0x8000000000000000ull
@@ -2495,6 +2533,28 @@ static ULONG STDMETHODCALLTYPE d3d12_device_AddRef(ID3D12Device5 *iface)
     return refcount;
 }
 
+static HRESULT device_worker_stop(struct d3d12_device *device)
+{
+    HRESULT hr;
+
+    TRACE("device %p.\n", device);
+
+    vkd3d_mutex_lock(&device->worker_mutex);
+
+    device->worker_should_exit = true;
+    vkd3d_cond_signal(&device->worker_cond);
+
+    vkd3d_mutex_unlock(&device->worker_mutex);
+
+    if (FAILED(hr = vkd3d_join_thread(device->vkd3d_instance, &device->worker_thread)))
+        return hr;
+
+    vkd3d_mutex_destroy(&device->worker_mutex);
+    vkd3d_cond_destroy(&device->worker_cond);
+
+    return S_OK;
+}
+
 static ULONG STDMETHODCALLTYPE d3d12_device_Release(ID3D12Device5 *iface)
 {
     struct d3d12_device *device = impl_from_ID3D12Device5(iface);
@@ -2520,6 +2580,9 @@ static ULONG STDMETHODCALLTYPE d3d12_device_Release(ID3D12Device5 *iface)
         d3d12_device_destroy_vkd3d_queues(device);
         vkd3d_desc_object_cache_cleanup(&device->view_desc_cache);
         vkd3d_desc_object_cache_cleanup(&device->cbuffer_desc_cache);
+        if (device->use_vk_heaps)
+            device_worker_stop(device);
+        vkd3d_free(device->heaps);
         VK_CALL(vkDestroyDevice(device->vk_device, NULL));
         if (device->parent)
             IUnknown_Release(device->parent);
@@ -4251,6 +4314,40 @@ struct d3d12_device *unsafe_impl_from_ID3D12Device5(ID3D12Device5 *iface)
     return impl_from_ID3D12Device5(iface);
 }
 
+static void *device_worker_main(void *arg)
+{
+    struct d3d12_descriptor_heap *heap;
+    struct d3d12_device *device = arg;
+    size_t i;
+
+    vkd3d_set_thread_name("device_worker");
+
+    vkd3d_mutex_lock(&device->worker_mutex);
+
+    while (!device->worker_should_exit)
+    {
+        for (i = 0; i < device->heap_count; ++i)
+        {
+            /* Descriptor updates are not written to Vulkan descriptor sets until a command list
+             * is submitted to a queue, while the client is free to write d3d12 descriptors earlier,
+             * from any thread. This causes a delay right before command list execution, so
+             * handling these updates in a worker thread can speed up execution significantly. */
+            heap = device->heaps[i];
+            if (heap->dirty_list_head == UINT_MAX)
+                continue;
+            vkd3d_mutex_lock(&heap->vk_sets_mutex);
+            d3d12_desc_flush_vk_heap_updates_locked(heap, device);
+            vkd3d_mutex_unlock(&heap->vk_sets_mutex);
+        }
+
+        vkd3d_cond_wait(&device->worker_cond, &device->worker_mutex);
+    }
+
+    vkd3d_mutex_unlock(&device->worker_mutex);
+
+    return NULL;
+}
+
 static HRESULT d3d12_device_init(struct d3d12_device *device,
         struct vkd3d_instance *instance, const struct vkd3d_device_create_info *create_info)
 {
@@ -4269,6 +4366,14 @@ static HRESULT d3d12_device_init(struct d3d12_device *device,
     device->removed_reason = S_OK;
 
     device->vk_device = VK_NULL_HANDLE;
+
+    device->heaps = NULL;
+    device->heap_capacity = 0;
+    device->heap_count = 0;
+    memset(&device->worker_thread, 0, sizeof(device->worker_thread));
+    device->worker_should_exit = false;
+    vkd3d_mutex_init(&device->worker_mutex);
+    vkd3d_cond_init(&device->worker_cond);
 
     if (FAILED(hr = vkd3d_create_vk_device(device, create_info)))
         goto out_free_instance;
@@ -4291,6 +4396,13 @@ static HRESULT d3d12_device_init(struct d3d12_device *device,
     if (FAILED(hr = vkd3d_vk_descriptor_heap_layouts_init(device)))
         goto out_cleanup_uav_clear_state;
 
+    if (device->use_vk_heaps && FAILED(hr = vkd3d_create_thread(device->vkd3d_instance,
+            device_worker_main, device, &device->worker_thread)))
+    {
+        WARN("Failed to create worker thread, hr %#x.\n", hr);
+        goto out_cleanup_descriptor_heap_layouts;
+    }
+
     vkd3d_render_pass_cache_init(&device->render_pass_cache);
     vkd3d_gpu_va_allocator_init(&device->gpu_va_allocator);
     vkd3d_time_domains_init(device);
@@ -4308,6 +4420,8 @@ static HRESULT d3d12_device_init(struct d3d12_device *device,
 
     return S_OK;
 
+out_cleanup_descriptor_heap_layouts:
+    vkd3d_vk_descriptor_heap_layouts_cleanup(device);
 out_cleanup_uav_clear_state:
     vkd3d_uav_clear_state_cleanup(&device->uav_clear_state, device);
 out_destroy_null_resources:
@@ -4361,6 +4475,40 @@ void d3d12_device_mark_as_removed(struct d3d12_device *device, HRESULT reason,
     device->removed_reason = reason;
 }
 
+HRESULT d3d12_device_add_descriptor_heap(struct d3d12_device *device, struct d3d12_descriptor_heap *heap)
+{
+    vkd3d_mutex_lock(&device->worker_mutex);
+
+    if (!vkd3d_array_reserve((void **)&device->heaps, &device->heap_capacity, device->heap_count + 1,
+            sizeof(*device->heaps)))
+    {
+        vkd3d_mutex_unlock(&device->worker_mutex);
+        return E_OUTOFMEMORY;
+    }
+    device->heaps[device->heap_count++] = heap;
+
+    vkd3d_mutex_unlock(&device->worker_mutex);
+
+    return S_OK;
+}
+
+void d3d12_device_remove_descriptor_heap(struct d3d12_device *device, struct d3d12_descriptor_heap *heap)
+{
+    size_t i;
+
+    vkd3d_mutex_lock(&device->worker_mutex);
+
+    for (i = 0; i < device->heap_count; ++i)
+    {
+        if (device->heaps[i] == heap)
+        {
+            device->heaps[i] = device->heaps[--device->heap_count];
+            break;
+        }
+    }
+
+    vkd3d_mutex_unlock(&device->worker_mutex);
+}
 
 #ifdef _WIN32
 struct thread_data
@@ -4403,7 +4551,7 @@ HRESULT vkd3d_create_thread(struct vkd3d_instance *instance,
         thread_data->data = data;
         if (!(thread->handle = CreateThread(NULL, 0, call_thread_main, thread_data, 0, NULL)))
         {
-            ERR("Failed to create thread, error %d.\n", GetLastError());
+            ERR("Failed to create thread, error %lu.\n", GetLastError());
             vkd3d_free(thread_data);
             hr = E_FAIL;
         }
