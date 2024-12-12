@@ -3159,6 +3159,14 @@ static HANDLE get_server_queue_handle(void)
     return ret;
 }
 
+/* monotonic timer tick for throttling driver event checks */
+static inline LONGLONG get_driver_check_time(void)
+{
+    LARGE_INTEGER counter, freq;
+    NtQueryPerformanceCounter( &counter, &freq );
+    return counter.QuadPart * 8000 / freq.QuadPart; /* 8kHz */
+}
+
 /* check for driver events if we detect that the app is not properly consuming messages */
 static inline void check_for_driver_events( UINT msg )
 {
@@ -3358,7 +3366,7 @@ BOOL WINAPI NtUserPeekMessage( MSG *msg_out, HWND hwnd, UINT first, UINT last, U
     int ret;
 
     user_check_not_lock();
-    if (thread_info->last_driver_time != NtGetTickCount())
+    if (thread_info->last_driver_time != get_driver_check_time())
         check_for_driver_events( 0 );
 
     ret = peek_message( &msg, hwnd, first, last, flags, 0, FALSE );
@@ -3366,8 +3374,8 @@ BOOL WINAPI NtUserPeekMessage( MSG *msg_out, HWND hwnd, UINT first, UINT last, U
 
     if (!ret)
     {
-        if (thread_info->last_driver_time == NtGetTickCount()) return FALSE;
-        thread_info->last_driver_time = NtGetTickCount();
+        if (thread_info->last_driver_time == get_driver_check_time()) return FALSE;
+        thread_info->last_driver_time = get_driver_check_time();
         flush_window_surfaces( TRUE );
         ret = wait_message( 0, NULL, 0, QS_ALLINPUT, 0 );
         /* if we received driver events, check again for a pending message */
@@ -3375,7 +3383,7 @@ BOOL WINAPI NtUserPeekMessage( MSG *msg_out, HWND hwnd, UINT first, UINT last, U
     }
 
     check_for_driver_events( msg.message );
-    thread_info->last_driver_time = NtGetTickCount() - 1;
+    thread_info->last_driver_time = get_driver_check_time() - 1;
 
     /* copy back our internal safe copy of message data to msg_out.
      * msg_out is a variable from the *program*, so it can't be used
