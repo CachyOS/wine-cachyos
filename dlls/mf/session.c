@@ -55,6 +55,7 @@ struct session_op
     IUnknown IUnknown_iface;
     LONG refcount;
     enum session_command command;
+    BOOL submitted;
     union
     {
         struct
@@ -464,7 +465,10 @@ static HRESULT session_submit_command(struct media_session *session, struct sess
     if (SUCCEEDED(hr = session_is_shut_down(session)))
     {
         if (list_empty(&session->commands) && !(session->presentation.flags & SESSION_FLAG_PENDING_COMMAND))
+        {
             hr = MFPutWorkItem(MFASYNC_CALLBACK_QUEUE_STANDARD, &session->commands_callback, &op->IUnknown_iface);
+            op->submitted = SUCCEEDED(hr);
+        }
         if (op->command == SESSION_CMD_SHUTDOWN)
             list_add_head(&session->commands, &op->entry);
         else
@@ -856,6 +860,11 @@ static void session_clear_command_list(struct media_session *session)
 
     LIST_FOR_EACH_ENTRY_SAFE(op, op2, &session->commands, struct session_op, entry)
     {
+        /* Checking this flag is unnecessary if this function is only called
+         * from the callback or upon release, but do it for consistency and
+         * in case a call from elsewhere is added. */
+        if (op->submitted)
+            continue;
         list_remove(&op->entry);
         IUnknown_Release(&op->IUnknown_iface);
     }
@@ -954,6 +963,7 @@ static void session_command_complete(struct media_session *session)
 {
     struct session_op *op;
     struct list *e;
+    HRESULT hr;
 
     session->presentation.flags &= ~SESSION_FLAG_PENDING_COMMAND;
 
@@ -961,7 +971,8 @@ static void session_command_complete(struct media_session *session)
     if ((e = list_head(&session->commands)))
     {
         op = LIST_ENTRY(e, struct session_op, entry);
-        MFPutWorkItem(MFASYNC_CALLBACK_QUEUE_STANDARD, &session->commands_callback, &op->IUnknown_iface);
+        hr = MFPutWorkItem(MFASYNC_CALLBACK_QUEUE_STANDARD, &session->commands_callback, &op->IUnknown_iface);
+        op->submitted = SUCCEEDED(hr);
     }
 }
 
