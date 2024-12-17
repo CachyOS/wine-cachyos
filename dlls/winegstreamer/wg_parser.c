@@ -275,7 +275,6 @@ kirikiri_games[] =
     {"1083650", "WMV3", 0}, /* Super Naughty Maid */
     {"1097880", "WMV3", 0}, /* Super Naughty Maid 2 */
     {"1230140", "WMV3", 2}, /* ATRI -My Dear Moments- */
-    {"2515070", "WVC1", 3}, /* AQUARIUM */
     {"802870",  "WMV3", 2}, /* The Ditzy Demons Are In Love With Me */
 };
 
