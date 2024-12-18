@@ -871,10 +871,20 @@ DWORD WINAPI DECLSPEC_HOTPATCH XInputSetState(DWORD index, XINPUT_VIBRATION *vib
     return ret;
 }
 
-/* Some versions of SteamOverlayRenderer hot-patch XInputGetStateEx() and call
- * XInputGetState() in the hook, so we need a wrapper. */
-static DWORD xinput_get_state(DWORD index, XINPUT_STATE *state)
+DWORD WINAPI DECLSPEC_HOTPATCH XInputGetState( DWORD index, XINPUT_STATE *state )
 {
+    DWORD ret;
+
+    if ((ret = XInputGetStateEx( index, state ))) return ret;
+    /* The main difference between this and the Ex version is the media guide button */
+    state->Gamepad.wButtons &= ~XINPUT_GAMEPAD_GUIDE;
+    return ret;
+}
+
+DWORD WINAPI DECLSPEC_HOTPATCH XInputGetStateEx( DWORD index, XINPUT_STATE *state )
+{
+    TRACE("index %lu, state %p.\n", index, state);
+
     if (!state) return ERROR_BAD_ARGUMENTS;
 
     start_update_thread();
@@ -889,28 +899,6 @@ static DWORD xinput_get_state(DWORD index, XINPUT_STATE *state)
     controller_unlock(&controllers[index]);
 
     return ERROR_SUCCESS;
-}
-
-DWORD WINAPI DECLSPEC_HOTPATCH XInputGetState(DWORD index, XINPUT_STATE *state)
-{
-    DWORD ret;
-
-    TRACE("index %lu, state %p.\n", index, state);
-
-    ret = xinput_get_state(index, state);
-    if (ret != ERROR_SUCCESS) return ret;
-
-    /* The main difference between this and the Ex version is the media guide button */
-    state->Gamepad.wButtons &= ~XINPUT_GAMEPAD_GUIDE;
-
-    return ERROR_SUCCESS;
-}
-
-DWORD WINAPI DECLSPEC_HOTPATCH XInputGetStateEx(DWORD index, XINPUT_STATE *state)
-{
-    TRACE("index %lu, state %p.\n", index, state);
-
-    return xinput_get_state(index, state);
 }
 
 static const int JS_STATE_OFF = 0;
