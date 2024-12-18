@@ -73,6 +73,10 @@ struct xinput_controller
         HIDP_VALUE_CAPS ry_caps;
         HIDP_VALUE_CAPS rt_caps;
 
+        HANDLE write_event;
+        OVERLAPPED write_ovl;
+        XINPUT_VIBRATION write_state;
+
         HANDLE read_event;
         OVERLAPPED read_ovl;
 
@@ -165,6 +169,61 @@ static DWORD controller_end_read( struct xinput_controller *controller )
 
     if (!GetOverlappedResult( controller->device, &controller->hid.read_ovl, &read_len, TRUE )) return GetLastError();
     memset( &controller->hid.read_ovl, 0, sizeof(controller->hid.read_ovl) );
+    return ERROR_SUCCESS;
+}
+
+static DWORD controller_begin_write( struct xinput_controller *controller, const XINPUT_VIBRATION *state )
+{
+    ULONG report_len = controller->hid.caps.OutputReportByteLength;
+    PHIDP_PREPARSED_DATA preparsed = controller->hid.preparsed;
+    char *report_buf = controller->hid.output_report_buf;
+    USHORT collection;
+    NTSTATUS status;
+    BYTE report_id;
+
+    if (controller->hid.write_ovl.hEvent) return ERROR_BUSY;
+    memset( &controller->hid.write_ovl, 0, sizeof(controller->hid.write_ovl) );
+    ResetEvent( controller->hid.write_event );
+
+    if (!(controller->caps.Flags & XINPUT_CAPS_FFB_SUPPORTED)) return ERROR_SUCCESS;
+    if (!memcmp( state, &controller->hid.write_state, sizeof(*state) )) return ERROR_SUCCESS;
+
+    report_id = controller->hid.haptics_report;
+    status = HidP_InitializeReportForID( HidP_Output, report_id, preparsed, report_buf, report_len );
+    if (status != HIDP_STATUS_SUCCESS) WARN( "HidP_InitializeReportForID returned %#lx\n", status );
+
+    collection = controller->hid.haptics_rumble_caps.LinkCollection;
+    status = HidP_SetUsageValue( HidP_Output, HID_USAGE_PAGE_HAPTICS, collection, HID_USAGE_HAPTICS_INTENSITY,
+                                state->wLeftMotorSpeed, preparsed, report_buf, report_len );
+    if (status != HIDP_STATUS_SUCCESS) WARN( "HidP_SetUsageValue INTENSITY returned %#lx\n", status );
+
+    collection = controller->hid.haptics_buzz_caps.LinkCollection;
+    status = HidP_SetUsageValue( HidP_Output, HID_USAGE_PAGE_HAPTICS, collection, HID_USAGE_HAPTICS_INTENSITY,
+                                state->wRightMotorSpeed, preparsed, report_buf, report_len );
+    if (status != HIDP_STATUS_SUCCESS) WARN( "HidP_SetUsageValue INTENSITY returned %#lx\n", status );
+
+    controller->hid.write_ovl.hEvent = controller->hid.write_event;
+    controller->hid.write_state = *state;
+
+    if (WriteFile( controller->device, report_buf, report_len, NULL, &controller->hid.write_ovl )) return ERROR_SUCCESS;
+    if (GetLastError() == ERROR_IO_PENDING) return ERROR_SUCCESS;
+    return GetLastError();
+}
+
+static DWORD controller_cancel_write( struct xinput_controller *controller )
+{
+    CancelIoEx( controller->device, &controller->hid.write_ovl );
+    WaitForSingleObject( controller->hid.write_ovl.hEvent, INFINITE );
+    memset( &controller->hid.write_ovl, 0, sizeof(controller->hid.write_ovl) );
+    return ERROR_SUCCESS;
+}
+
+static DWORD controller_end_write( struct xinput_controller *controller )
+{
+    DWORD write_len;
+
+    if (!GetOverlappedResult( controller->device, &controller->hid.write_ovl, &write_len, TRUE )) return GetLastError();
+    memset( &controller->hid.write_ovl, 0, sizeof(controller->hid.write_ovl) );
     return ERROR_SUCCESS;
 }
 
@@ -315,56 +374,6 @@ static BOOL controller_check_caps(struct xinput_controller *controller, HANDLE d
     return TRUE;
 }
 
-static DWORD HID_set_state(struct xinput_controller *controller, XINPUT_VIBRATION *state)
-{
-    ULONG report_len = controller->hid.caps.OutputReportByteLength;
-    PHIDP_PREPARSED_DATA preparsed = controller->hid.preparsed;
-    char *report_buf = controller->hid.output_report_buf;
-    BOOL ret, update_rumble, update_buzz;
-    USHORT collection;
-    NTSTATUS status;
-    BYTE report_id;
-
-    if (!(controller->caps.Flags & XINPUT_CAPS_FFB_SUPPORTED)) return ERROR_SUCCESS;
-
-    update_rumble = (controller->vibration.wLeftMotorSpeed != state->wLeftMotorSpeed);
-    controller->vibration.wLeftMotorSpeed = state->wLeftMotorSpeed;
-    update_buzz = (controller->vibration.wRightMotorSpeed != state->wRightMotorSpeed);
-    controller->vibration.wRightMotorSpeed = state->wRightMotorSpeed;
-
-    if (!controller->enabled) return ERROR_SUCCESS;
-    if (!update_rumble && !update_buzz) return ERROR_SUCCESS;
-
-    report_id = controller->hid.haptics_report;
-    status = HidP_InitializeReportForID(HidP_Output, report_id, preparsed, report_buf, report_len);
-    if (status != HIDP_STATUS_SUCCESS) WARN("HidP_InitializeReportForID returned %#lx\n", status);
-
-    collection = controller->hid.haptics_rumble_caps.LinkCollection;
-    status = HidP_SetUsageValue(HidP_Output, HID_USAGE_PAGE_HAPTICS, collection, HID_USAGE_HAPTICS_INTENSITY,
-                                state->wLeftMotorSpeed, preparsed, report_buf, report_len);
-    if (status != HIDP_STATUS_SUCCESS) WARN("HidP_SetUsageValue INTENSITY returned %#lx\n", status);
-
-    collection = controller->hid.haptics_buzz_caps.LinkCollection;
-    status = HidP_SetUsageValue(HidP_Output, HID_USAGE_PAGE_HAPTICS, collection, HID_USAGE_HAPTICS_INTENSITY,
-                                state->wRightMotorSpeed, preparsed, report_buf, report_len);
-    if (status != HIDP_STATUS_SUCCESS) WARN("HidP_SetUsageValue INTENSITY returned %#lx\n", status);
-
-    ret = HidD_SetOutputReport(controller->device, report_buf, report_len);
-    if (!ret) WARN("HidD_SetOutputReport failed with error %lu\n", GetLastError());
-    return 0;
-
-    return ERROR_SUCCESS;
-}
-
-static void controller_disable(struct xinput_controller *controller)
-{
-    XINPUT_VIBRATION state = {0};
-
-    if (!controller->enabled) return;
-    if (controller->caps.Flags & XINPUT_CAPS_FFB_SUPPORTED) HID_set_state(controller, &state);
-    controller->enabled = FALSE;
-}
-
 static void controller_destroy(struct xinput_controller *controller, BOOL already_removed)
 {
     EnterCriticalSection(&controller->crit);
@@ -375,9 +384,13 @@ static void controller_destroy(struct xinput_controller *controller, BOOL alread
 
         if (!already_removed)
         {
+            static XINPUT_VIBRATION neutral_state = {0};
             controller_cancel_read( controller );
-            controller_disable(controller);
+            controller_cancel_write( controller );
+            controller_begin_write( controller, &neutral_state );
+            controller_end_write( controller );
         }
+
         CloseHandle(controller->device);
         controller->device = NULL;
 
@@ -391,40 +404,60 @@ static void controller_destroy(struct xinput_controller *controller, BOOL alread
     LeaveCriticalSection(&controller->crit);
 }
 
-static void controller_enable(struct xinput_controller *controller)
+static void controller_enable( struct xinput_controller *controller )
 {
-    XINPUT_VIBRATION state = controller->vibration;
-
     if (controller->enabled) return;
-    if (controller->caps.Flags & XINPUT_CAPS_FFB_SUPPORTED) HID_set_state(controller, &state);
     controller->enabled = TRUE;
+
+    controller_cancel_write( controller );
+    controller_begin_write( controller, &controller->vibration );
+}
+
+static void controller_disable( struct xinput_controller *controller )
+{
+    static const XINPUT_VIBRATION neutral_state = {0};
+
+    if (!controller->enabled) return;
+    controller->enabled = FALSE;
+
+    controller_cancel_write( controller );
+    controller_begin_write( controller, &neutral_state );
+}
+
+static DWORD controller_set_state( struct xinput_controller *controller, XINPUT_VIBRATION *state )
+{
+    static XINPUT_VIBRATION neutral_state = {0};
+    controller->vibration = *state;
+    controller_begin_write( controller, controller->enabled ? &controller->vibration : &neutral_state );
+    return ERROR_SUCCESS;
 }
 
 static BOOL controller_init(struct xinput_controller *controller, PHIDP_PREPARSED_DATA preparsed,
                             HIDP_CAPS *caps, HANDLE device, const WCHAR *device_path)
 {
-    HANDLE event = NULL;
+    HANDLE read_event = NULL, write_event = NULL;
 
     controller->hid.caps = *caps;
     if (!(controller->hid.feature_report_buf = calloc(1, controller->hid.caps.FeatureReportByteLength))) goto failed;
     if (!controller_check_caps(controller, device, preparsed)) goto failed;
-    if (!(event = CreateEventW(NULL, TRUE, FALSE, NULL))) goto failed;
+    if (!(read_event = CreateEventW(NULL, TRUE, FALSE, NULL))) goto failed;
+    if (!(write_event = CreateEventW(NULL, TRUE, FALSE, NULL))) goto failed;
 
     TRACE("Found gamepad %s\n", debugstr_w(device_path));
 
     controller->hid.preparsed = preparsed;
-    controller->hid.read_event = event;
+    controller->hid.read_event = read_event;
+    controller->hid.write_event = write_event;
     if (!(controller->hid.input_report_buf = calloc(1, controller->hid.caps.InputReportByteLength))) goto failed;
     if (!(controller->hid.output_report_buf = calloc(1, controller->hid.caps.OutputReportByteLength))) goto failed;
 
     memset(&controller->state, 0, sizeof(controller->state));
     memset(&controller->vibration, 0, sizeof(controller->vibration));
     lstrcpynW(controller->device_path, device_path, MAX_PATH);
-    controller->enabled = FALSE;
+    controller->enabled = TRUE;
 
     EnterCriticalSection(&controller->crit);
     controller->device = device;
-    controller_enable(controller);
     LeaveCriticalSection(&controller->crit);
 
     if (controller_begin_read( controller )) goto failed;
@@ -435,7 +468,8 @@ failed:
     free(controller->hid.output_report_buf);
     free(controller->hid.feature_report_buf);
     memset(&controller->hid, 0, sizeof(controller->hid));
-    CloseHandle(event);
+    if (read_event) CloseHandle(read_event);
+    if (write_event) CloseHandle(write_event);
     return FALSE;
 }
 
@@ -707,6 +741,24 @@ static void read_controller_state(struct xinput_controller *controller)
     }
 }
 
+static void write_controller_state( struct xinput_controller *controller )
+{
+    static XINPUT_VIBRATION neutral_state = {0};
+    DWORD ret;
+
+    if ((ret = controller_end_write( controller )))
+    {
+        if (ret == ERROR_OPERATION_ABORTED) return;
+        if (ret == ERROR_ACCESS_DENIED || ret == ERROR_INVALID_HANDLE) controller_destroy( controller, TRUE );
+        else ERR( "Failed to write output report, GetOverlappedResult failed with error %lu\n", ret );
+        return;
+    }
+
+    EnterCriticalSection( &controller->crit );
+    controller_begin_write( controller, controller->enabled ? &controller->vibration : &neutral_state );
+    LeaveCriticalSection( &controller->crit );
+}
+
 static LRESULT CALLBACK xinput_devnotify_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
     if (msg == WM_DEVICECHANGE)
@@ -755,16 +807,22 @@ static DWORD WINAPI hid_update_thread_proc(void *param)
     {
         if (ret == count) while (PeekMessageW(&msg, hwnd, 0, 0, PM_REMOVE)) DispatchMessageW(&msg);
         if (ret == WAIT_TIMEOUT) update_controller_list();
-        if (ret < count - 1) read_controller_state(devices[ret]);
+        if (ret < count - 1)
+        {
+            if (ret % 2) write_controller_state( devices[ret / 2] );
+            else read_controller_state( devices[ret / 2] );
+        }
 
         count = 0;
         for (i = 0; i < XUSER_MAX_COUNT; ++i)
         {
             struct xinput_controller *controller = controllers + i;
+
             if (!controller->device) continue;
             EnterCriticalSection( &controller->crit );
-            devices[count] = controller;
+            devices[count / 2] = controller;
             events[count++] = controller->hid.read_event;
+            events[count++] = controller->hid.write_event;
             LeaveCriticalSection( &controller->crit );
         }
         events[count++] = update_event;
@@ -880,7 +938,7 @@ DWORD WINAPI DECLSPEC_HOTPATCH XInputSetState(DWORD index, XINPUT_VIBRATION *vib
 
     if (WaitForSingleObject(steam_overlay_event, 0) == WAIT_OBJECT_0) ret = ERROR_SUCCESS;
     else if (WaitForSingleObject(steam_keyboard_event, 0) == WAIT_OBJECT_0) ret = ERROR_SUCCESS;
-    else ret = HID_set_state(&controllers[index], vibration);
+    else ret = controller_set_state( &controllers[index], vibration );
 
     controller_unlock(&controllers[index]);
 
