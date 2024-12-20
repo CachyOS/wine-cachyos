@@ -514,7 +514,7 @@ static BOOL find_opened_device(const WCHAR *device_path, int *free_slot)
          swscanf(device_path, L"\\\\?\\HID#VID_045E&PID_028E&XI_%02X#", &i) == 1) &&
         i > 0 && i <= XUSER_MAX_COUNT && *free_slot != i - 1)
     {
-        controller_destroy(&controllers[i - 1], TRUE);
+        controller_destroy(&controllers[i - 1], FALSE);
         if (*free_slot != XUSER_MAX_COUNT) open_device_at_index(controllers[i - 1].device_path, *free_slot);
         *free_slot = i - 1;
     }
@@ -524,7 +524,7 @@ static BOOL find_opened_device(const WCHAR *device_path, int *free_slot)
          swscanf(device_path, L"\\\\?\\HID#VID_28DE&PID_11FF&XI_%02u#", &i) == 1) &&
         i < XUSER_MAX_COUNT && *free_slot != i)
     {
-        controller_destroy(&controllers[i], TRUE);
+        controller_destroy(&controllers[i], FALSE);
         if (*free_slot != XUSER_MAX_COUNT) open_device_at_index(controllers[i].device_path, *free_slot);
         *free_slot = i;
     }
