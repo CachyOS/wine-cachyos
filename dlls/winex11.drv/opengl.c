@@ -3473,7 +3473,10 @@ static void wglFinish(void)
 
     pglFinish();
     if (escape.drawable)
+    {
+        XFlush( gdi_display );
         NtGdiExtEscape( ctx->hdc, NULL, 0, X11DRV_ESCAPE, sizeof(escape), (LPSTR)&escape, 0, NULL );
+    }
 }
 
 static void wglFlush(void)
@@ -3515,7 +3518,11 @@ static void wglFlush(void)
 
     pglFlush();
     if (escape.drawable)
+    {
+        pglFinish();
+        XFlush( gdi_display );
         NtGdiExtEscape( ctx->hdc, NULL, 0, X11DRV_ESCAPE, sizeof(escape), (LPSTR)&escape, 0, NULL );
+    }
 }
 
 static const GLubyte *wglGetString(GLenum name)
