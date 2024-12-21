@@ -325,6 +325,9 @@ static ULONG WINAPI d3d_device_inner_Release(IUnknown *iface)
         if (This->recording)
             wined3d_stateblock_decref(This->recording);
 
+        if (This->ddraw->device_last_applied_state == This)
+            This->ddraw->device_last_applied_state = NULL;
+
         /* Releasing the render target below may release the last reference to the ddraw object. Detach
          * the device from it before so it doesn't try to save / restore state on the teared down device. */
         if (This->ddraw)
@@ -3441,6 +3444,11 @@ void d3d_device_sync_surfaces(struct d3d_device *device)
 
 static void d3d_device_apply_state(struct d3d_device *device)
 {
+    if (device->ddraw->device_last_applied_state != device)
+    {
+        wined3d_stateblock_savedstates_set_all(device->wined3d_device, device->state);
+        device->ddraw->device_last_applied_state = device;
+    }
     wined3d_device_apply_stateblock(device->wined3d_device, device->state);
     d3d_device_sync_surfaces(device);
 }

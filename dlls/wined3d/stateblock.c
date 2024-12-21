@@ -286,6 +286,13 @@ static void stateblock_savedstates_set_all(struct wined3d_saved_states *states, 
     memset(states->vs_consts_f, 0xffu, sizeof(states->vs_consts_f));
 }
 
+void CDECL wined3d_stateblock_savedstates_set_all(struct wined3d_device *device, struct wined3d_stateblock *stateblock)
+{
+    const struct wined3d_d3d_info *d3d_info = &device->adapter->d3d_info;
+
+    stateblock_savedstates_set_all(&stateblock->changed, d3d_info->limits.vs_uniform_count, d3d_info->limits.ps_uniform_count);
+}
+
 static void stateblock_savedstates_set_pixel(struct wined3d_saved_states *states, const DWORD num_constants)
 {
     DWORD texture_mask = 0;

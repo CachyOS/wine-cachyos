@@ -243,6 +243,7 @@
 @ cdecl wined3d_stateblock_init_contained_states(ptr)
 @ cdecl wined3d_stateblock_multiply_transform(ptr long ptr)
 @ cdecl wined3d_stateblock_reset(ptr)
+@ cdecl wined3d_stateblock_savedstates_set_all(ptr ptr)
 @ cdecl wined3d_stateblock_set_base_vertex_index(ptr long)
 @ cdecl wined3d_stateblock_set_clip_plane(ptr long ptr)
 @ cdecl wined3d_stateblock_set_index_buffer(ptr ptr long)
