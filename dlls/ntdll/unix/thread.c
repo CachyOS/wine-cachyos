@@ -1644,7 +1644,7 @@ NTSTATUS WINAPI NtSuspendThread( HANDLE handle, ULONG *ret_count )
 
     if (ret == STATUS_PENDING && wait_handle)
     {
-        NtWaitForSingleObject( wait_handle, FALSE, NULL );
+        server_wait_for_object( wait_handle, FALSE, NULL );
 
         SERVER_START_REQ( suspend_thread )
         {
