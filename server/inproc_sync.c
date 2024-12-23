@@ -33,6 +33,9 @@
 #include "handle.h"
 #include "request.h"
 #include "thread.h"
+#ifdef HAVE_LINUX_TYPES_H
+# include "ntsync.h"
+#endif
 
 #ifdef HAVE_LINUX_NTSYNC_H
 
@@ -40,7 +43,6 @@
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <linux/ntsync.h>
 
 struct linux_device
 {
