@@ -1380,7 +1380,7 @@ static HRESULT WINAPI media_source_Pause(IMFMediaSource *iface)
 
     LeaveCriticalSection(&source->cs);
 
-    return S_OK;
+    return hr;
 }
 
 static HRESULT WINAPI media_source_Shutdown(IMFMediaSource *iface)
