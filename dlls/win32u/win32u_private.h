@@ -284,6 +284,19 @@ extern const struct user_driver_funcs *user_driver;
 
 extern ULONG_PTR zero_bits;
 
+static inline BOOL using_server_or_ntsync(void)
+{
+    static int server_or_nt_cached = -1;
+    if (server_or_nt_cached == -1)
+    {
+        BOOL do_ntsync = !(getenv("WINE_DISABLE_FAST_SYNC") && atoi(getenv("WINE_DISABLE_FAST_SYNC")));
+        BOOL do_fsync = !(getenv("WINEFSYNC") && !atoi(getenv("WINEFSYNC")) && !do_ntsync);
+        BOOL do_esync = !(getenv("WINEESYNC") && !atoi(getenv("WINEESYNC")) && !do_fsync && !do_ntsync);
+        server_or_nt_cached = do_ntsync || !(do_fsync || do_esync);
+    }
+    return !!server_or_nt_cached;
+}
+
 static inline BOOL set_ntstatus( NTSTATUS status )
 {
     if (status) RtlSetLastWin32Error( RtlNtStatusToDosError( status ));
