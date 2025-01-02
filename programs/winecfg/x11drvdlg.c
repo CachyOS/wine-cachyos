@@ -46,7 +46,7 @@ static const UINT dpi_values[] = { 96, 120, 144, 168, 192, 216, 240, 288, 336, 3
 static BOOL updating_ui;
 
 /* convert the x11 desktop key to the new explorer config */
-static void convert_x11_desktop_key(void)
+void convert_x11_desktop_key(void)
 {
     WCHAR *buf;
 
@@ -138,13 +138,6 @@ static void init_dialog(HWND dialog)
         SendDlgItemMessageW(dialog, IDC_DESKTOP_HEIGHT, EM_LIMITTEXT, RES_MAXLEN, 0);
     }
 
-    buf = get_reg_key(config_key, keypath(L"X11 Driver"), L"GrabFullscreen", L"N");
-    if (IS_OPTION_TRUE(*buf))
-	CheckDlgButton(dialog, IDC_FULLSCREEN_GRAB, BST_CHECKED);
-    else
-	CheckDlgButton(dialog, IDC_FULLSCREEN_GRAB, BST_UNCHECKED);
-    free(buf);
-
     buf = get_reg_key(config_key, keypath(L"X11 Driver"), L"Managed", L"Y");
     if (IS_OPTION_TRUE(*buf))
 	CheckDlgButton(dialog, IDC_ENABLE_MANAGED, BST_CHECKED);
@@ -217,14 +210,6 @@ static void on_enable_decorated_clicked(HWND dialog) {
     } else {
         set_reg_key(config_key, keypath(L"X11 Driver"), L"Decorated", L"N");
     }
-}
-
-static void on_fullscreen_grab_clicked(HWND dialog)
-{
-    if (IsDlgButtonChecked(dialog, IDC_FULLSCREEN_GRAB) == BST_CHECKED)
-        set_reg_key(config_key, keypath(L"X11 Driver"), L"GrabFullscreen", L"Y");
-    else
-        set_reg_key(config_key, keypath(L"X11 Driver"), L"GrabFullscreen", L"N");
 }
 
 static INT read_logpixels_reg(void)
@@ -382,7 +367,6 @@ GraphDlgProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
 			case IDC_ENABLE_DESKTOP: on_enable_desktop_clicked(hDlg); break;
                         case IDC_ENABLE_MANAGED: on_enable_managed_clicked(hDlg); break;
                         case IDC_ENABLE_DECORATED: on_enable_decorated_clicked(hDlg); break;
-			case IDC_FULLSCREEN_GRAB:  on_fullscreen_grab_clicked(hDlg); break;
 		    }
 		    break;
 		}

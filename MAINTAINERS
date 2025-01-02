@@ -182,6 +182,7 @@ F:	dlls/user32/input.c
 F:	dlls/win32u/input.c
 F:	dlls/win32u/rawinput.c
 F:	server/queue.c
+F:	programs/winecfg/input.c
 
 Input methods
 M:	Rémi Bernon <rbernon@codeweavers.com>
