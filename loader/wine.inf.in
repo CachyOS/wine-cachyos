@@ -99,6 +99,7 @@ AddReg=\
     ThemeManager,\
     VersionInfo,\
     LicenseInformation,\
+    WineDecorateWindows,\
     NVIDIANGX, \
     ProtonOverrides,\
     SteamClient
@@ -129,6 +130,7 @@ AddReg=\
     ThemeManager,\
     VersionInfo,\
     LicenseInformation,\
+    WineDecorateWindows,\
     NVIDIANGX, \
     TTS, \
     ProtonOverrides,\
@@ -176,6 +178,7 @@ AddReg=\
     Tapi,\
     VersionInfo,\
     LicenseInformation,\
+    WineDecorateWindows,\
     NVIDIANGX, \
     ProtonOverrides,\
     SteamClient.ntamd64
@@ -3206,3 +3209,6 @@ HKCU,Software\Wine\AppDefaults\RiftApart.exe\DllOverrides,"atiadlxx",,"builtin"
 HKCU,Software\Wine\AppDefaults\ffxvi.exe\DllOverrides,"atiadlxx",,"builtin"
 HKLM,Software\Wow6432Node\lucasarts entertainment company llc\Star Wars: Episode I Racer\v1.0,"Display Height",0x10001,480
 HKLM,Software\Wow6432Node\lucasarts entertainment company llc\Star Wars: Episode I Racer\v1.0,"Display Width",0x10001,640
+
+[WineDecorateWindows]
+HKCU,Software\Wine\AppDefaults\DarkSoulsIII.exe\X11 Driver,"Decorated",,"N"
