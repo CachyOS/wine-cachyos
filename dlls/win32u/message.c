@@ -2841,7 +2841,7 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
 
         thread_info->client_info.msg_source = prev_source;
 
-        if (waited || !shared || NtGetTickCount() - thread_info->last_getmsg_time >= 3000) skip = FALSE;
+        if ((!using_server_or_ntsync() && waited) || !shared || NtGetTickCount() - thread_info->last_getmsg_time >= 3000) skip = FALSE;
         else SHARED_READ_BEGIN( shared, queue_shm_t )
         {
             /* not created yet */
