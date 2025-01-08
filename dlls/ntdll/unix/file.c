@@ -1502,16 +1502,20 @@ static BOOL append_entry( struct dir_data *data, const char *long_name,
     if (long_len == ARRAY_SIZE(long_nameW)) return TRUE;
     long_nameW[long_len] = 0;
 
-    if (short_name)
+    short_len = 0;
+
+    if (!disable_sfn)
     {
-        short_len = ntdll_umbstowcs( short_name, strlen(short_name),
-                                     short_nameW, ARRAY_SIZE( short_nameW ) - 1 );
-    }
-    else  /* generate a short name if necessary */
-    {
-        short_len = 0;
-        if (!is_legal_8dot3_name( long_nameW, long_len ))
-            short_len = hash_short_file_name( long_nameW, long_len, short_nameW );
+        if (short_name)
+        {
+            short_len = ntdll_umbstowcs( short_name, strlen(short_name),
+                                        short_nameW, ARRAY_SIZE( short_nameW ) - 1 );
+        }
+        else  /* generate a short name if necessary */
+        {
+            if (!is_legal_8dot3_name( long_nameW, long_len ))
+                short_len = hash_short_file_name( long_nameW, long_len, short_nameW );
+        }
     }
     short_nameW[short_len] = 0;
     wcsupr( short_nameW );
@@ -3508,6 +3512,7 @@ static NTSTATUS lookup_unix_name( const WCHAR *name, int name_len, char **buffer
     struct stat st;
     char *unix_name = *buffer;
     const WCHAR *ptr, *end;
+    static char *skip_search = NULL;
 
     /* check syntax of individual components */
 
@@ -3554,6 +3559,13 @@ static NTSTATUS lookup_unix_name( const WCHAR *name, int name_len, char **buffer
     if (is_unix && (disposition == FILE_OPEN || disposition == FILE_OVERWRITE))
         return STATUS_OBJECT_NAME_NOT_FOUND;
 
+    if (skip_search == NULL)
+    {
+        skip_search = getenv("WINE_NO_OPEN_FILE_SEARCH");
+        WARN("Disabling case insensitive search for opening files");
+    }
+    if (skip_search && strcasestr(unix_name, skip_search) && disposition == FILE_OPEN)
+        return STATUS_OBJECT_NAME_NOT_FOUND;
     /* now do it component by component */
 
     while (name_len)
