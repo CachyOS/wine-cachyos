@@ -18531,6 +18531,7 @@ static const struct message WmSetParentSeq_2[] = {
     { HCBT_ACTIVATE, hook|optional },
     { EVENT_SYSTEM_FOREGROUND, winevent_hook|wparam|lparam|optional, 0, 0 },
     { WM_WINDOWPOSCHANGING, sent|wparam|optional, SWP_NOSIZE|SWP_NOMOVE },
+    { WM_QUERYNEWPALETTE, sent|optional },
     { WM_NCACTIVATE, sent|wparam|optional, 1 },
     { WM_ACTIVATE, sent|wparam|optional, 1 },
     { HCBT_SETFOCUS, hook|optional },
@@ -18601,7 +18602,7 @@ static void test_SetParent(void)
 
     SetParent(popup, child);
     flush_events();
-    ok_sequence(WmSetParentSeq_2, "SetParent() visible WS_POPUP", TRUE);
+    ok_sequence(WmSetParentSeq_2, "SetParent() visible WS_POPUP", FALSE);
 
     ok(GetWindowLongA(popup, GWL_STYLE) & WS_VISIBLE, "WS_VISIBLE should be set\n");
     ok(!IsWindowVisible(popup), "IsWindowVisible() should return FALSE\n");

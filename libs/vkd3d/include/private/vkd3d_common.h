@@ -52,6 +52,7 @@
 #define TAG_AON9 VKD3D_MAKE_TAG('A', 'o', 'n', '9')
 #define TAG_DXBC VKD3D_MAKE_TAG('D', 'X', 'B', 'C')
 #define TAG_DXIL VKD3D_MAKE_TAG('D', 'X', 'I', 'L')
+#define TAG_FX10 VKD3D_MAKE_TAG('F', 'X', '1', '0')
 #define TAG_ISG1 VKD3D_MAKE_TAG('I', 'S', 'G', '1')
 #define TAG_ISGN VKD3D_MAKE_TAG('I', 'S', 'G', 'N')
 #define TAG_OSG1 VKD3D_MAKE_TAG('O', 'S', 'G', '1')
@@ -80,7 +81,7 @@ static inline size_t align(size_t addr, size_t alignment)
 # ifdef __MINGW_PRINTF_FORMAT
 #  define VKD3D_PRINTF_FUNC(fmt, args) __attribute__((format(__MINGW_PRINTF_FORMAT, fmt, args)))
 # else
-#  define VKD3D_PRINTF_FUNC(fmt, args) /* __attribute__((format(printf, fmt, args))) */
+#  define VKD3D_PRINTF_FUNC(fmt, args) __attribute__((format(printf, fmt, args)))
 # endif
 # define VKD3D_UNUSED __attribute__((unused))
 # define VKD3D_UNREACHABLE __builtin_unreachable()
@@ -107,7 +108,7 @@ static inline unsigned int vkd3d_popcount(unsigned int v)
 {
 #ifdef _MSC_VER
     return __popcnt(v);
-#elif defined(__MINGW32__)
+#elif defined(HAVE_BUILTIN_POPCOUNT)
     return __builtin_popcount(v);
 #else
     v -= (v >> 1) & 0x55555555;
@@ -275,10 +276,6 @@ static inline LONG InterlockedIncrement(LONG volatile *x)
 static inline LONG64 InterlockedIncrement64(LONG64 volatile *x)
 {
     return __sync_add_and_fetch(x, 1);
-}
-static inline LONG InterlockedAdd(LONG volatile *x, LONG val)
-{
-    return __sync_add_and_fetch(x, val);
 }
 # else
 #  error "InterlockedIncrement() not implemented for this platform"

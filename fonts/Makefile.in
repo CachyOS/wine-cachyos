@@ -1,9 +1,12 @@
 SOURCES = \
+	arial.sfd \
+	cour.sfd \
 	courier.sfd \
 	fixedsys.sfd \
 	fixedsys_jp.sfd \
 	marlett.sfd \
 	ms_sans_serif.sfd \
+	msyh.sfd \
 	small_fonts.sfd \
 	small_fonts_jp.sfd \
 	symbol.sfd \
@@ -11,4 +14,5 @@ SOURCES = \
 	tahoma.sfd \
 	tahomabd.sfd \
 	webdings.sfd \
+	times.sfd \
 	wingding.sfd
