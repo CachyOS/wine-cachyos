@@ -114,12 +114,22 @@ static void test_CM_MapCrToWin32Err(void)
     }
 }
 
+DEFINE_DEVPROPKEY(DEVPROPKEY_GPU_LUID, 0x60b193cb, 0x5276, 0x4d0f, 0x96, 0xfc, 0xf1, 0x73, 0xab, 0xad, 0x3e, 0xc6, 2);
+
 static void test_CM_Get_Device_ID_List(void)
 {
-    WCHAR wguid_str[64], *wbuf, *wp;
+    struct
+    {
+        WCHAR id[128];
+        DEVINST inst;
+    }
+    instances[128];
+    SP_DEVINFO_DATA device = { sizeof(device) };
+    unsigned int i, count, expected_count;
+    WCHAR wguid_str[64], id[128], *wbuf, *wp;
     char guid_str[64], *buf, *p;
-    unsigned int count;
     CONFIGRET ret;
+    HDEVINFO set;
     ULONG len;
 
     StringFromGUID2(&GUID_DEVCLASS_DISPLAY, wguid_str, ARRAY_SIZE(wguid_str));
@@ -187,6 +197,32 @@ static void test_CM_Get_Device_ID_List(void)
     ok(ret == CR_BUFFER_SMALL, "got %#lx.\n", ret);
     ok(buf[0] == 0x7c, "got %#x.\n", buf[0]);
 
+    set = SetupDiGetClassDevsW(&GUID_DEVCLASS_DISPLAY, NULL, NULL, 0);
+    ok(set != &GUID_DEVCLASS_DISPLAY, "got error %#lx.\n", GetLastError());
+    for (i = 0; SetupDiEnumDeviceInfo(set, i, &device); ++i)
+    {
+        ok(i < ARRAY_SIZE(instances), "got %u.\n", i);
+        ret = SetupDiGetDeviceInstanceIdW(set, &device, instances[i].id, sizeof(instances[i].id), NULL);
+        ok(ret, "got error %#lx.\n", GetLastError());
+        instances[i].inst = device.DevInst;
+    }
+    SetupDiDestroyDeviceInfoList(set);
+    expected_count = i;
+    for (i = 0; i < expected_count; ++i)
+    {
+        DEVPROPTYPE type;
+        ULONG size;
+
+        *id = 0;
+        ret = CM_Get_Device_IDW(instances[i].inst, id, ARRAY_SIZE(id), 0);
+        ok(!ret, "got %#lx.\n", ret);
+        ok(!wcscmp(id, instances[i].id), "got %s, expected %s.\n", debugstr_w(id), debugstr_w(instances[i].id));
+        size = len;
+        ret = CM_Get_DevNode_PropertyW(instances[i].inst, &DEVPROPKEY_GPU_LUID, &type, wbuf, &size, 0);
+        ok(!ret, "got %#lx.\n", ret);
+        ok(type == DEVPROP_TYPE_UINT64, "got %#lx.\n", type);
+    }
+
     memset(wbuf, 0xcc, len * sizeof(*wbuf));
     ret = CM_Get_Device_ID_ListW(wguid_str, wbuf, len, CM_GETIDLIST_FILTER_CLASS);
     ok(!ret, "got %#lx.\n", ret);
@@ -198,7 +234,7 @@ static void test_CM_Get_Device_ID_List(void)
         ok(!wcsncmp(wp, L"PCI\\", 4), "got %s.\n", debugstr_w(wp));
         wp += wcslen(wp) + 1;
     }
-    ok(count, "got 0.\n");
+    ok(count == expected_count, "got %u, expected %u.\n", count, expected_count);
 
     memset(buf, 0xcc, len * sizeof(*buf));
     ret = CM_Get_Device_ID_ListA(guid_str, buf, len, CM_GETIDLIST_FILTER_CLASS);
@@ -211,7 +247,7 @@ static void test_CM_Get_Device_ID_List(void)
         ok(!strncmp(p, "PCI\\", 4), "got %s.\n", debugstr_a(p));
         p += strlen(p) + 1;
     }
-    ok(count, "got 0.\n");
+    ok(count == expected_count, "got %u, expected %u.\n", count, expected_count);
 
     StringFromGUID2(&GUID_DISPLAY_DEVICE_ARRIVAL, wguid_str, ARRAY_SIZE(wguid_str));
     len = 0xdeadbeef;
