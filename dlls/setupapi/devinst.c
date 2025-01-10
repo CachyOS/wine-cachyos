@@ -4443,12 +4443,12 @@ CONFIGRET WINAPI CM_Get_Device_ID_ListA(const char *filter, char *buffer, ULONG 
     if (!buffer || !len)
         return CR_INVALID_POINTER;
 
-    if (!(wbuffer = malloc(len)))
+    if (!(wbuffer = malloc(len * sizeof(*wbuffer))))
         return CR_OUT_OF_MEMORY;
 
     if (filter)
     {
-        if (!(wfilter = malloc(strlen(filter) * sizeof(*wfilter))))
+        if (!(wfilter = malloc((strlen(filter) + 1) * sizeof(*wfilter))))
         {
             free(wbuffer);
             return CR_OUT_OF_MEMORY;
