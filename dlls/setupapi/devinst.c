@@ -33,6 +33,7 @@
 #include "setupapi.h"
 #include "wine/debug.h"
 #include "wine/list.h"
+#include "objbase.h"
 #include "cfgmgr32.h"
 #include "winioctl.h"
 #include "rpc.h"
@@ -4333,6 +4334,168 @@ CONFIGRET WINAPI CM_Get_Device_ID_Size(ULONG *len, DEVINST devnode, ULONG flags)
 
     *len = lstrlenW(device->instanceId);
     return CR_SUCCESS;
+}
+
+static CONFIGRET get_device_id_list(const WCHAR *filter, WCHAR *buffer, ULONG *len, ULONG flags)
+{
+    const ULONG supported_flags = CM_GETIDLIST_FILTER_NONE | CM_GETIDLIST_FILTER_CLASS;
+    SP_DEVINFO_DATA device = { sizeof(device) };
+    CONFIGRET ret = CR_SUCCESS;
+    GUID guid, *pguid = NULL;
+    unsigned int i, id_len;
+    HDEVINFO set;
+    WCHAR id[64];
+    ULONG needed;
+    WCHAR *p;
+
+    if (!len || (buffer && !*len))
+        return CR_INVALID_POINTER;
+
+    needed = 1;
+
+    if (buffer)
+        *buffer = 0;
+    if (flags & ~supported_flags)
+    {
+        FIXME("Flags %#lx are not supported.\n", flags);
+        *len = needed;
+        return CR_SUCCESS;
+    }
+
+    if (!buffer)
+        *len = 0;
+
+    if (flags & CM_GETIDLIST_FILTER_CLASS)
+    {
+        if (!filter)
+            return CR_INVALID_POINTER;
+        if (IIDFromString((WCHAR *)filter, &guid))
+            return CR_INVALID_DATA;
+        pguid = &guid;
+    }
+
+    if (!buffer)
+        *len = needed;
+
+    set = SetupDiGetClassDevsW(pguid, NULL, NULL, pguid ? 0 : DIGCF_ALLCLASSES);
+    if (set == INVALID_HANDLE_VALUE)
+        return CR_SUCCESS;
+
+    p = buffer;
+    for (i = 0; SetupDiEnumDeviceInfo(set, i, &device); ++i)
+    {
+        ret = SetupDiGetDeviceInstanceIdW(set, &device, id, sizeof(id), NULL);
+        if (!ret) continue;
+        id_len = wcslen(id) + 1;
+        needed += id_len;
+        if (buffer)
+        {
+            if (needed > *len)
+            {
+                SetupDiDestroyDeviceInfoList(set);
+                *buffer = 0;
+                return CR_BUFFER_SMALL;
+            }
+            memcpy(p, id, sizeof(*p) * id_len);
+            p += id_len;
+        }
+    }
+    SetupDiDestroyDeviceInfoList(set);
+    *len = needed;
+    if (buffer)
+        *p = 0;
+    return CR_SUCCESS;
+}
+
+/***********************************************************************
+ *             CM_Get_Device_ID_ListW  (SETUPAPI.@)
+ */
+CONFIGRET WINAPI CM_Get_Device_ID_ListW(const WCHAR *filter, WCHAR *buffer, ULONG len, ULONG flags)
+{
+    TRACE("%s %p %ld %#lx.\n", debugstr_w(filter), buffer, len, flags);
+
+    if (!buffer)
+        return CR_INVALID_POINTER;
+
+    return get_device_id_list(filter, buffer, &len, flags);
+}
+
+/***********************************************************************
+ *             CM_Get_Device_ID_List_SizeW  (SETUPAPI.@)
+ */
+CONFIGRET WINAPI CM_Get_Device_ID_List_SizeW(ULONG *len, const WCHAR *filter, ULONG flags)
+{
+    TRACE("%p %s %#lx.\n", len, debugstr_w(filter), flags);
+
+    return get_device_id_list(filter, NULL, len, flags);
+}
+
+/***********************************************************************
+ *             CM_Get_Device_ID_ListA  (SETUPAPI.@)
+ */
+CONFIGRET WINAPI CM_Get_Device_ID_ListA(const char *filter, char *buffer, ULONG len, ULONG flags )
+{
+    WCHAR *wbuffer, *wfilter = NULL, *p;
+    CONFIGRET ret;
+
+    TRACE("%s %p %ld %#lx.\n", debugstr_a(filter), buffer, len, flags);
+
+    if (!buffer || !len)
+        return CR_INVALID_POINTER;
+
+    if (!(wbuffer = malloc(len)))
+        return CR_OUT_OF_MEMORY;
+
+    if (filter)
+    {
+        if (!(wfilter = malloc(strlen(filter) * sizeof(*wfilter))))
+        {
+            free(wbuffer);
+            return CR_OUT_OF_MEMORY;
+        }
+
+        p = wfilter;
+        while ((*p++ = *filter++))
+            ;
+    }
+
+    if (!(ret = CM_Get_Device_ID_ListW(wfilter, wbuffer, len, flags)))
+    {
+        p = wbuffer;
+        while (*p)
+        {
+            while ((*buffer++ = *p++))
+                ;
+        }
+        *buffer = 0;
+    }
+    free(wfilter);
+    free(wbuffer);
+    return ret;
+}
+
+/***********************************************************************
+ *             CM_Get_Device_ID_List_SizeA  (SETUPAPI.@)
+ */
+CONFIGRET WINAPI CM_Get_Device_ID_List_SizeA(ULONG *len, const char *filter, ULONG flags)
+{
+    WCHAR *wfilter = NULL, *p;
+    CONFIGRET ret;
+
+    TRACE("%p %s %#lx.\n", len, debugstr_a(filter), flags);
+
+    if (filter)
+    {
+        if (!(wfilter = malloc(strlen(filter) * sizeof(*wfilter))))
+            return CR_OUT_OF_MEMORY;
+
+        p = wfilter;
+        while ((*p++ = *filter++))
+            ;
+    }
+    ret = CM_Get_Device_ID_List_SizeW(len, wfilter, flags);
+    free(wfilter);
+    return ret;
 }
 
 /***********************************************************************
