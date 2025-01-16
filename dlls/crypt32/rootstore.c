@@ -741,6 +741,7 @@ static void sync_trusted_roots_from_known_locations( HKEY key, HCERTSTORE cached
         }
         ++deleted_count;
         CRYPT_RegDeleteFromReg( key, sha1_hash );
+        RegDeleteValueW( import_key, hash_str );
         /* Delete from cached so deleted certs do not participate in chain verification. */
         CertDeleteCertificateFromStore( cert );
         /* Restart enumeration as it is broken by deleting cert from store. */
