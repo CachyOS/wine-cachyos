@@ -2197,15 +2197,14 @@ static int queue_mouse_message( struct desktop *desktop, user_handle_t win, cons
         {
             x = input->mouse.x;
             y = input->mouse.y;
-            if (flags & ~(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE) &&
-                x == desktop->shared->cursor.x && y == desktop->shared->cursor.y)
-                flags &= ~MOUSEEVENTF_MOVE;
         }
         else
         {
             x = desktop->shared->cursor.x + input->mouse.x;
             y = desktop->shared->cursor.y + input->mouse.y;
         }
+        if (x == desktop->shared->cursor.x && y == desktop->shared->cursor.y)
+            flags &= ~MOUSEEVENTF_MOVE;
     }
     else
     {
@@ -2227,8 +2226,16 @@ static int queue_mouse_message( struct desktop *desktop, user_handle_t win, cons
         msg_data->size                = sizeof(*msg_data);
         msg_data->flags               = flags;
         msg_data->rawinput.type       = RIM_TYPEMOUSE;
-        msg_data->rawinput.mouse.x    = (flags & MOUSEEVENTF_MOVE) ? input->mouse.x : 0;
-        msg_data->rawinput.mouse.y    = (flags & MOUSEEVENTF_MOVE) ? input->mouse.y : 0;
+        if (flags & MOUSEEVENTF_ABSOLUTE)
+        {
+            msg_data->rawinput.mouse.x    = x;
+            msg_data->rawinput.mouse.y    = y;
+        }
+        else
+        {
+            msg_data->rawinput.mouse.x    = input->mouse.x;
+            msg_data->rawinput.mouse.y    = input->mouse.y;
+        }
         msg_data->rawinput.mouse.data = input->mouse.data;
 
         enum_processes( queue_rawinput_message, &raw_msg );
