@@ -3657,13 +3657,32 @@ static HRESULT transform_node_push_sample(const struct media_session *session, s
     struct transform_stream *stream = &topo_node->u.transform.inputs[input];
     UINT id = transform_node_get_stream_id(topo_node, FALSE, input);
     IMFTransform *transform = topo_node->object.transform;
+    MFTIME pts, clocktime;
+    IMFMediaType *type;
+    GUID major_type;
+    const char *sgi;
     HRESULT hr;
 
     if (sample)
     {
-        hr = IMFTransform_ProcessInput(transform, id, sample, 0);
-        if (hr == MF_E_NOTACCEPTING)
-            hr = transform_stream_push_sample(stream, sample);
+        /* HACK: VRChat (438100) requires audio packets that are late to be dropped prior to being passed to an MFT */
+        if((sgi = getenv("SteamGameId")) && !strcmp(sgi, "438100") &&
+            SUCCEEDED(IMFTransform_GetOutputCurrentType(transform, id, &type)) &&
+            SUCCEEDED(IMFMediaType_GetMajorType(type, &major_type)) &&
+            IsEqualGUID(&major_type, &MFMediaType_Audio) &&
+            SUCCEEDED(IMFSample_GetSampleTime(sample, &pts)) && pts != MINLONGLONG &&
+            SUCCEEDED(IMFPresentationClock_GetTime(session->clock, &clocktime)) &&
+            clocktime > pts)
+        {
+            hr = S_OK;
+            FIXME("dropping audio sample clocktime %I64d pts %I64d jitter: %I64d\n", clocktime, pts, clocktime - pts);
+        }
+        else
+        {
+            hr = IMFTransform_ProcessInput(transform, id, sample, 0);
+            if (hr == MF_E_NOTACCEPTING)
+                hr = transform_stream_push_sample(stream, sample);
+        }
     }
     else
     {
