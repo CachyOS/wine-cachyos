@@ -1,5 +1,6 @@
 TESTDLL = xactengine3_7.dll
-IMPORTS = ole32
+IMPORTS = ole32 x3daudio1_7
 
 SOURCES = \
+	rsrc.rc \
 	xact3.c

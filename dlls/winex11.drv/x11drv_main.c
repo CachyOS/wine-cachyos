@@ -77,6 +77,8 @@ BOOL use_take_focus = FALSE;
 BOOL use_primary_selection = FALSE;
 BOOL use_system_cursors = TRUE;
 BOOL grab_fullscreen = FALSE;
+int keyboard_layout = -1;
+BOOL keyboard_scancode_detect = FALSE;
 BOOL managed_mode = TRUE;
 BOOL decorated_mode = TRUE;
 BOOL private_color_map = FALSE;
@@ -376,11 +378,61 @@ HKEY reg_open_key( HKEY root, const WCHAR *name, ULONG name_len )
     return NtOpenKeyEx( &ret, MAXIMUM_ALLOWED, &attr, 0 ) ? 0 : ret;
 }
 
+/* wrapper for NtCreateKey that creates the key recursively if necessary */
+static HKEY reg_create_key( HKEY root, const WCHAR *name, ULONG name_len,
+                            DWORD options, DWORD *disposition )
+{
+    UNICODE_STRING nameW = { name_len, name_len, (WCHAR *)name };
+    OBJECT_ATTRIBUTES attr;
+    NTSTATUS status;
+    HANDLE ret;
 
-HKEY open_hkcu_key( const char *name )
+    attr.Length = sizeof(attr);
+    attr.RootDirectory = root;
+    attr.ObjectName = &nameW;
+    attr.Attributes = 0;
+    attr.SecurityDescriptor = NULL;
+    attr.SecurityQualityOfService = NULL;
+
+    status = NtCreateKey( &ret, MAXIMUM_ALLOWED, &attr, 0, NULL, options, disposition );
+    if (status == STATUS_OBJECT_NAME_NOT_FOUND)
+    {
+        static const WCHAR registry_rootW[] = { '\\','R','e','g','i','s','t','r','y','\\' };
+        DWORD pos = 0, i = 0, len = name_len / sizeof(WCHAR);
+
+        /* don't try to create registry root */
+        if (!root && len > ARRAY_SIZE(registry_rootW) &&
+            !memcmp( name, registry_rootW, sizeof(registry_rootW) ))
+            i += ARRAY_SIZE(registry_rootW);
+
+        while (i < len && name[i] != '\\') i++;
+        if (i == len) return 0;
+        for (;;)
+        {
+            unsigned int subkey_options = options;
+            if (i < len) subkey_options &= ~(REG_OPTION_CREATE_LINK | REG_OPTION_OPEN_LINK);
+            nameW.Buffer = (WCHAR *)name + pos;
+            nameW.Length = (i - pos) * sizeof(WCHAR);
+            status = NtCreateKey( &ret, MAXIMUM_ALLOWED, &attr, 0, NULL, subkey_options, disposition );
+
+            if (attr.RootDirectory != root) NtClose( attr.RootDirectory );
+            if (!NT_SUCCESS(status)) return 0;
+            if (i == len) break;
+            attr.RootDirectory = ret;
+            while (i < len && name[i] == '\\') i++;
+            pos = i;
+            while (i < len && name[i] != '\\') i++;
+        }
+    }
+    return ret;
+}
+
+static HKEY reg_open_hkcu_key( const char *name, BOOL create )
 {
     WCHAR bufferW[256];
     static HKEY hkcu;
+    DWORD disp;
+    HKEY key;
 
     if (!hkcu)
     {
@@ -405,9 +457,33 @@ HKEY open_hkcu_key( const char *name )
         hkcu = reg_open_key( NULL, bufferW, len * sizeof(WCHAR) );
     }
 
-    return reg_open_key( hkcu, bufferW, asciiz_to_unicode( bufferW, name ) - sizeof(WCHAR) );
+    if ((key = reg_open_key( hkcu, bufferW, asciiz_to_unicode( bufferW, name ) - sizeof(WCHAR) )) || !create) return key;
+    return reg_create_key( hkcu, bufferW, asciiz_to_unicode( bufferW, name ) - sizeof(WCHAR), 0, &disp );
 }
 
+HKEY open_hkcu_key( const char *name )
+{
+    return reg_open_hkcu_key( name, FALSE );
+}
+
+static HKEY create_hkcu_key( const char *name )
+{
+    return reg_open_hkcu_key( name, TRUE );
+}
+
+static BOOL set_reg_value( HKEY hkey, const WCHAR *name, UINT type, const void *value, DWORD count )
+{
+    unsigned int name_size = name ? lstrlenW( name ) * sizeof(WCHAR) : 0;
+    UNICODE_STRING nameW = { name_size, name_size, (WCHAR *)name };
+    return !NtSetValueKey( hkey, &nameW, 0, type, value, count );
+}
+
+static void set_reg_string_value( HKEY hkey, const char *name, const WCHAR *value, DWORD count )
+{
+    WCHAR nameW[64];
+    asciiz_to_unicode( nameW, name );
+    set_reg_value( hkey, nameW, REG_MULTI_SZ, value, count );
+}
 
 ULONG query_reg_value( HKEY hkey, const WCHAR *name, KEY_VALUE_PARTIAL_INFORMATION *info, ULONG size )
 {
@@ -469,7 +545,7 @@ static void setup_options(void)
     DWORD len;
 
     /* @@ Wine registry key: HKCU\Software\Wine\X11 Driver */
-    hkey = open_hkcu_key( "Software\\Wine\\X11 Driver" );
+    hkey = create_hkcu_key( "Software\\Wine\\X11 Driver" );
 
     /* open the app-specific key */
 
@@ -519,6 +595,16 @@ static void setup_options(void)
 
     if (!get_config_key( hkey, appkey, "GrabFullscreen", buffer, sizeof(buffer) ))
         grab_fullscreen = IS_OPTION_TRUE( buffer[0] );
+
+    if (!get_config_key( hkey, appkey, "KeyboardLayout", buffer, sizeof(buffer) ))
+        keyboard_layout = x11drv_find_keyboard_layout( buffer );
+
+    p = x11drv_get_keyboard_layout_list( &len );
+    if (p) set_reg_string_value( hkey, "KeyboardLayoutList", p, len * sizeof(WCHAR) );
+    free( p );
+
+    if (!get_config_key( hkey, appkey, "KeyboardScancodeDetect", buffer, sizeof(buffer) ))
+        keyboard_scancode_detect = IS_OPTION_TRUE( buffer[0] );
 
     if (!get_config_key( hkey, appkey, "ScreenDepth", buffer, sizeof(buffer) ))
         default_visual.depth = wcstol( buffer, NULL, 0 );

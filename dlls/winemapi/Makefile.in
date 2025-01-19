@@ -3,4 +3,5 @@ IMPORTS   = shlwapi shell32 mapi32
 
 SOURCES = \
 	main.c \
-	sendmail.c
+	sendmail.c \
+	xdg-email.c
