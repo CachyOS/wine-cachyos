@@ -38,6 +38,7 @@ struct device_desc
     UINT input;
     UINT uid;
     BOOL is_gamepad;
+    BOOL prefer_sdl; /* getenv must be called in unix code */
 
     WCHAR manufacturer[MAX_PATH];
     WCHAR product[MAX_PATH];
