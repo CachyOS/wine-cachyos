@@ -363,6 +363,9 @@ static void controller_disable(struct xinput_controller *controller)
     if (!controller->enabled) return;
     if (controller->caps.Flags & XINPUT_CAPS_FFB_SUPPORTED) HID_set_state(controller, &state);
     controller->enabled = FALSE;
+
+    controller_cancel_read( controller );
+    SetEvent(update_event);
 }
 
 static void controller_destroy(struct xinput_controller *controller, BOOL already_removed)
@@ -373,11 +376,7 @@ static void controller_destroy(struct xinput_controller *controller, BOOL alread
     {
         TRACE("removing device %s from index %Iu\n", debugstr_w(controller->device_path), controller - controllers);
 
-        if (!already_removed)
-        {
-            controller_cancel_read( controller );
-            controller_disable(controller);
-        }
+        if (!already_removed) controller_disable(controller);
         CloseHandle(controller->device);
         controller->device = NULL;
 
@@ -398,6 +397,9 @@ static void controller_enable(struct xinput_controller *controller)
     if (controller->enabled) return;
     if (controller->caps.Flags & XINPUT_CAPS_FFB_SUPPORTED) HID_set_state(controller, &state);
     controller->enabled = TRUE;
+
+    if (controller_begin_read( controller )) controller_destroy( controller, TRUE );
+    else SetEvent(update_event);
 }
 
 static BOOL controller_init(struct xinput_controller *controller, PHIDP_PREPARSED_DATA preparsed,
@@ -426,8 +428,6 @@ static BOOL controller_init(struct xinput_controller *controller, PHIDP_PREPARSE
     controller->device = device;
     controller_enable(controller);
     LeaveCriticalSection(&controller->crit);
-
-    if (controller_begin_read( controller )) goto failed;
     return TRUE;
 
 failed:
@@ -697,14 +697,14 @@ static void read_controller_state(struct xinput_controller *controller)
     if (status != HIDP_STATUS_SUCCESS) WARN("HidP_GetUsageValue HID_USAGE_PAGE_GENERIC / HID_USAGE_GENERIC_Z returned %#lx\n", status);
     else state.Gamepad.bLeftTrigger = scale_value(value, &controller->hid.lt_caps, 0, 255);
 
-    state.dwPacketNumber = controller->state.dwPacketNumber + 1;
-    if (controller_begin_read( controller )) controller_destroy( controller, TRUE );
-    else
+    EnterCriticalSection(&controller->crit);
+    if (controller->enabled)
     {
-        EnterCriticalSection( &controller->crit );
+        state.dwPacketNumber = controller->state.dwPacketNumber + 1;
         controller->state = state;
-        LeaveCriticalSection( &controller->crit );
+        if (controller_begin_read( controller )) controller_destroy( controller, TRUE );
     }
+    LeaveCriticalSection(&controller->crit);
 }
 
 static LRESULT CALLBACK xinput_devnotify_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
@@ -760,12 +760,15 @@ static DWORD WINAPI hid_update_thread_proc(void *param)
         count = 0;
         for (i = 0; i < XUSER_MAX_COUNT; ++i)
         {
-            struct xinput_controller *controller = controllers + i;
-            if (!controller->device) continue;
-            EnterCriticalSection( &controller->crit );
-            devices[count] = controller;
-            events[count++] = controller->hid.read_event;
-            LeaveCriticalSection( &controller->crit );
+            if (!controllers[i].device) continue;
+            EnterCriticalSection(&controllers[i].crit);
+            if (controllers[i].enabled)
+            {
+                devices[count] = controllers + i;
+                events[count] = controllers[i].hid.read_event;
+                count++;
+            }
+            LeaveCriticalSection(&controllers[i].crit);
         }
         events[count++] = update_event;
     }
@@ -910,7 +913,6 @@ DWORD WINAPI DECLSPEC_HOTPATCH XInputGetStateEx( DWORD index, XINPUT_STATE *stat
 
     if (WaitForSingleObject(steam_overlay_event, 0) == WAIT_OBJECT_0) memset(state, 0, sizeof(*state));
     else if (WaitForSingleObject(steam_keyboard_event, 0) == WAIT_OBJECT_0) memset(state, 0, sizeof(*state));
-    else if (!controllers[index].enabled) memset(state, 0, sizeof(*state));
     else *state = controllers[index].state;
 
     controller_unlock(&controllers[index]);
