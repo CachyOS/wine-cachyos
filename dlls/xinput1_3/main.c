@@ -138,36 +138,6 @@ static void check_value_caps(struct xinput_controller *controller, USHORT usage,
     }
 }
 
-static DWORD controller_begin_read( struct xinput_controller *controller )
-{
-    USHORT report_len = controller->hid.caps.InputReportByteLength;
-    char *report_buf = controller->hid.input_report_buf;
-
-    memset( &controller->hid.read_ovl, 0, sizeof(controller->hid.read_ovl) );
-    controller->hid.read_ovl.hEvent = controller->hid.read_event;
-
-    if (ReadFile( controller->device, report_buf, report_len, NULL, &controller->hid.read_ovl )) return ERROR_SUCCESS;
-    if (GetLastError() == ERROR_IO_PENDING) return ERROR_SUCCESS;
-    return GetLastError();
-}
-
-static DWORD controller_cancel_read( struct xinput_controller *controller )
-{
-    CancelIoEx( controller->device, &controller->hid.read_ovl );
-    WaitForSingleObject( controller->hid.read_ovl.hEvent, INFINITE );
-    memset( &controller->hid.read_ovl, 0, sizeof(controller->hid.read_ovl) );
-    return ERROR_SUCCESS;
-}
-
-static DWORD controller_end_read( struct xinput_controller *controller )
-{
-    DWORD read_len;
-
-    if (!GetOverlappedResult( controller->device, &controller->hid.read_ovl, &read_len, TRUE )) return GetLastError();
-    memset( &controller->hid.read_ovl, 0, sizeof(controller->hid.read_ovl) );
-    return ERROR_SUCCESS;
-}
-
 static void check_waveform_caps(struct xinput_controller *controller, HANDLE device, PHIDP_PREPARSED_DATA preparsed,
                                 HIDP_LINK_COLLECTION_NODE *collections, HIDP_VALUE_CAPS *caps)
 {
@@ -364,7 +334,8 @@ static void controller_disable(struct xinput_controller *controller)
     if (controller->caps.Flags & XINPUT_CAPS_FFB_SUPPORTED) HID_set_state(controller, &state);
     controller->enabled = FALSE;
 
-    controller_cancel_read( controller );
+    CancelIoEx(controller->device, &controller->hid.read_ovl);
+    WaitForSingleObject(controller->hid.read_ovl.hEvent, INFINITE);
     SetEvent(update_event);
 }
 
@@ -392,13 +363,19 @@ static void controller_destroy(struct xinput_controller *controller, BOOL alread
 
 static void controller_enable(struct xinput_controller *controller)
 {
+    ULONG report_len = controller->hid.caps.InputReportByteLength;
+    char *report_buf = controller->hid.input_report_buf;
     XINPUT_VIBRATION state = controller->vibration;
+    BOOL ret;
 
     if (controller->enabled) return;
     if (controller->caps.Flags & XINPUT_CAPS_FFB_SUPPORTED) HID_set_state(controller, &state);
     controller->enabled = TRUE;
 
-    if (controller_begin_read( controller )) controller_destroy( controller, TRUE );
+    memset(&controller->hid.read_ovl, 0, sizeof(controller->hid.read_ovl));
+    controller->hid.read_ovl.hEvent = controller->hid.read_event;
+    ret = ReadFile(controller->device, report_buf, report_len, NULL, &controller->hid.read_ovl);
+    if (!ret && GetLastError() != ERROR_IO_PENDING) controller_destroy(controller, TRUE);
     else SetEvent(update_event);
 }
 
@@ -617,18 +594,19 @@ static LONG scale_value(ULONG value, const HIDP_VALUE_CAPS *caps, LONG min, LONG
 
 static void read_controller_state(struct xinput_controller *controller)
 {
-    ULONG ret, report_len = controller->hid.caps.InputReportByteLength;
+    ULONG read_len, report_len = controller->hid.caps.InputReportByteLength;
     char *report_buf = controller->hid.input_report_buf;
     XINPUT_STATE state;
     NTSTATUS status;
     USAGE buttons[11];
     ULONG i, button_length, value;
+    BOOL ret;
 
-    if ((ret = controller_end_read( controller )))
+    if (!GetOverlappedResult(controller->device, &controller->hid.read_ovl, &read_len, TRUE))
     {
-        if (ret == ERROR_OPERATION_ABORTED) return;
-        if (ret == ERROR_ACCESS_DENIED || ret == ERROR_INVALID_HANDLE) controller_destroy( controller, TRUE );
-        else ERR( "Failed to read input report, GetOverlappedResult failed with error %lu\n", ret );
+        if (GetLastError() == ERROR_OPERATION_ABORTED) return;
+        if (GetLastError() == ERROR_ACCESS_DENIED || GetLastError() == ERROR_INVALID_HANDLE) controller_destroy(controller, TRUE);
+        else ERR("Failed to read input report, GetOverlappedResult failed with error %lu\n", GetLastError());
         return;
     }
 
@@ -702,7 +680,10 @@ static void read_controller_state(struct xinput_controller *controller)
     {
         state.dwPacketNumber = controller->state.dwPacketNumber + 1;
         controller->state = state;
-        if (controller_begin_read( controller )) controller_destroy( controller, TRUE );
+        memset(&controller->hid.read_ovl, 0, sizeof(controller->hid.read_ovl));
+        controller->hid.read_ovl.hEvent = controller->hid.read_event;
+        ret = ReadFile(controller->device, report_buf, report_len, NULL, &controller->hid.read_ovl);
+        if (!ret && GetLastError() != ERROR_IO_PENDING) controller_destroy(controller, TRUE);
     }
     LeaveCriticalSection(&controller->crit);
 }
