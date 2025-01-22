@@ -4649,3 +4649,19 @@ ULONG_PTR WINAPI NtUserGetThreadState( ULONG request )
 
     return 0;
 }
+
+/***********************************************************************
+ *           NtUserGetCurrentInputMessageSource (win32u.@)
+ */
+BOOL WINAPI NtUserGetCurrentInputMessageSource( INPUT_MESSAGE_SOURCE *source )
+{
+    TRACE( "source %p.\n", source );
+
+    if (!source)
+    {
+        RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
+        return FALSE;
+    }
+    *source = NtUserGetThreadInfo()->msg_source;
+    return TRUE;
+}

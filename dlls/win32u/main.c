@@ -1343,6 +1343,11 @@ HWND SYSCALL_API NtUserGetClipboardViewer(void)
     __ASM_SYSCALL_FUNC( __id_NtUserGetClipboardViewer );
 }
 
+BOOL SYSCALL_API NtUserGetCurrentInputMessageSource( INPUT_MESSAGE_SOURCE *source )
+{
+    SYSCALL_FUNC( NtUserGetCurrentInputMessageSource );
+}
+
 HCURSOR SYSCALL_API NtUserGetCursor(void)
 {
     __ASM_SYSCALL_FUNC( __id_NtUserGetCursor );

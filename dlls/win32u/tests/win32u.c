@@ -2049,10 +2049,12 @@ static LRESULT CALLBACK test_window_proc( HWND hwnd, UINT msg, WPARAM wparam, LP
 
 static void test_message_info(void)
 {
+    INPUT_MESSAGE_SOURCE msg_src, msg_src_expected;
     DWORD_PTR ret, expected;
     HWND hwnd;
     WNDCLASSA cls;
     MSG msg;
+    BOOL bret;
 
     memset(&cls, 0, sizeof(cls));
     cls.lpfnWndProc = test_window_proc;
@@ -2062,6 +2064,21 @@ static void test_message_info(void)
     RegisterClassA( &cls );
     hwnd = CreateWindowExA( 0, "Test class", NULL, WS_OVERLAPPEDWINDOW, 0, 0, 640, 480, 0, 0, 0, NULL );
     ShowWindow( hwnd, SW_SHOW );
+
+    SetLastError( 0xdeadbeef );
+    bret = NtUserGetCurrentInputMessageSource( NULL );
+    ok( !bret && GetLastError() == ERROR_INVALID_PARAMETER, "got bret %d, error %lu.\n", bret, GetLastError() );
+
+    SetLastError( 0xdeadbeef );
+    memset( &msg_src, 0xcc, sizeof(msg_src_expected) );
+    bret = NtUserGetCurrentInputMessageSource( &msg_src );
+    ok( bret && GetLastError() == 0xdeadbeef, "got bret %d, error %lu.\n", bret, GetLastError() );
+    memset( &msg_src_expected, 0xcc, sizeof(msg_src_expected) );
+    bret = GetCurrentInputMessageSource( &msg_src_expected );
+    ok( bret, "got error %lu.\n", GetLastError() );
+    ok( msg_src.deviceType == msg_src_expected.deviceType, "got %d, expected %d.\n", msg_src.deviceType, msg_src_expected.deviceType );
+    ok( msg_src.originId == msg_src_expected.originId, "got %d, expected %d.\n", msg_src.originId, msg_src_expected.originId );
+
     while (PeekMessageA( &msg, NULL, 0, 0, PM_NOREMOVE ))
     {
         GetMessageA( &msg, NULL, 0, 0 );
@@ -2073,6 +2090,18 @@ static void test_message_info(void)
         ret = NtUserGetThreadState( USER_GET_THREAD_STATE_MSGEXTRAINFO );
         ok( expected == 0xdeadbeef, "got %#Ix.\n", expected );
         ok( ret == expected, "got %#Ix, expected %#Ix.\n", ret, expected );
+
+        SetLastError( 0xdeadbeef );
+        memset( &msg_src, 0xcc, sizeof(msg_src_expected) );
+        bret = NtUserGetCurrentInputMessageSource( &msg_src );
+        ok( bret && GetLastError() == 0xdeadbeef, "got bret %d, error %lu.\n", bret, GetLastError() );
+        memset( &msg_src_expected, 0xcc, sizeof(msg_src_expected) );
+        bret = GetCurrentInputMessageSource( &msg_src_expected );
+        ok( bret, "got error %lu.\n", GetLastError() );
+        ok( msg_src.deviceType == msg_src_expected.deviceType, "got %d, expected %d.\n", msg_src.deviceType, msg_src_expected.deviceType );
+        ok( msg_src.originId == msg_src_expected.originId, "got %d, expected %d.\n", msg_src.originId, msg_src_expected.originId );
+        trace( "%d, %d.\n", msg_src_expected.deviceType, msg_src.originId );
+
         TranslateMessage( &msg );
         DispatchMessageA( &msg );
     }
