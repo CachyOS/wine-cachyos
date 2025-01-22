@@ -1554,6 +1554,11 @@ HDESK SYSCALL_API NtUserGetThreadDesktop( DWORD thread )
     __ASM_SYSCALL_FUNC( __id_NtUserGetThreadDesktop );
 }
 
+ULONG_PTR SYSCALL_API NtUserGetThreadState( DWORD request )
+{
+    SYSCALL_FUNC( NtUserGetThreadState );
+}
+
 BOOL SYSCALL_API NtUserGetTitleBarInfo( HWND hwnd, TITLEBARINFO *info )
 {
     __ASM_SYSCALL_FUNC( __id_NtUserGetTitleBarInfo );

@@ -4626,3 +4626,26 @@ BOOL WINAPI NtUserTranslateMessage( const MSG *msg, UINT flags )
     }
     return TRUE;
 }
+
+/***********************************************************************
+ *           NtUserGetThreadState (win32u.@)
+ */
+ULONG_PTR WINAPI NtUserGetThreadState( ULONG request )
+{
+    TRACE( "request %d.\n", (int)request );
+
+    switch(request)
+    {
+        case USER_GET_THREAD_STATE_MSGEXTRAINFO:
+            return NtUserGetThreadInfo()->message_extra;
+
+        case USER_GET_THREAD_STATE_MSGTIME:
+            return NtUserGetThreadInfo()->message_time;
+
+        default:
+            FIXME( "request %d is not supported.\n", (int)request );
+            break;
+    }
+
+    return 0;
+}

@@ -2042,6 +2042,45 @@ static void test_wndproc_hook(void)
     UnregisterClassW( L"TestLParamClass", NULL );
 }
 
+static LRESULT CALLBACK test_window_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
+{
+    return DefWindowProcA( hwnd, msg, wparam, lparam );
+}
+
+static void test_message_info(void)
+{
+    DWORD_PTR ret, expected;
+    HWND hwnd;
+    WNDCLASSA cls;
+    MSG msg;
+
+    memset(&cls, 0, sizeof(cls));
+    cls.lpfnWndProc = test_window_proc;
+    cls.hInstance = GetModuleHandleA(NULL);
+    cls.hCursor = LoadCursorA(0, (LPCSTR)IDC_ARROW);
+    cls.lpszClassName = "Test class";
+    RegisterClassA( &cls );
+    hwnd = CreateWindowExA( 0, "Test class", NULL, WS_OVERLAPPEDWINDOW, 0, 0, 640, 480, 0, 0, 0, NULL );
+    ShowWindow( hwnd, SW_SHOW );
+    while (PeekMessageA( &msg, NULL, 0, 0, PM_NOREMOVE ))
+    {
+        GetMessageA( &msg, NULL, 0, 0 );
+        expected = GetMessageTime();
+        ret = NtUserGetThreadState( USER_GET_THREAD_STATE_MSGTIME );
+        ok( ret == expected, "got %#Ix, expected %#Ix.\n", ret, expected );
+        SetMessageExtraInfo( 0xdeadbeef );
+        expected = GetMessageExtraInfo();
+        ret = NtUserGetThreadState( USER_GET_THREAD_STATE_MSGEXTRAINFO );
+        ok( expected == 0xdeadbeef, "got %#Ix.\n", expected );
+        ok( ret == expected, "got %#Ix, expected %#Ix.\n", ret, expected );
+        TranslateMessage( &msg );
+        DispatchMessageA( &msg );
+    }
+
+    DestroyWindow( hwnd );
+    UnregisterClassA( "Test class", cls.hInstance );
+}
+
 START_TEST(win32u)
 {
     char **argv;
@@ -2082,6 +2121,7 @@ START_TEST(win32u)
 
     test_NtUserCloseWindowStation();
     test_NtUserDisplayConfigGetDeviceInfo();
+    test_message_info();
 
     test_NtUserEnableMouseInPointer( argv, FALSE );
     test_NtUserEnableMouseInPointer( argv, TRUE );

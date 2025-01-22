@@ -539,6 +539,10 @@ enum wine_systray_call
 #define WM_SYSTIMER  0x0118
 
 
+/* NtUserGetThreadState requests */
+#define USER_GET_THREAD_STATE_MSGEXTRAINFO 7
+#define USER_GET_THREAD_STATE_MSGTIME 9
+
 W32KAPI HKL     WINAPI NtUserActivateKeyboardLayout( HKL layout, UINT flags );
 W32KAPI BOOL    WINAPI NtUserAddClipboardFormatListener( HWND hwnd );
 W32KAPI UINT    WINAPI NtUserAssociateInputContext( HWND hwnd, HIMC ctx, ULONG flags );
@@ -674,6 +678,7 @@ W32KAPI BOOL    WINAPI NtUserGetScrollBarInfo( HWND hwnd, LONG id, SCROLLBARINFO
 W32KAPI ULONG   WINAPI NtUserGetSystemDpiForProcess( HANDLE process );
 W32KAPI HMENU   WINAPI NtUserGetSystemMenu( HWND hwnd, BOOL revert );
 W32KAPI HDESK   WINAPI NtUserGetThreadDesktop( DWORD thread );
+W32KAPI ULONG_PTR WINAPI NtUserGetThreadState( ULONG request );
 W32KAPI BOOL    WINAPI NtUserGetTitleBarInfo( HWND hwnd, TITLEBARINFO *info );
 W32KAPI BOOL    WINAPI NtUserGetTouchInputInfo( HTOUCHINPUT handle, UINT count, TOUCHINPUT *ptr, int size );
 W32KAPI INT     WINAPI NtUserGetUpdateRgn( HWND hwnd, HRGN hrgn, BOOL erase );
