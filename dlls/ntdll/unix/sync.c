@@ -1662,24 +1662,34 @@ NTSTATUS WINAPI NtYieldExecution(void)
  */
 NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeout )
 {
+    unsigned int status = STATUS_SUCCESS;
+
     /* if alertable, we need to query the server */
     if (alertable)
     {
         if (do_fsync())
         {
-            NTSTATUS ret = fsync_wait_objects( 0, NULL, TRUE, TRUE, timeout );
-            if (ret != STATUS_NOT_IMPLEMENTED)
-                return ret;
+            status = fsync_wait_objects( 0, NULL, TRUE, TRUE, timeout );
+            if (status != STATUS_NOT_IMPLEMENTED)
+                goto alert_waited;
         }
 
         if (do_esync())
         {
-            NTSTATUS ret = esync_wait_objects( 0, NULL, TRUE, TRUE, timeout );
-            if (ret != STATUS_NOT_IMPLEMENTED)
-                return ret;
+            status = esync_wait_objects( 0, NULL, TRUE, TRUE, timeout );
+            if (status != STATUS_NOT_IMPLEMENTED)
+                goto alert_waited;
         }
 
-        return server_wait( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, timeout );
+        /* Since server_wait will result in an unconditional implicit yield,
+           we never return STATUS_NO_YIELD_PERFORMED */
+        status = server_wait( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, timeout );
+
+alert_waited:
+        if (status == STATUS_TIMEOUT)
+            status = STATUS_SUCCESS;
+
+        return status;
     }
 
     if (!timeout || timeout->QuadPart == TIMEOUT_INFINITE)  /* sleep forever */
@@ -1697,9 +1707,10 @@ NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeou
             when = now.QuadPart - when;
         }
 
-        /* Note that we yield after establishing the desired timeout */
-        NtYieldExecution();
-        if (!when) return STATUS_SUCCESS;
+        /* Note that we yield after establishing the desired timeout, but
+           we only care about the result of the yield for zero timeouts */
+        status = NtYieldExecution();
+        if (!when) return status;
 
         for (;;)
         {
