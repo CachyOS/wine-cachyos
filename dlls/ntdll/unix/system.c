@@ -35,6 +35,7 @@
 #include <errno.h>
 #include <assert.h>
 #include <sys/time.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <dirent.h>
 #ifdef HAVE_SYS_PARAM_H
@@ -1154,6 +1155,7 @@ static NTSTATUS create_logical_proc_info(void)
 {
     static const char core_info[] = "/sys/devices/system/cpu/cpu%u/topology/%s";
     static const char cache_info[] = "/sys/devices/system/cpu/cpu%u/cache/index%u/%s";
+    static const char cache_info_dir[] = "/sys/devices/system/cpu/cpu%u/cache";
     static const char numa_info[] = "/sys/devices/system/node/node%u/cpumap";
     const char *env_fake_logical_cores = getenv("WINE_LOGICAL_CPUS_AS_CORES");
     BOOL fake_logical_cpus_as_cores = env_fake_logical_cores && atoi(env_fake_logical_cores);
@@ -1162,6 +1164,7 @@ static NTSTATUS create_logical_proc_info(void)
     char op, name[MAX_PATH];
     ULONG_PTR all_cpus_mask = 0;
     unsigned int cpu_id;
+    struct stat cache_dir_stat;
 
     /* On systems with a large number of CPU cores (32 or 64 depending on 32-bit or 64-bit),
      * we have issues parsing processor information:
@@ -1269,9 +1272,21 @@ static NTSTATUS create_logical_proc_info(void)
 
             cpu_id = cpu_override.mapping.cpu_count ? cpu_override.mapping.host_cpu_id[i] : i;
 
+            snprintf(name, sizeof(name), cache_info_dir, cpu_id);
+            if(stat(name, &cache_dir_stat) != 0){
+                // Adding cache will fail in the next block so we add a fake one
+                CACHE_DESCRIPTOR fake_cache = { .Associativity = 8, .LineSize = 64, .Type = CacheUnified, .Size = 64 * 1024, .Level = 1 };
+                if (!logical_proc_info_add_cache( all_cpus_mask, &fake_cache ))
+                {
+                    fclose(fcpu_list);
+                    return STATUS_NO_MEMORY;
+                }
+            }
+
+
             for(j = 0; j < 4; j++)
             {
-                CACHE_DESCRIPTOR cache;
+                CACHE_DESCRIPTOR cache = { .Associativity = 8, .LineSize = 64, .Type = CacheUnified, .Size = 64 * 1024 };
                 ULONG_PTR mask = 0;
 
                 snprintf(name, sizeof(name), cache_info, cpu_id, j, "shared_cpu_map");
@@ -1285,39 +1300,43 @@ static NTSTATUS create_logical_proc_info(void)
                 cache.Level = r;
 
                 snprintf(name, sizeof(name), cache_info, cpu_id, j, "ways_of_associativity");
-                f = fopen(name, "r");
-                if(!f) continue;
-                fscanf(f, "%u", &r);
-                fclose(f);
-                cache.Associativity = r;
+                if ((f = fopen(name, "r")))
+                {
+                    fscanf(f, "%u", &r);
+                    fclose(f);
+                    cache.Associativity = r;
+                }
 
                 snprintf(name, sizeof(name), cache_info, cpu_id, j, "coherency_line_size");
-                f = fopen(name, "r");
-                if(!f) continue;
-                fscanf(f, "%u", &r);
-                fclose(f);
-                cache.LineSize = r;
+                if ((f = fopen(name, "r")))
+                {
+                    fscanf(f, "%u", &r);
+                    fclose(f);
+                    cache.LineSize = r;
+                }
 
                 snprintf(name, sizeof(name), cache_info, cpu_id, j, "size");
-                f = fopen(name, "r");
-                if(!f) continue;
-                fscanf(f, "%u%c", &r, &op);
-                fclose(f);
-                if(op != 'K')
-                    WARN("unknown cache size %u%c\n", r, op);
-                cache.Size = (op=='K' ? r*1024 : r);
+                if ((f = fopen(name, "r")))
+                {
+                    fscanf(f, "%u%c", &r, &op);
+                    fclose(f);
+                    if(op != 'K')
+                        WARN("unknown cache size %u%c\n", r, op);
+                    cache.Size = (op=='K' ? r*1024 : r);
+                }
 
                 snprintf(name, sizeof(name), cache_info, cpu_id, j, "type");
-                f = fopen(name, "r");
-                if(!f) continue;
-                fscanf(f, "%s", name);
-                fclose(f);
-                if (!memcmp(name, "Data", 5))
-                    cache.Type = CacheData;
-                else if(!memcmp(name, "Instruction", 11))
-                    cache.Type = CacheInstruction;
-                else
-                    cache.Type = CacheUnified;
+                if ((f = fopen(name, "r")))
+                {
+                    fscanf(f, "%s", name);
+                    fclose(f);
+                    if (!memcmp(name, "Data", 5))
+                        cache.Type = CacheData;
+                    else if(!memcmp(name, "Instruction", 11))
+                        cache.Type = CacheInstruction;
+                    else
+                        cache.Type = CacheUnified;
+                }
 
                 if (cpu_override.mapping.cpu_count)
                 {
