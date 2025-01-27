@@ -19,6 +19,7 @@
  */
 
 #include <stdarg.h>
+#include <stdlib.h>
 #include <assert.h>
 
 #include "ntstatus.h"
@@ -357,7 +358,14 @@ static DEVICE_OBJECT *bus_find_unix_device(UINT64 unix_device)
 
 static DEVICE_OBJECT *bus_find_device_from_vid_pid(const WCHAR *bus_name, struct device_desc *desc)
 {
+    static int once;
     struct device_extension *ext;
+
+    if (desc->prefer_sdl) {
+
+        if (!once++) FIXME("Preferring SDL for inputs!\n");
+        return NULL;
+    }
 
     LIST_FOR_EACH_ENTRY(ext, &device_list, struct device_extension, entry)
         if (!wcscmp(ext->bus_name, bus_name) && ext->desc.vid == desc->vid &&

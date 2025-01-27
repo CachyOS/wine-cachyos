@@ -490,6 +490,7 @@ BOOL bus_event_queue_device_created(struct list *queue, struct unix_device *devi
 {
     ULONG size = sizeof(struct bus_event_entry);
     struct bus_event_entry *entry = malloc(size);
+    const char* prefer_sdl = NULL;
     if (!entry) return FALSE;
 
     if (unix_device_incref(device) == 1) /* being destroyed */
@@ -497,6 +498,10 @@ BOOL bus_event_queue_device_created(struct list *queue, struct unix_device *devi
         free(entry);
         return FALSE;
     }
+
+    desc->prefer_sdl = FALSE;
+    prefer_sdl = getenv("WINE_PREFER_SDL_INPUT");
+    if (prefer_sdl && prefer_sdl[0] == '1') desc->prefer_sdl = TRUE;
 
     entry->event.type = BUS_EVENT_TYPE_DEVICE_CREATED;
     entry->event.device = (UINT_PTR)device;
