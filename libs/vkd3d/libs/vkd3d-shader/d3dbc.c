@@ -482,9 +482,23 @@ static void shader_sm1_parse_dst_param(uint32_t param, const struct vkd3d_shader
         dst->reg.dimension = VSIR_DIMENSION_SCALAR;
     else
         dst->reg.dimension = VSIR_DIMENSION_VEC4;
-    dst->write_mask = (param & VKD3D_SM1_WRITEMASK_MASK) >> VKD3D_SM1_WRITEMASK_SHIFT;
     dst->modifiers = (param & VKD3D_SM1_DST_MODIFIER_MASK) >> VKD3D_SM1_DST_MODIFIER_SHIFT;
     dst->shift = (param & VKD3D_SM1_DSTSHIFT_MASK) >> VKD3D_SM1_DSTSHIFT_SHIFT;
+
+    switch (dst->reg.dimension)
+    {
+        case VSIR_DIMENSION_SCALAR:
+            dst->write_mask = VKD3DSP_WRITEMASK_0;
+            break;
+
+        case VSIR_DIMENSION_VEC4:
+            dst->write_mask = (param & VKD3D_SM1_WRITEMASK_MASK) >> VKD3D_SM1_WRITEMASK_SHIFT;
+            break;
+
+        default:
+            dst->write_mask = 0;
+            break;
+    }
 }
 
 static struct signature_element *find_signature_element(const struct shader_signature *signature,
@@ -517,8 +531,6 @@ static struct signature_element *find_signature_element_by_register_index(
 
     return NULL;
 }
-
-#define SM1_COLOR_REGISTER_OFFSET 8
 
 static bool add_signature_element(struct vkd3d_shader_sm1_parser *sm1, bool output,
         const char *name, unsigned int index, enum vkd3d_shader_sysval_semantic sysval,
@@ -647,15 +659,15 @@ static bool add_signature_element_from_register(struct vkd3d_shader_sm1_parser *
             {
                 case 0:
                     return add_signature_element(sm1, true, "POSITION", 0,
-                            VKD3D_SHADER_SV_POSITION, register_index, is_dcl, mask);
+                            VKD3D_SHADER_SV_POSITION, SM1_RASTOUT_REGISTER_OFFSET + register_index, is_dcl, mask);
 
                 case 1:
                     return add_signature_element(sm1, true, "FOG", 0,
-                            VKD3D_SHADER_SV_NONE, register_index, is_dcl, 0x1);
+                            VKD3D_SHADER_SV_NONE, SM1_RASTOUT_REGISTER_OFFSET + register_index, is_dcl, 0x1);
 
                 case 2:
                     return add_signature_element(sm1, true, "PSIZE", 0,
-                            VKD3D_SHADER_SV_NONE, register_index, is_dcl, 0x1);
+                            VKD3D_SHADER_SV_NONE, SM1_RASTOUT_REGISTER_OFFSET + register_index, is_dcl, 0x1);
 
                 default:
                     vkd3d_shader_parser_error(&sm1->p, VKD3D_SHADER_ERROR_D3DBC_INVALID_REGISTER_INDEX,
@@ -987,7 +999,7 @@ static void shader_sm1_read_immconst(struct vkd3d_shader_sm1_parser *sm1, const 
     src_param->reg.idx[2].rel_addr = NULL;
     src_param->reg.idx_count = 0;
     src_param->reg.dimension = dimension;
-    memcpy(src_param->reg.u.immconst_uint, *ptr, count * sizeof(uint32_t));
+    memcpy(src_param->reg.u.immconst_u32, *ptr, count * sizeof(uint32_t));
     src_param->swizzle = VKD3D_SHADER_NO_SWIZZLE;
     src_param->modifiers = 0;
 
@@ -1063,12 +1075,12 @@ static void shader_sm1_validate_instruction(struct vkd3d_shader_sm1_parser *sm1,
     }
 }
 
-static unsigned int mask_from_swizzle(unsigned int swizzle)
+static unsigned int mask_from_swizzle(uint32_t swizzle)
 {
-    return (1u << vkd3d_swizzle_get_component(swizzle, 0))
-            | (1u << vkd3d_swizzle_get_component(swizzle, 1))
-            | (1u << vkd3d_swizzle_get_component(swizzle, 2))
-            | (1u << vkd3d_swizzle_get_component(swizzle, 3));
+    return (1u << vsir_swizzle_get_component(swizzle, 0))
+            | (1u << vsir_swizzle_get_component(swizzle, 1))
+            | (1u << vsir_swizzle_get_component(swizzle, 2))
+            | (1u << vsir_swizzle_get_component(swizzle, 3));
 }
 
 static void shader_sm1_read_instruction(struct vkd3d_shader_sm1_parser *sm1, struct vkd3d_shader_instruction *ins)
@@ -1348,18 +1360,21 @@ int vkd3d_shader_sm1_parser_create(const struct vkd3d_shader_compile_info *compi
         sm1->p.shader_desc.flat_constant_count[i].external = get_external_constant_count(sm1, i);
 
     if (!sm1->p.failed)
-        vsir_validate(&sm1->p);
+        ret = vsir_validate(&sm1->p);
 
-    if (sm1->p.failed)
+    if (sm1->p.failed && ret >= 0)
+        ret = VKD3D_ERROR_INVALID_SHADER;
+
+    if (ret < 0)
     {
         WARN("Failed to parse shader.\n");
         shader_sm1_destroy(&sm1->p);
-        return VKD3D_ERROR_INVALID_SHADER;
+        return ret;
     }
 
     *parser = &sm1->p;
 
-    return VKD3D_OK;
+    return ret;
 }
 
 bool hlsl_sm1_register_from_semantic(struct hlsl_ctx *ctx, const struct hlsl_semantic *semantic,
@@ -2253,7 +2268,7 @@ static void write_sm1_jump(struct hlsl_ctx *ctx, struct vkd3d_bytecode_buffer *b
         {
             struct hlsl_reg *reg = &jump->condition.node->reg;
 
-            struct sm1_instruction instr =
+            struct sm1_instruction sm1_instr =
             {
                 .opcode = D3DSIO_TEXKILL,
 
@@ -2263,7 +2278,7 @@ static void write_sm1_jump(struct hlsl_ctx *ctx, struct vkd3d_bytecode_buffer *b
                 .has_dst = 1,
             };
 
-            write_sm1_instruction(ctx, buffer, &instr);
+            write_sm1_instruction(ctx, buffer, &sm1_instr);
             break;
         }
 

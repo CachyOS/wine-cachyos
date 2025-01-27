@@ -196,6 +196,14 @@ enum vkd3d_shader_compile_option_fragment_coordinate_origin
     VKD3D_FORCE_32_BIT_ENUM(VKD3D_SHADER_COMPILE_OPTION_FRAGMENT_COORDINATE_ORIGIN),
 };
 
+/** Advertises feature availability. \since 1.11 */
+enum vkd3d_shader_compile_option_feature_flags
+{
+    VKD3D_SHADER_COMPILE_OPTION_FEATURE_INT64         = 0x00000001,
+
+    VKD3D_FORCE_32_BIT_ENUM(VKD3D_SHADER_COMPILE_OPTION_FEATURE_FLAGS),
+};
+
 enum vkd3d_shader_compile_option_name
 {
     /**
@@ -253,6 +261,16 @@ enum vkd3d_shader_compile_option_name
      * \since 1.10
      */
     VKD3D_SHADER_COMPILE_OPTION_FRAGMENT_COORDINATE_ORIGIN = 0x00000009,
+    /**
+     * This option specifies the shader features available in the target
+     * environment. These are not extensions, i.e. they are always supported
+     * by the driver, but may not be supported by the available hardware.
+     *
+     * \a value is a member of enum vkd3d_shader_compile_option_feature_flags.
+     *
+     * \since 1.11
+     */
+    VKD3D_SHADER_COMPILE_OPTION_FEATURE = 0x0000000a,
 
     VKD3D_FORCE_32_BIT_ENUM(VKD3D_SHADER_COMPILE_OPTION_NAME),
 };
@@ -767,6 +785,11 @@ enum vkd3d_shader_target_type
      * An 'OpenGL Shading Language' shader. \since 1.3
      */
     VKD3D_SHADER_TARGET_GLSL,
+    /**
+     * Binary format used by Direct3D 9/10.x/11 effects profiles.
+     * Output is a raw FX section without container. \since 1.11
+     */
+    VKD3D_SHADER_TARGET_FX,
 
     VKD3D_FORCE_32_BIT_ENUM(VKD3D_SHADER_TARGET_TYPE),
 };
@@ -1252,6 +1275,8 @@ enum vkd3d_shader_descriptor_range_flags
     VKD3D_SHADER_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE                    = 0x2,
     VKD3D_SHADER_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE = 0x4,
     VKD3D_SHADER_DESCRIPTOR_RANGE_FLAG_DATA_STATIC                      = 0x8,
+    /** \since 1.11 */
+    VKD3D_SHADER_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_STATIC_KEEPING_BUFFER_BOUNDS_CHECKS = 0x10000,
 
     VKD3D_FORCE_32_BIT_ENUM(VKD3D_SHADER_DESCRIPTOR_RANGE_FLAGS),
 };
@@ -1551,6 +1576,8 @@ enum vkd3d_shader_component_type
     VKD3D_SHADER_COMPONENT_BOOL     = 0x4,
     /** 64-bit IEEE floating-point. */
     VKD3D_SHADER_COMPONENT_DOUBLE   = 0x5,
+    /** 64-bit unsigned integer. \since 1.11 */
+    VKD3D_SHADER_COMPONENT_UINT64   = 0x6,
 
     VKD3D_FORCE_32_BIT_ENUM(VKD3D_SHADER_COMPONENT_TYPE),
 };
