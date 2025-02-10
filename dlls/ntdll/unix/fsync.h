@@ -18,7 +18,7 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
-extern int do_fsync(void);
+NTSYSAPI NTSTATUS WINAPI do_fsync(void);
 extern void fsync_init(void);
 extern NTSTATUS fsync_close( HANDLE handle );
 

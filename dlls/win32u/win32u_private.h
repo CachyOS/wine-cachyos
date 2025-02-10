@@ -284,6 +284,9 @@ extern const struct user_driver_funcs *user_driver;
 
 extern ULONG_PTR zero_bits;
 
+extern NTSTATUS do_esync( void );
+extern NTSTATUS do_fsync( void );
+
 static inline BOOL set_ntstatus( NTSTATUS status )
 {
     if (status) RtlSetLastWin32Error( RtlNtStatusToDosError( status ));

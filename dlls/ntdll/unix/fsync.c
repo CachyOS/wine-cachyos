@@ -163,7 +163,7 @@ static inline int futex_wake( int *addr, int val )
     return syscall( __NR_futex, addr, 1, val, NULL, 0, 0 );
 }
 
-int do_fsync(void)
+NTSTATUS WINAPI do_fsync(void)
 {
 #ifdef __linux__
     static int do_fsync_cached = -1;
