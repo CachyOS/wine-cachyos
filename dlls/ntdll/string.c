@@ -94,53 +94,164 @@ int __cdecl memcmp( const void *ptr1, const void *ptr2, size_t n )
     return 0;
 }
 
+#ifndef likely
+#define likely(x) __builtin_expect(!!(x), 1)
+#endif
+#ifndef unlikely
+#define unlikely(x) __builtin_expect(x, 0)
+#endif
 
-/*********************************************************************
- *                  memcpy   (NTDLL.@)
- *
- * NOTES
- *  Behaves like memmove.
- */
-void * __cdecl memcpy( void *dst, const void *src, size_t n )
+static inline int cpu_supports(const int featurelevel)
 {
-    volatile unsigned char *d = dst;  /* avoid gcc optimizations */
-    const unsigned char *s = src;
+    static int cpu_featurelevel = -1;
+    if (unlikely(cpu_featurelevel < 0))
+    {
+        cpu_featurelevel = 0;
+#ifdef _MSC_VER
+        int regs[4];
+        int extended_regs[4];
 
-    if ((size_t)dst - (size_t)src >= n)
-    {
-        while (n--) *d++ = *s++;
+        __cpuid(regs, 1);
+        __cpuidex(extended_regs, 7, 0);
+
+        const int edx_features = regs[3];
+        const int ecx_features = regs[2];
+        const int ebx_features = extended_regs[1];
+
+        cpu_featurelevel += !!(ecx_features & (1 << 20)) + (ecx_features & (1 << 28)) && (ebx_features & (1 << 5)) + !!(ebx_features & (1 << 16));
+#else
+        cpu_featurelevel += __builtin_cpu_supports("avx512f") + __builtin_cpu_supports("avx2") + __builtin_cpu_supports("sse4.2");
+#endif
     }
-    else
-    {
-        d += n - 1;
-        s += n - 1;
-        while (n--) *d-- = *s--;
-    }
-    return dst;
+    return (cpu_featurelevel >= featurelevel);
 }
 
+#define FEAT_AVX512 3
+#define FEAT_AVX2 2
+#define FEAT_SSE42 1
+
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC push_options
+#pragma GCC target("inline-all-stringops")
+#endif
+
+#define IMPLEMENT_MEMMOVE(arch) \
+    __attribute__((no_builtin("memcpy", "memmove", "memset", "memcmp"))) \
+    static void* memmove_##arch(void* dst, const void* src, size_t n) \
+    { \
+        unsigned char *d = dst; \
+        const unsigned char *s = src; \
+        if (d == s || !n) \
+            return dst; \
+        if ((size_t)dst - (size_t)src >= n) \
+        { \
+            while (n--) *d++ = *s++; \
+        } \
+        else \
+        { \
+            d += n - 1; \
+            s += n - 1; \
+            while (n--) *d-- = *s--; \
+        } \
+        return dst; \
+    }
+
+#ifndef __AVX512F__
+#ifdef __clang__
+#pragma clang attribute push(__attribute__((target("avx512f,arch=x86-64-v4,tune=znver4"))), apply_to = function)
+#else
+#pragma GCC push_options
+#pragma GCC target("avx512f,arch=x86-64-v4,tune=znver4")
+#endif
+#define has_avx512f cpu_supports(FEAT_AVX512)
+#else
+#define has_avx512f 1
+#endif
+
+IMPLEMENT_MEMMOVE(avx512f)
+
+#ifndef __AVX512F__
+#ifdef __clang__
+#pragma clang attribute pop
+#else
+#pragma GCC pop_options
+#endif
+#endif
+
+#ifndef __AVX2__
+#ifdef __clang__
+#pragma clang attribute push(__attribute__((target("avx2,arch=x86-64-v3,tune=haswell"))), apply_to = function)
+#else
+#pragma GCC push_options
+#pragma GCC target("avx2,arch=x86-64-v3,tune=haswell")
+#endif
+#define has_avx2 cpu_supports(FEAT_AVX2)
+#else
+#define has_avx2 1
+#endif
+
+IMPLEMENT_MEMMOVE(avx2)
+
+#ifndef __AVX2__
+#ifdef __clang__
+#pragma clang attribute pop
+#else
+#pragma GCC pop_options
+#endif
+#endif
+
+#ifndef __SSE4_2__
+#ifdef __clang__
+#pragma clang attribute push(__attribute__((target("sse4.2,arch=x86-64-v2,tune=nehalem"))), apply_to = function)
+#else
+#pragma GCC push_options
+#pragma GCC target("sse4.2,arch=x86-64-v2,tune=nehalem")
+#endif
+#define has_sse42 cpu_supports(FEAT_SSE42)
+#else
+#define has_sse42 1
+#endif
+
+IMPLEMENT_MEMMOVE(sse42)
+
+#ifndef __SSE4_2__
+#ifdef __clang__
+#pragma clang attribute pop
+#else
+#pragma GCC pop_options
+#endif
+#endif
+
+IMPLEMENT_MEMMOVE(base)
 
 /*********************************************************************
  *                  memmove   (NTDLL.@)
  */
+__attribute__((no_builtin("memcpy", "memmove", "memset", "memcmp")))
 void * __cdecl memmove( void *dst, const void *src, size_t n )
 {
-    volatile unsigned char *d = dst;  /* avoid gcc optimizations */
-    const unsigned char *s = src;
+    if (has_avx512f)
+        return memmove_avx512f(dst, src, n);
+    if (likely(has_avx2))
+        return memmove_avx2(dst, src, n);
+    if (likely(has_sse42))
+        return memmove_sse42(dst, src, n);
 
-    if ((size_t)dst - (size_t)src >= n)
-    {
-        while (n--) *d++ = *s++;
-    }
-    else
-    {
-        d += n - 1;
-        s += n - 1;
-        while (n--) *d-- = *s--;
-    }
-    return dst;
+    return memmove_base(dst, src, n);
 }
 
+/*********************************************************************
+ *                  memcpy   (NTDLL.@)
+ */
+__attribute__((no_builtin("memcpy", "memmove", "memset", "memcmp")))
+void * __cdecl memcpy( void *dst, const void *src, size_t n )
+{
+    return memmove( dst, src, n );
+}
+
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC pop_options
+#endif
 
 /*********************************************************************
  *		memcpy_s (MSVCRT.@)
@@ -177,76 +288,98 @@ errno_t __cdecl memmove_s( void *dst, size_t len, const void *src, size_t count 
     return 0;
 }
 
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC push_options
+#pragma GCC target("inline-all-stringops")
+#endif
 
-static inline void memset_aligned_32( unsigned char *d, uint64_t v, size_t n )
-{
-    unsigned char *end = d + n;
-    while (d < end)
-    {
-        *(uint64_t *)(d + 0) = v;
-        *(uint64_t *)(d + 8) = v;
-        *(uint64_t *)(d + 16) = v;
-        *(uint64_t *)(d + 24) = v;
-        d += 32;
+#define IMPLEMENT_MEMSET(arch) \
+    __attribute__((no_builtin("memcpy", "memmove", "memset", "memcmp"))) \
+    static void* memset_##arch(void* dst, int c, size_t n) \
+    { \
+        unsigned char *d = dst; \
+        while (n--) *d++ = c; \
+        return dst; \
     }
-}
+
+#ifndef __AVX512F__
+#ifdef __clang__
+#pragma clang attribute push(__attribute__((target("avx512f,arch=x86-64-v4,tune=znver4"))), apply_to = function)
+#else
+#pragma GCC push_options
+#pragma GCC target("avx512f,arch=x86-64-v4,tune=znver4")
+#endif
+#endif
+
+IMPLEMENT_MEMSET(avx512f)
+
+#ifndef __AVX512F__
+#ifdef __clang__
+#pragma clang attribute pop
+#else
+#pragma GCC pop_options
+#endif
+#endif
+
+#ifndef __AVX2__
+#ifdef __clang__
+#pragma clang attribute push(__attribute__((target("avx2,arch=x86-64-v3,tune=haswell"))), apply_to = function)
+#else
+#pragma GCC push_options
+#pragma GCC target("avx2,arch=x86-64-v3,tune=haswell")
+#endif
+#endif
+
+IMPLEMENT_MEMSET(avx2)
+
+#ifndef __AVX2__
+#ifdef __clang__
+#pragma clang attribute pop
+#else
+#pragma GCC pop_options
+#endif
+#endif
+
+#ifndef __SSE4_2__
+#ifdef __clang__
+#pragma clang attribute push(__attribute__((target("sse4.2,arch=x86-64-v2,tune=nehalem"))), apply_to = function)
+#else
+#pragma GCC push_options
+#pragma GCC target("sse4.2,arch=x86-64-v2,tune=nehalem")
+#endif
+#endif
+
+IMPLEMENT_MEMSET(sse42)
+
+#ifndef __SSE4_2__
+#ifdef __clang__
+#pragma clang attribute pop
+#else
+#pragma GCC pop_options
+#endif
+#endif
+
+IMPLEMENT_MEMSET(base)
 
 /*********************************************************************
  *                  memset   (NTDLL.@)
  */
+__attribute__((no_builtin("memcpy", "memmove", "memset", "memcmp")))
 void *__cdecl memset( void *dst, int c, size_t n )
 {
-    typedef uint64_t DECLSPEC_ALIGN(1) unaligned_ui64;
-    typedef uint32_t DECLSPEC_ALIGN(1) unaligned_ui32;
-    typedef uint16_t DECLSPEC_ALIGN(1) unaligned_ui16;
+    if (has_avx512f)
+        return memset_avx512f(dst, c, n);
+    if (likely(has_avx2))
+        return memset_avx2(dst, c, n);
+    if (likely(has_sse42))
+        return memset_sse42(dst, c, n);
 
-    uint64_t v = 0x101010101010101ull * (unsigned char)c;
-    unsigned char *d = (unsigned char *)dst;
-    size_t a = 0x20 - ((uintptr_t)d & 0x1f);
-
-    if (n >= 16)
-    {
-        *(unaligned_ui64 *)(d + 0) = v;
-        *(unaligned_ui64 *)(d + 8) = v;
-        *(unaligned_ui64 *)(d + n - 16) = v;
-        *(unaligned_ui64 *)(d + n - 8) = v;
-        if (n <= 32) return dst;
-        *(unaligned_ui64 *)(d + 16) = v;
-        *(unaligned_ui64 *)(d + 24) = v;
-        *(unaligned_ui64 *)(d + n - 32) = v;
-        *(unaligned_ui64 *)(d + n - 24) = v;
-        if (n <= 64) return dst;
-
-        n = (n - a) & ~0x1f;
-        memset_aligned_32( d + a, v, n );
-        return dst;
-    }
-    if (n >= 8)
-    {
-        *(unaligned_ui64 *)d = v;
-        *(unaligned_ui64 *)(d + n - 8) = v;
-        return dst;
-    }
-    if (n >= 4)
-    {
-        *(unaligned_ui32 *)d = v;
-        *(unaligned_ui32 *)(d + n - 4) = v;
-        return dst;
-    }
-    if (n >= 2)
-    {
-        *(unaligned_ui16 *)d = v;
-        *(unaligned_ui16 *)(d + n - 2) = v;
-        return dst;
-    }
-    if (n >= 1)
-    {
-        *(uint8_t *)d = v;
-        return dst;
-    }
-    return dst;
+    return memset_base(dst, c, n);
 }
 
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC pop_options
+#endif
 
 /*********************************************************************
  *                  strcat   (NTDLL.@)

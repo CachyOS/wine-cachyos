@@ -2786,378 +2786,156 @@ int __cdecl memcmp(const void *ptr1, const void *ptr2, size_t n)
     return memcmp_blocks(p1, p2, n);
 }
 
-#if defined(__i386__) || (defined(__x86_64__) && !defined(__arm64ec__))
+#ifndef likely
+#define likely(x) __builtin_expect(!!(x), 1)
+#endif
+#ifndef unlikely
+#define unlikely(x) __builtin_expect(x, 0)
+#endif
 
-#ifdef __i386__
+static inline int cpu_supports(const int featurelevel)
+{
+    static int cpu_featurelevel = -1;
+    if (unlikely(cpu_featurelevel < 0))
+    {
+        cpu_featurelevel = 0;
+#ifdef _MSC_VER
+        int regs[4];
+        int extended_regs[4];
 
-#define DEST_REG "%edi"
-#define SRC_REG "%esi"
-#define LEN_REG "%ecx"
-#define TMP_REG "%edx"
+        __cpuid(regs, 1);
+        __cpuidex(extended_regs, 7, 0);
 
-#define MEMMOVE_INIT \
-    "pushl " SRC_REG "\n\t" \
-    __ASM_CFI(".cfi_adjust_cfa_offset 4\n\t") \
-    "pushl " DEST_REG "\n\t" \
-    __ASM_CFI(".cfi_adjust_cfa_offset 4\n\t") \
-    "movl 12(%esp), " DEST_REG "\n\t" \
-    "movl 16(%esp), " SRC_REG "\n\t" \
-    "movl 20(%esp), " LEN_REG "\n\t"
+        const int edx_features = regs[3];
+        const int ecx_features = regs[2];
+        const int ebx_features = extended_regs[1];
 
-#define MEMMOVE_CLEANUP \
-    "movl 12(%esp), %eax\n\t" \
-    "popl " DEST_REG "\n\t" \
-    __ASM_CFI(".cfi_adjust_cfa_offset -4\n\t") \
-    "popl " SRC_REG "\n\t" \
-    __ASM_CFI(".cfi_adjust_cfa_offset -4\n\t")
-
+        cpu_featurelevel += !!(ecx_features & (1 << 20)) + (ecx_features & (1 << 28)) && (ebx_features & (1 << 5)) + !!(ebx_features & (1 << 16));
 #else
+        cpu_featurelevel += __builtin_cpu_supports("avx512f") + __builtin_cpu_supports("avx2") + __builtin_cpu_supports("sse4.2");
+#endif
+    }
+    return (cpu_featurelevel >= featurelevel);
+}
 
-#define DEST_REG "%rdi"
-#define SRC_REG "%rsi"
-#define LEN_REG "%r8"
-#define TMP_REG "%r9"
+#define FEAT_AVX512 3
+#define FEAT_AVX2 2
+#define FEAT_SSE42 1
 
-#define MEMMOVE_INIT \
-    "pushq " SRC_REG "\n\t" \
-    __ASM_SEH(".seh_pushreg " SRC_REG "\n\t") \
-    __ASM_CFI(".cfi_adjust_cfa_offset 8\n\t") \
-    "pushq " DEST_REG "\n\t" \
-    __ASM_SEH(".seh_pushreg " DEST_REG "\n\t") \
-    __ASM_SEH(".seh_endprologue\n\t") \
-    __ASM_CFI(".cfi_adjust_cfa_offset 8\n\t") \
-    "movq %rcx, " DEST_REG "\n\t" \
-    "movq %rdx, " SRC_REG "\n\t"
-
-#define MEMMOVE_CLEANUP \
-    "movq %rcx, %rax\n\t" \
-    "popq " DEST_REG "\n\t" \
-    __ASM_CFI(".cfi_adjust_cfa_offset -8\n\t") \
-    "popq " SRC_REG "\n\t" \
-    __ASM_CFI(".cfi_adjust_cfa_offset -8\n\t")
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC push_options
+#pragma GCC target("inline-all-stringops")
 #endif
 
-void * __cdecl sse2_memmove(void *dst, const void *src, size_t n);
-__ASM_GLOBAL_FUNC( sse2_memmove,
-        MEMMOVE_INIT
-        "mov " DEST_REG ", " TMP_REG "\n\t" /* check copying direction */
-        "sub " SRC_REG ", " TMP_REG "\n\t"
-        "cmp " LEN_REG ", " TMP_REG "\n\t"
-        "jb copy_bwd\n\t"
-        /* copy forwards */
-        "cmp $4, " LEN_REG "\n\t" /* 4-bytes align */
-        "jb copy_fwd3\n\t"
-        "mov " DEST_REG ", " TMP_REG "\n\t"
-        "shr $1, " TMP_REG "\n\t"
-        "jnc 1f\n\t"
-        "movsb\n\t"
-        "dec " LEN_REG "\n\t"
-        "inc " TMP_REG "\n\t"
-        "1:\n\t"
-        "shr $1, " TMP_REG "\n\t"
-        "jnc 1f\n\t"
-        "movsw\n\t"
-        "sub $2, " LEN_REG "\n\t"
-        "inc " TMP_REG "\n\t"
-        "1:\n\t" /* 16-bytes align */
-        "cmp $16, " LEN_REG "\n\t"
-        "jb copy_fwd15\n\t"
-        "shr $1, " TMP_REG "\n\t"
-        "jnc 1f\n\t"
-        "movsl\n\t"
-        "sub $4, " LEN_REG "\n\t"
-        "inc " TMP_REG "\n\t"
-        "1:\n\t"
-        "shr $1, " TMP_REG "\n\t"
-        "jnc 1f\n\t"
-        "movsl\n\t"
-        "movsl\n\t"
-        "sub $8, " LEN_REG "\n\t"
-        "1:\n\t"
-        "cmp $64, " LEN_REG "\n\t"
-        "jb copy_fwd63\n\t"
-        "1:\n\t" /* copy 64-bytes blocks in loop, dest 16-bytes aligned */
-        "movdqu 0x00(" SRC_REG "), %xmm0\n\t"
-        "movdqu 0x10(" SRC_REG "), %xmm1\n\t"
-        "movdqu 0x20(" SRC_REG "), %xmm2\n\t"
-        "movdqu 0x30(" SRC_REG "), %xmm3\n\t"
-        "movdqa %xmm0, 0x00(" DEST_REG ")\n\t"
-        "movdqa %xmm1, 0x10(" DEST_REG ")\n\t"
-        "movdqa %xmm2, 0x20(" DEST_REG ")\n\t"
-        "movdqa %xmm3, 0x30(" DEST_REG ")\n\t"
-        "add $64, " SRC_REG "\n\t"
-        "add $64, " DEST_REG "\n\t"
-        "sub $64, " LEN_REG "\n\t"
-        "cmp $64, " LEN_REG "\n\t"
-        "jae 1b\n\t"
-        "copy_fwd63:\n\t" /* copy last 63 bytes, dest 16-bytes aligned */
-        "mov " LEN_REG ", " TMP_REG "\n\t"
-        "and $15, " LEN_REG "\n\t"
-        "shr $5, " TMP_REG "\n\t"
-        "jnc 1f\n\t"
-        "movdqu 0(" SRC_REG "), %xmm0\n\t"
-        "movdqa %xmm0, 0(" DEST_REG ")\n\t"
-        "add $16, " SRC_REG "\n\t"
-        "add $16, " DEST_REG "\n\t"
-        "1:\n\t"
-        "shr $1, " TMP_REG "\n\t"
-        "jnc copy_fwd15\n\t"
-        "movdqu 0x00(" SRC_REG "), %xmm0\n\t"
-        "movdqu 0x10(" SRC_REG "), %xmm1\n\t"
-        "movdqa %xmm0, 0x00(" DEST_REG ")\n\t"
-        "movdqa %xmm1, 0x10(" DEST_REG ")\n\t"
-        "add $32, " SRC_REG "\n\t"
-        "add $32, " DEST_REG "\n\t"
-        "copy_fwd15:\n\t" /* copy last 15 bytes, dest 4-bytes aligned */
-        "mov " LEN_REG ", " TMP_REG "\n\t"
-        "and $3, " LEN_REG "\n\t"
-        "shr $3, " TMP_REG "\n\t"
-        "jnc 1f\n\t"
-        "movsl\n\t"
-        "1:\n\t"
-        "shr $1, " TMP_REG "\n\t"
-        "jnc copy_fwd3\n\t"
-        "movsl\n\t"
-        "movsl\n\t"
-        "copy_fwd3:\n\t" /* copy last 3 bytes */
-        "shr $1, " LEN_REG "\n\t"
-        "jnc 1f\n\t"
-        "movsb\n\t"
-        "1:\n\t"
-        "shr $1, " LEN_REG "\n\t"
-        "jnc 1f\n\t"
-        "movsw\n\t"
-        "1:\n\t"
-        MEMMOVE_CLEANUP
-        "ret\n\t"
-        "copy_bwd:\n\t"
-        "lea (" DEST_REG ", " LEN_REG "), " DEST_REG "\n\t"
-        "lea (" SRC_REG ", " LEN_REG "), " SRC_REG "\n\t"
-        "cmp $4, " LEN_REG "\n\t" /* 4-bytes align */
-        "jb copy_bwd3\n\t"
-        "mov " DEST_REG ", " TMP_REG "\n\t"
-        "shr $1, " TMP_REG "\n\t"
-        "jnc 1f\n\t"
-        "dec " SRC_REG "\n\t"
-        "dec " DEST_REG "\n\t"
-        "movb (" SRC_REG "), %al\n\t"
-        "movb %al, (" DEST_REG ")\n\t"
-        "dec " LEN_REG "\n\t"
-        "1:\n\t"
-        "shr $1, " TMP_REG "\n\t"
-        "jnc 1f\n\t"
-        "sub $2, " SRC_REG "\n\t"
-        "sub $2, " DEST_REG "\n\t"
-        "movw (" SRC_REG "), %ax\n\t"
-        "movw %ax, (" DEST_REG ")\n\t"
-        "sub $2, " LEN_REG "\n\t"
-        "1:\n\t" /* 16-bytes align */
-        "cmp $16, " LEN_REG "\n\t"
-        "jb copy_bwd15\n\t"
-        "shr $1, " TMP_REG "\n\t"
-        "jnc 1f\n\t"
-        "sub $4, " SRC_REG "\n\t"
-        "sub $4, " DEST_REG "\n\t"
-        "movl (" SRC_REG "), %eax\n\t"
-        "movl %eax, (" DEST_REG ")\n\t"
-        "sub $4, " LEN_REG "\n\t"
-        "1:\n\t"
-        "shr $1, " TMP_REG "\n\t"
-        "jnc 1f\n\t"
-        "sub $8, " SRC_REG "\n\t"
-        "sub $8, " DEST_REG "\n\t"
-        "movl 4(" SRC_REG "), %eax\n\t"
-        "movl %eax, 4(" DEST_REG ")\n\t"
-        "movl (" SRC_REG "), %eax\n\t"
-        "movl %eax, (" DEST_REG ")\n\t"
-        "sub $8, " LEN_REG "\n\t"
-        "1:\n\t"
-        "cmp $64, " LEN_REG "\n\t"
-        "jb copy_bwd63\n\t"
-        "1:\n\t" /* copy 64-bytes blocks in loop, dest 16-bytes aligned */
-        "sub $64, " SRC_REG "\n\t"
-        "sub $64, " DEST_REG "\n\t"
-        "movdqu 0x00(" SRC_REG "), %xmm0\n\t"
-        "movdqu 0x10(" SRC_REG "), %xmm1\n\t"
-        "movdqu 0x20(" SRC_REG "), %xmm2\n\t"
-        "movdqu 0x30(" SRC_REG "), %xmm3\n\t"
-        "movdqa %xmm0, 0x00(" DEST_REG ")\n\t"
-        "movdqa %xmm1, 0x10(" DEST_REG ")\n\t"
-        "movdqa %xmm2, 0x20(" DEST_REG ")\n\t"
-        "movdqa %xmm3, 0x30(" DEST_REG ")\n\t"
-        "sub $64, " LEN_REG "\n\t"
-        "cmp $64, " LEN_REG "\n\t"
-        "jae 1b\n\t"
-        "copy_bwd63:\n\t" /* copy last 63 bytes, dest 16-bytes aligned */
-        "mov " LEN_REG ", " TMP_REG "\n\t"
-        "and $15, " LEN_REG "\n\t"
-        "shr $5, " TMP_REG "\n\t"
-        "jnc 1f\n\t"
-        "sub $16, " SRC_REG "\n\t"
-        "sub $16, " DEST_REG "\n\t"
-        "movdqu (" SRC_REG "), %xmm0\n\t"
-        "movdqa %xmm0, (" DEST_REG ")\n\t"
-        "1:\n\t"
-        "shr $1, " TMP_REG "\n\t"
-        "jnc copy_bwd15\n\t"
-        "sub $32, " SRC_REG "\n\t"
-        "sub $32, " DEST_REG "\n\t"
-        "movdqu 0x00(" SRC_REG "), %xmm0\n\t"
-        "movdqu 0x10(" SRC_REG "), %xmm1\n\t"
-        "movdqa %xmm0, 0x00(" DEST_REG ")\n\t"
-        "movdqa %xmm1, 0x10(" DEST_REG ")\n\t"
-        "copy_bwd15:\n\t" /* copy last 15 bytes, dest 4-bytes aligned */
-        "mov " LEN_REG ", " TMP_REG "\n\t"
-        "and $3, " LEN_REG "\n\t"
-        "shr $3, " TMP_REG "\n\t"
-        "jnc 1f\n\t"
-        "sub $4, " SRC_REG "\n\t"
-        "sub $4, " DEST_REG "\n\t"
-        "movl (" SRC_REG "), %eax\n\t"
-        "movl %eax, (" DEST_REG ")\n\t"
-        "1:\n\t"
-        "shr $1, " TMP_REG "\n\t"
-        "jnc copy_bwd3\n\t"
-        "sub $8, " SRC_REG "\n\t"
-        "sub $8, " DEST_REG "\n\t"
-        "movl 4(" SRC_REG "), %eax\n\t"
-        "movl %eax, 4(" DEST_REG ")\n\t"
-        "movl (" SRC_REG "), %eax\n\t"
-        "movl %eax, (" DEST_REG ")\n\t"
-        "copy_bwd3:\n\t" /* copy last 3 bytes */
-        "shr $1, " LEN_REG "\n\t"
-        "jnc 1f\n\t"
-        "dec " SRC_REG "\n\t"
-        "dec " DEST_REG "\n\t"
-        "movb (" SRC_REG "), %al\n\t"
-        "movb %al, (" DEST_REG ")\n\t"
-        "1:\n\t"
-        "shr $1, " LEN_REG "\n\t"
-        "jnc 1f\n\t"
-        "movw -2(" SRC_REG "), %ax\n\t"
-        "movw %ax, -2(" DEST_REG ")\n\t"
-        "1:\n\t"
-        MEMMOVE_CLEANUP
-        "ret" )
+#define IMPLEMENT_MEMMOVE(arch) \
+    __attribute__((no_builtin("memcpy", "memmove", "memset", "memcmp"))) \
+    static void* memmove_##arch(void* dst, const void* src, size_t n) \
+    { \
+        unsigned char *d = dst; \
+        const unsigned char *s = src; \
+        if (d == s || !n) \
+            return dst; \
+        if ((size_t)dst - (size_t)src >= n) \
+        { \
+            while (n--) *d++ = *s++; \
+        } \
+        else \
+        { \
+            d += n - 1; \
+            s += n - 1; \
+            while (n--) *d-- = *s--; \
+        } \
+        return dst; \
+    }
 
+#ifndef __AVX512F__
+#ifdef __clang__
+#pragma clang attribute push(__attribute__((target("avx512f,arch=x86-64-v4,tune=znver4"))), apply_to = function)
+#else
+#pragma GCC push_options
+#pragma GCC target("avx512f,arch=x86-64-v4,tune=znver4")
 #endif
+#define has_avx512f cpu_supports(FEAT_AVX512)
+#else
+#define has_avx512f 1
+#endif
+
+IMPLEMENT_MEMMOVE(avx512f)
+
+#ifndef __AVX512F__
+#ifdef __clang__
+#pragma clang attribute pop
+#else
+#pragma GCC pop_options
+#endif
+#endif
+
+#ifndef __AVX2__
+#ifdef __clang__
+#pragma clang attribute push(__attribute__((target("avx2,arch=x86-64-v3,tune=haswell"))), apply_to = function)
+#else
+#pragma GCC push_options
+#pragma GCC target("avx2,arch=x86-64-v3,tune=haswell")
+#endif
+#define has_avx2 cpu_supports(FEAT_AVX2)
+#else
+#define has_avx2 1
+#endif
+
+IMPLEMENT_MEMMOVE(avx2)
+
+#ifndef __AVX2__
+#ifdef __clang__
+#pragma clang attribute pop
+#else
+#pragma GCC pop_options
+#endif
+#endif
+
+#ifndef __SSE4_2__
+#ifdef __clang__
+#pragma clang attribute push(__attribute__((target("sse4.2,arch=x86-64-v2,tune=nehalem"))), apply_to = function)
+#else
+#pragma GCC push_options
+#pragma GCC target("sse4.2,arch=x86-64-v2,tune=nehalem")
+#endif
+#define has_sse42 cpu_supports(FEAT_SSE42)
+#else
+#define has_sse42 1
+#endif
+
+IMPLEMENT_MEMMOVE(sse42)
+
+#ifndef __SSE4_2__
+#ifdef __clang__
+#pragma clang attribute pop
+#else
+#pragma GCC pop_options
+#endif
+#endif
+
+IMPLEMENT_MEMMOVE(base)
 
 /*********************************************************************
  *                  memmove (MSVCRT.@)
  */
-#ifdef WORDS_BIGENDIAN
-# define MERGE(w1, sh1, w2, sh2) ((w1 << sh1) | (w2 >> sh2))
-#else
-# define MERGE(w1, sh1, w2, sh2) ((w1 >> sh1) | (w2 << sh2))
-#endif
+__attribute__((no_builtin("memcpy", "memmove", "memset", "memcmp")))
 void * __cdecl memmove(void *dst, const void *src, size_t n)
 {
-#if defined(__x86_64__) && !defined(__arm64ec__)
-    return sse2_memmove(dst, src, n);
-#else
-    unsigned char *d = dst;
-    const unsigned char *s = src;
-    int sh1;
+    if (has_avx512f)
+        return memmove_avx512f(dst, src, n);
+    if (likely(has_avx2))
+        return memmove_avx2(dst, src, n);
+    if (likely(has_sse42))
+        return memmove_sse42(dst, src, n);
 
-#ifdef __i386__
-    if (sse2_supported)
-        return sse2_memmove(dst, src, n);
-#endif
-
-    if (!n) return dst;
-
-    if ((size_t)dst - (size_t)src >= n)
-    {
-        for (; (size_t)d % sizeof(size_t) && n; n--) *d++ = *s++;
-
-        sh1 = 8 * ((size_t)s % sizeof(size_t));
-        if (!sh1)
-        {
-            while (n >= sizeof(size_t))
-            {
-                *(size_t*)d = *(size_t*)s;
-                s += sizeof(size_t);
-                d += sizeof(size_t);
-                n -= sizeof(size_t);
-            }
-        }
-        else if (n >= 2 * sizeof(size_t))
-        {
-            int sh2 = 8 * sizeof(size_t) - sh1;
-            size_t x, y;
-
-            s -= sh1 / 8;
-            x = *(size_t*)s;
-            do
-            {
-                s += sizeof(size_t);
-                y = *(size_t*)s;
-                *(size_t*)d = MERGE(x, sh1, y, sh2);
-                d += sizeof(size_t);
-
-                s += sizeof(size_t);
-                x = *(size_t*)s;
-                *(size_t*)d = MERGE(y, sh1, x, sh2);
-                d += sizeof(size_t);
-
-                n -= 2 * sizeof(size_t);
-            } while (n >= 2 * sizeof(size_t));
-            s += sh1 / 8;
-        }
-        while (n--) *d++ = *s++;
-        return dst;
-    }
-    else
-    {
-        d += n;
-        s += n;
-
-        for (; (size_t)d % sizeof(size_t) && n; n--) *--d = *--s;
-
-        sh1 = 8 * ((size_t)s % sizeof(size_t));
-        if (!sh1)
-        {
-            while (n >= sizeof(size_t))
-            {
-                s -= sizeof(size_t);
-                d -= sizeof(size_t);
-                *(size_t*)d = *(size_t*)s;
-                n -= sizeof(size_t);
-            }
-        }
-        else if (n >= 2 * sizeof(size_t))
-        {
-            int sh2 = 8 * sizeof(size_t) - sh1;
-            size_t x, y;
-
-            s -= sh1 / 8;
-            x = *(size_t*)s;
-            do
-            {
-                s -= sizeof(size_t);
-                y = *(size_t*)s;
-                d -= sizeof(size_t);
-                *(size_t*)d = MERGE(y, sh1, x, sh2);
-
-                s -= sizeof(size_t);
-                x = *(size_t*)s;
-                d -= sizeof(size_t);
-                *(size_t*)d = MERGE(x, sh1, y, sh2);
-
-                n -= 2 * sizeof(size_t);
-            } while (n >= 2 * sizeof(size_t));
-            s += sh1 / 8;
-        }
-        while (n--) *--d = *--s;
-    }
-    return dst;
-#endif
+    return memmove_base(dst, src, n);
 }
-#undef MERGE
 
 /*********************************************************************
  *                  memcpy   (MSVCRT.@)
  */
+__attribute__((no_builtin("memcpy", "memmove", "memset", "memcmp")))
 void * __cdecl memcpy(void *dst, const void *src, size_t n)
 {
     return memmove(dst, src, n);
@@ -3174,75 +2952,93 @@ void * __cdecl _memccpy(void *dst, const void *src, int c, size_t n)
     return NULL;
 }
 
-
-static inline void memset_aligned_32(unsigned char *d, uint64_t v, size_t n)
-{
-    unsigned char *end = d + n;
-    while (d < end)
-    {
-        *(uint64_t *)(d + 0) = v;
-        *(uint64_t *)(d + 8) = v;
-        *(uint64_t *)(d + 16) = v;
-        *(uint64_t *)(d + 24) = v;
-        d += 32;
+#define IMPLEMENT_MEMSET(arch) \
+    __attribute__((no_builtin("memcpy", "memmove", "memset", "memcmp"))) \
+    static void* memset_##arch(void* dst, int c, size_t n) \
+    { \
+        unsigned char *d = dst; \
+        while (n--) *d++ = c; \
+        return dst; \
     }
-}
+
+#ifndef __AVX512F__
+#ifdef __clang__
+#pragma clang attribute push(__attribute__((target("avx512f,arch=x86-64-v4,tune=znver4"))), apply_to = function)
+#else
+#pragma GCC push_options
+#pragma GCC target("avx512f,arch=x86-64-v4,tune=znver4")
+#endif
+#endif
+
+IMPLEMENT_MEMSET(avx512f)
+
+#ifndef __AVX512F__
+#ifdef __clang__
+#pragma clang attribute pop
+#else
+#pragma GCC pop_options
+#endif
+#endif
+
+#ifndef __AVX2__
+#ifdef __clang__
+#pragma clang attribute push(__attribute__((target("avx2,arch=x86-64-v3,tune=haswell"))), apply_to = function)
+#else
+#pragma GCC push_options
+#pragma GCC target("avx2,arch=x86-64-v3,tune=haswell")
+#endif
+#endif
+
+IMPLEMENT_MEMSET(avx2)
+
+#ifndef __AVX2__
+#ifdef __clang__
+#pragma clang attribute pop
+#else
+#pragma GCC pop_options
+#endif
+#endif
+
+#ifndef __SSE4_2__
+#ifdef __clang__
+#pragma clang attribute push(__attribute__((target("sse4.2,arch=x86-64-v2,tune=nehalem"))), apply_to = function)
+#else
+#pragma GCC push_options
+#pragma GCC target("sse4.2,arch=x86-64-v2,tune=nehalem")
+#endif
+#endif
+
+IMPLEMENT_MEMSET(sse42)
+
+#ifndef __SSE4_2__
+#ifdef __clang__
+#pragma clang attribute pop
+#else
+#pragma GCC pop_options
+#endif
+#endif
+
+IMPLEMENT_MEMSET(base)
 
 /*********************************************************************
  *		    memset (MSVCRT.@)
  */
+__attribute__((no_builtin("memcpy", "memmove", "memset", "memcmp")))
 void *__cdecl memset(void *dst, int c, size_t n)
 {
-    typedef uint64_t DECLSPEC_ALIGN(1) unaligned_ui64;
-    typedef uint32_t DECLSPEC_ALIGN(1) unaligned_ui32;
-    typedef uint16_t DECLSPEC_ALIGN(1) unaligned_ui16;
+    if (has_avx512f)
+        return memset_avx512f(dst, c, n);
+    if (likely(has_avx2))
+        return memset_avx2(dst, c, n);
+    if (likely(has_sse42))
+        return memset_sse42(dst, c, n);
 
-    uint64_t v = 0x101010101010101ull * (unsigned char)c;
-    unsigned char *d = (unsigned char *)dst;
-    size_t a = 0x20 - ((uintptr_t)d & 0x1f);
-
-    if (n >= 16)
-    {
-        *(unaligned_ui64 *)(d + 0) = v;
-        *(unaligned_ui64 *)(d + 8) = v;
-        *(unaligned_ui64 *)(d + n - 16) = v;
-        *(unaligned_ui64 *)(d + n - 8) = v;
-        if (n <= 32) return dst;
-        *(unaligned_ui64 *)(d + 16) = v;
-        *(unaligned_ui64 *)(d + 24) = v;
-        *(unaligned_ui64 *)(d + n - 32) = v;
-        *(unaligned_ui64 *)(d + n - 24) = v;
-        if (n <= 64) return dst;
-
-        n = (n - a) & ~0x1f;
-        memset_aligned_32(d + a, v, n);
-        return dst;
-    }
-    if (n >= 8)
-    {
-        *(unaligned_ui64 *)d = v;
-        *(unaligned_ui64 *)(d + n - 8) = v;
-        return dst;
-    }
-    if (n >= 4)
-    {
-        *(unaligned_ui32 *)d = v;
-        *(unaligned_ui32 *)(d + n - 4) = v;
-        return dst;
-    }
-    if (n >= 2)
-    {
-        *(unaligned_ui16 *)d = v;
-        *(unaligned_ui16 *)(d + n - 2) = v;
-        return dst;
-    }
-    if (n >= 1)
-    {
-        *(uint8_t *)d = v;
-        return dst;
-    }
-    return dst;
+    return memset_base(dst, c, n);
 }
+
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC pop_options
+#endif
 
 /*********************************************************************
  *		    strchr (MSVCRT.@)
