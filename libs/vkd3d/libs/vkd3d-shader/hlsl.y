@@ -40,7 +40,7 @@ struct parse_parameter
     const char *name;
     struct hlsl_semantic semantic;
     struct hlsl_reg_reservation reg_reservation;
-    unsigned int modifiers;
+    uint32_t modifiers;
 };
 
 struct parse_colon_attribute
@@ -75,7 +75,7 @@ struct parse_variable_def
     struct parse_initializer initializer;
 
     struct hlsl_type *basic_type;
-    unsigned int modifiers;
+    uint32_t modifiers;
     struct vkd3d_shader_location modifiers_loc;
 };
 
@@ -405,7 +405,7 @@ static struct hlsl_ir_node *add_implicit_conversion(struct hlsl_ctx *ctx, struct
     return add_cast(ctx, block, node, dst_type, loc);
 }
 
-static DWORD add_modifiers(struct hlsl_ctx *ctx, DWORD modifiers, DWORD mod,
+static uint32_t add_modifiers(struct hlsl_ctx *ctx, uint32_t modifiers, uint32_t mod,
         const struct vkd3d_shader_location *loc)
 {
     if (modifiers & mod)
@@ -487,27 +487,27 @@ static void resolve_loop_continue(struct hlsl_ctx *ctx, struct hlsl_block *block
         else if (instr->type == HLSL_IR_JUMP)
         {
             struct hlsl_ir_jump *jump = hlsl_ir_jump(instr);
-            struct hlsl_block block;
+            struct hlsl_block cond_block;
 
             if (jump->type != HLSL_IR_JUMP_UNRESOLVED_CONTINUE)
                 continue;
 
             if (type == LOOP_DO_WHILE)
             {
-                if (!hlsl_clone_block(ctx, &block, cond))
+                if (!hlsl_clone_block(ctx, &cond_block, cond))
                     return;
-                if (!append_conditional_break(ctx, &block))
+                if (!append_conditional_break(ctx, &cond_block))
                 {
-                    hlsl_block_cleanup(&block);
+                    hlsl_block_cleanup(&cond_block);
                     return;
                 }
-                list_move_before(&instr->entry, &block.instrs);
+                list_move_before(&instr->entry, &cond_block.instrs);
             }
             else if (type == LOOP_FOR)
             {
-                if (!hlsl_clone_block(ctx, &block, iter))
+                if (!hlsl_clone_block(ctx, &cond_block, iter))
                     return;
-                list_move_before(&instr->entry, &block.instrs);
+                list_move_before(&instr->entry, &cond_block.instrs);
             }
             jump->type = HLSL_IR_JUMP_CONTINUE;
         }
@@ -868,7 +868,7 @@ static const struct hlsl_struct_field *get_struct_field(const struct hlsl_struct
 }
 
 static struct hlsl_type *apply_type_modifiers(struct hlsl_ctx *ctx, struct hlsl_type *type,
-        unsigned int *modifiers, bool force_majority, const struct vkd3d_shader_location *loc)
+        uint32_t *modifiers, bool force_majority, const struct vkd3d_shader_location *loc)
 {
     unsigned int default_majority = 0;
     struct hlsl_type *new_type;
@@ -926,7 +926,7 @@ static bool shader_profile_version_lt(const struct hlsl_ctx *ctx, unsigned int m
 }
 
 static bool gen_struct_fields(struct hlsl_ctx *ctx, struct parse_fields *fields,
-        struct hlsl_type *type, unsigned int modifiers, struct list *defs)
+        struct hlsl_type *type, uint32_t modifiers, struct list *defs)
 {
     struct parse_variable_def *v, *v_next;
     size_t i = 0;
@@ -1019,7 +1019,7 @@ static bool add_typedef(struct hlsl_ctx *ctx, struct hlsl_type *const orig_type,
         }
         else
         {
-            unsigned int var_modifiers = 0;
+            uint32_t var_modifiers = 0;
 
             if (!(type = apply_type_modifiers(ctx, orig_type, &var_modifiers, true, &v->loc)))
             {
@@ -1093,6 +1093,56 @@ static bool add_func_parameter(struct hlsl_ctx *ctx, struct hlsl_func_parameters
             parameters->count + 1, sizeof(*parameters->vars)))
         return false;
     parameters->vars[parameters->count++] = var;
+    return true;
+}
+
+static bool add_technique(struct hlsl_ctx *ctx, const char *name, struct hlsl_scope *scope,
+        const char *typename, const struct vkd3d_shader_location *loc)
+{
+    struct hlsl_ir_var *var;
+    struct hlsl_type *type;
+
+    type = hlsl_get_type(ctx->globals, typename, false, false);
+    if (!(var = hlsl_new_var(ctx, name, type, loc, NULL, 0, NULL)))
+        return false;
+    var->scope = scope;
+
+    if (!hlsl_add_var(ctx, var, false))
+    {
+        struct hlsl_ir_var *old = hlsl_get_var(ctx->cur_scope, var->name);
+
+        hlsl_error(ctx, &var->loc, VKD3D_SHADER_ERROR_HLSL_REDEFINED,
+                "Identifier \"%s\" was already declared in this scope.", var->name);
+        hlsl_note(ctx, &old->loc, VKD3D_SHADER_LOG_ERROR, "\"%s\" was previously declared here.", old->name);
+        hlsl_free_var(var);
+        return false;
+    }
+
+    return true;
+}
+
+static bool add_effect_group(struct hlsl_ctx *ctx, const char *name, struct hlsl_scope *scope,
+        const struct vkd3d_shader_location *loc)
+{
+    struct hlsl_ir_var *var;
+    struct hlsl_type *type;
+
+    type = hlsl_get_type(ctx->globals, "fxgroup", false, false);
+    if (!(var = hlsl_new_var(ctx, name, type, loc, NULL, 0, NULL)))
+        return false;
+    var->scope = scope;
+
+    if (!hlsl_add_var(ctx, var, false))
+    {
+        struct hlsl_ir_var *old = hlsl_get_var(ctx->cur_scope, var->name);
+
+        hlsl_error(ctx, &var->loc, VKD3D_SHADER_ERROR_HLSL_REDEFINED,
+                "Identifier \"%s\" was already declared in this scope.", var->name);
+        hlsl_note(ctx, &old->loc, VKD3D_SHADER_LOG_ERROR, "\"%s\" was previously declared here.", old->name);
+        hlsl_free_var(var);
+        return false;
+    }
+
     return true;
 }
 
@@ -1717,7 +1767,7 @@ static enum hlsl_ir_expr_op op_from_assignment(enum parse_assign_op op)
     return ops[op];
 }
 
-static bool invert_swizzle(unsigned int *swizzle, unsigned int *writemask, unsigned int *ret_width)
+static bool invert_swizzle(uint32_t *swizzle, unsigned int *writemask, unsigned int *ret_width)
 {
     unsigned int i, j, bit = 0, inverted = 0, width, new_writemask = 0, new_swizzle = 0;
 
@@ -1791,8 +1841,9 @@ static struct hlsl_ir_node *add_assignment(struct hlsl_ctx *ctx, struct hlsl_blo
         else if (lhs->type == HLSL_IR_SWIZZLE)
         {
             struct hlsl_ir_swizzle *swizzle = hlsl_ir_swizzle(lhs);
-            unsigned int width, s = swizzle->swizzle;
             struct hlsl_ir_node *new_swizzle;
+            uint32_t s = swizzle->swizzle;
+            unsigned int width;
 
             if (lhs->data_type->class == HLSL_CLASS_MATRIX)
                 hlsl_fixme(ctx, &lhs->loc, "Matrix assignment with a writemask.");
@@ -3553,7 +3604,7 @@ static bool intrinsic_tex(struct hlsl_ctx *ctx, const struct parse_initializer *
 {
     struct hlsl_resource_load_params load_params = { 0 };
     const struct hlsl_type *sampler_type;
-    struct hlsl_ir_node *coords, *load;
+    struct hlsl_ir_node *coords, *sample;
 
     if (params->args_count != 2 && params->args_count != 4)
     {
@@ -3688,9 +3739,9 @@ static bool intrinsic_tex(struct hlsl_ctx *ctx, const struct parse_initializer *
     load_params.format = hlsl_get_vector_type(ctx, HLSL_TYPE_FLOAT, 4);
     load_params.sampling_dim = dim;
 
-    if (!(load = hlsl_new_resource_load(ctx, &load_params, loc)))
+    if (!(sample = hlsl_new_resource_load(ctx, &load_params, loc)))
         return false;
-    hlsl_block_add_instr(params->instrs, load);
+    hlsl_block_add_instr(params->instrs, sample);
     return true;
 }
 
@@ -4844,7 +4895,7 @@ static void check_duplicated_switch_cases(struct hlsl_ctx *ctx, const struct hls
     FLOAT floatval;
     bool boolval;
     char *name;
-    DWORD modifiers;
+    uint32_t modifiers;
     struct hlsl_ir_node *instr;
     struct hlsl_block *block;
     struct list *list;
@@ -4887,6 +4938,7 @@ static void check_duplicated_switch_cases(struct hlsl_ctx *ctx, const struct hls
 %token KW_EXTERN
 %token KW_FALSE
 %token KW_FOR
+%token KW_FXGROUP
 %token KW_GEOMETRYSHADER
 %token KW_GROUPSHARED
 %token KW_IF
@@ -5051,7 +5103,7 @@ static void check_duplicated_switch_cases(struct hlsl_ctx *ctx, const struct hls
 
 %type <name> any_identifier
 %type <name> var_identifier
-%type <name> technique_name
+%type <name> name_opt
 
 %type <parameter> parameter
 
@@ -5093,49 +5145,87 @@ hlsl_prog:
             destroy_block($2);
         }
     | hlsl_prog preproc_directive
-    | hlsl_prog technique
+    | hlsl_prog global_technique
+    | hlsl_prog effect_group
     | hlsl_prog ';'
 
-technique_name:
+name_opt:
       %empty
         {
             $$ = NULL;
         }
     | any_identifier
 
+pass:
+      KW_PASS name_opt '{' '}'
+
 pass_list:
-      %empty
+      pass
+    | pass_list pass
+
+passes:
+      scope_start
+    | scope_start pass_list
 
 technique9:
-      KW_TECHNIQUE technique_name '{' pass_list '}'
+      KW_TECHNIQUE name_opt '{' passes '}'
         {
-            hlsl_fixme(ctx, &@$, "Unsupported \'technique\' declaration.");
+            struct hlsl_scope *scope = ctx->cur_scope;
+            hlsl_pop_scope(ctx);
+
+            if (!add_technique(ctx, $2, scope, "technique", &@1))
+                YYABORT;
         }
 
 technique10:
-      KW_TECHNIQUE10 technique_name '{' pass_list '}'
+      KW_TECHNIQUE10 name_opt '{' passes '}'
         {
+            struct hlsl_scope *scope = ctx->cur_scope;
+            hlsl_pop_scope(ctx);
+
             if (ctx->profile->type == VKD3D_SHADER_TYPE_EFFECT && ctx->profile->major_version == 2)
                 hlsl_error(ctx, &@1, VKD3D_SHADER_ERROR_HLSL_INVALID_SYNTAX,
                         "The 'technique10' keyword is invalid for this profile.");
 
-            hlsl_fixme(ctx, &@$, "Unsupported \'technique10\' declaration.");
+            if (!add_technique(ctx, $2, scope, "technique10", &@1))
+                YYABORT;
         }
 
 technique11:
-      KW_TECHNIQUE11 technique_name '{' pass_list '}'
+      KW_TECHNIQUE11 name_opt '{' passes '}'
         {
+            struct hlsl_scope *scope = ctx->cur_scope;
+            hlsl_pop_scope(ctx);
+
             if (ctx->profile->type == VKD3D_SHADER_TYPE_EFFECT && ctx->profile->major_version == 2)
                 hlsl_error(ctx, &@1, VKD3D_SHADER_ERROR_HLSL_INVALID_SYNTAX,
                         "The 'technique11' keyword is invalid for this profile.");
 
-            hlsl_fixme(ctx, &@$, "Unsupported \'technique11\' declaration.");
+            if (!add_technique(ctx, $2, scope, "technique11", &@1))
+                YYABORT;
         }
 
-technique:
+global_technique:
       technique9
     | technique10
     | technique11
+
+group_technique:
+      technique10
+    | technique11
+
+group_techniques:
+      group_technique
+    | group_techniques group_technique
+
+effect_group:
+      KW_FXGROUP any_identifier '{' scope_start group_techniques '}'
+        {
+            struct hlsl_scope *scope = ctx->cur_scope;
+            hlsl_pop_scope(ctx);
+            if (!(add_effect_group(ctx, $2, scope, &@2)))
+                YYABORT;
+        }
 
 buffer_declaration:
       buffer_type any_identifier colon_attribute
@@ -5282,7 +5372,7 @@ field:
       var_modifiers field_type variables_def ';'
         {
             struct hlsl_type *type;
-            unsigned int modifiers = $1;
+            uint32_t modifiers = $1;
 
             if (!(type = apply_type_modifiers(ctx, $2, &modifiers, true, &@1)))
                 YYABORT;
@@ -5435,7 +5525,7 @@ func_prototype_no_attrs:
     /* var_modifiers is necessary to avoid shift/reduce conflicts. */
       var_modifiers type var_identifier '(' parameters ')' colon_attribute
         {
-            unsigned int modifiers = $1;
+            uint32_t modifiers = $1;
             struct hlsl_ir_var *var;
             struct hlsl_type *type;
 
@@ -5709,7 +5799,7 @@ param_list:
 parameter:
       var_modifiers type_no_void any_identifier arrays colon_attribute
         {
-            unsigned int modifiers = $1;
+            uint32_t modifiers = $1;
             struct hlsl_type *type;
             unsigned int i;
 
@@ -6023,7 +6113,7 @@ typedef:
       KW_TYPEDEF var_modifiers typedef_type type_specs ';'
         {
             struct parse_variable_def *v, *v_next;
-            unsigned int modifiers = $2;
+            uint32_t modifiers = $2;
             struct hlsl_type *type;
 
             if (!(type = apply_type_modifiers(ctx, $3, &modifiers, false, &@2)))
@@ -6160,7 +6250,7 @@ variable_def:
 variable_def_typed:
       var_modifiers struct_spec variable_def
         {
-            unsigned int modifiers = $1;
+            uint32_t modifiers = $1;
             struct hlsl_type *type;
 
             if (!(type = apply_type_modifiers(ctx, $2, &modifiers, true, &@1)))
@@ -6175,7 +6265,7 @@ variable_def_typed:
         }
     | var_modifiers type variable_def
         {
-            unsigned int modifiers = $1;
+            uint32_t modifiers = $1;
             struct hlsl_type *type;
 
             if (!(type = apply_type_modifiers(ctx, $2, &modifiers, true, &@1)))

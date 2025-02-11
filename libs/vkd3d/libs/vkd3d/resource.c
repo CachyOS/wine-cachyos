@@ -2470,12 +2470,14 @@ static void d3d12_desc_write_vk_heap_null_descriptor(struct d3d12_descriptor_hea
 {
     const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
     struct d3d12_descriptor_heap_vk_set *descriptor_set;
-    enum vkd3d_vk_descriptor_set_index set;
+    enum vkd3d_vk_descriptor_set_index set, end;
     unsigned int i = writes->count;
 
+    end = device->vk_info.EXT_mutable_descriptor_type ? VKD3D_SET_INDEX_UNIFORM_BUFFER
+            : VKD3D_SET_INDEX_STORAGE_IMAGE;
     /* Binding a shader with the wrong null descriptor type works in Windows.
      * To support that here we must write one to all applicable Vulkan sets. */
-    for (set = VKD3D_SET_INDEX_UNIFORM_BUFFER; set <= VKD3D_SET_INDEX_STORAGE_IMAGE; ++set)
+    for (set = VKD3D_SET_INDEX_UNIFORM_BUFFER; set <= end; ++set)
     {
         descriptor_set = &descriptor_heap->vk_descriptor_sets[set];
         writes->vk_descriptor_writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -2632,20 +2634,18 @@ void d3d12_desc_flush_vk_heap_updates_locked(struct d3d12_descriptor_heap *descr
     for (; i != UINT_MAX; i = next)
     {
         src = &descriptors[i];
-        next = (int)src->next >> 1;
+        next = vkd3d_atomic_exchange(&src->next, 0);
+        next = (int)next >> 1;
 
+        /* A race exists here between updating src->next and getting the current object. The best
+         * we can do is get the object last, which may result in a harmless rewrite later. */
         u.object = d3d12_desc_get_object_ref(src, device);
 
         if (!u.object)
-        {
-            vkd3d_atomic_exchange(&src->next, 0);
             continue;
-        }
 
         writes.held_refs[writes.held_ref_count++] = u.object;
         d3d12_desc_write_vk_heap(descriptor_heap, i, &writes, u.object, device);
-
-        vkd3d_atomic_exchange(&src->next, 0);
     }
 
     /* Avoid thunk calls wherever possible. */
@@ -3446,6 +3446,7 @@ static void vkd3d_create_null_uav(struct d3d12_desc *descriptor,
     vkd3d_desc.miplevel_count = 1;
     vkd3d_desc.layer_idx = 0;
     vkd3d_desc.layer_count = 1;
+    vkd3d_desc.vk_image_aspect = VK_IMAGE_ASPECT_COLOR_BIT;
     vkd3d_desc.components.r = VK_COMPONENT_SWIZZLE_R;
     vkd3d_desc.components.g = VK_COMPONENT_SWIZZLE_G;
     vkd3d_desc.components.b = VK_COMPONENT_SWIZZLE_B;
@@ -3663,11 +3664,27 @@ static VkSamplerAddressMode vk_address_mode_from_d3d12(const struct d3d12_device
     }
 }
 
+static VkBorderColor vk_border_colour_from_d3d12(D3D12_STATIC_BORDER_COLOR colour)
+{
+    switch (colour)
+    {
+        case D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK:
+            return VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+        case D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK:
+            return VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+        case D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE:
+            return VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+        default:
+            FIXME("Unhandled border colour %#x.\n", colour);
+            return VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+    }
+}
+
 static VkResult d3d12_create_sampler(struct d3d12_device *device, D3D12_FILTER filter,
         D3D12_TEXTURE_ADDRESS_MODE address_u, D3D12_TEXTURE_ADDRESS_MODE address_v,
         D3D12_TEXTURE_ADDRESS_MODE address_w, float mip_lod_bias, unsigned int max_anisotropy,
-        D3D12_COMPARISON_FUNC comparison_func, float min_lod, float max_lod,
-        VkSampler *vk_sampler)
+        D3D12_COMPARISON_FUNC comparison_func, D3D12_STATIC_BORDER_COLOR border_colour,
+        float min_lod, float max_lod, VkSampler *vk_sampler)
 {
     const struct vkd3d_vk_device_procs *vk_procs;
     struct VkSamplerCreateInfo sampler_desc;
@@ -3697,15 +3714,48 @@ static VkResult d3d12_create_sampler(struct d3d12_device *device, D3D12_FILTER f
     sampler_desc.maxLod = max_lod;
     sampler_desc.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
     sampler_desc.unnormalizedCoordinates = VK_FALSE;
+
+    if (address_u == D3D12_TEXTURE_ADDRESS_MODE_BORDER || address_v == D3D12_TEXTURE_ADDRESS_MODE_BORDER
+            || address_w == D3D12_TEXTURE_ADDRESS_MODE_BORDER)
+        sampler_desc.borderColor = vk_border_colour_from_d3d12(border_colour);
+
     if ((vr = VK_CALL(vkCreateSampler(device->vk_device, &sampler_desc, NULL, vk_sampler))) < 0)
         WARN("Failed to create Vulkan sampler, vr %d.\n", vr);
 
     return vr;
 }
 
+static D3D12_STATIC_BORDER_COLOR d3d12_static_border_colour(const float *colour)
+{
+    unsigned int i;
+
+    static const struct
+    {
+        float colour[4];
+        D3D12_STATIC_BORDER_COLOR static_colour;
+    }
+    colours[] =
+    {
+        {{0.0f, 0.0f, 0.0f, 0.0f}, D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK},
+        {{0.0f, 0.0f, 0.0f, 1.0f}, D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK},
+        {{1.0f, 1.0f, 1.0f, 1.0f}, D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE},
+    };
+
+    for (i = 0; i < ARRAY_SIZE(colours); ++i)
+    {
+        if (!memcmp(colour, colours[i].colour, sizeof(colours[i].colour)))
+            return colours[i].static_colour;
+    }
+
+    FIXME("Unhandled border colour {%.8e, %.8e, %.8e, %.8e}.\n", colour[0], colour[1], colour[2], colour[3]);
+
+    return D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
+}
+
 void d3d12_desc_create_sampler(struct d3d12_desc *sampler,
         struct d3d12_device *device, const D3D12_SAMPLER_DESC *desc)
 {
+    D3D12_STATIC_BORDER_COLOR static_colour = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
     struct vkd3d_view *view;
 
     if (!desc)
@@ -3717,8 +3767,7 @@ void d3d12_desc_create_sampler(struct d3d12_desc *sampler,
     if (desc->AddressU == D3D12_TEXTURE_ADDRESS_MODE_BORDER
             || desc->AddressV == D3D12_TEXTURE_ADDRESS_MODE_BORDER
             || desc->AddressW == D3D12_TEXTURE_ADDRESS_MODE_BORDER)
-        FIXME("Ignoring border color {%.8e, %.8e, %.8e, %.8e}.\n",
-                desc->BorderColor[0], desc->BorderColor[1], desc->BorderColor[2], desc->BorderColor[3]);
+        static_colour = d3d12_static_border_colour(desc->BorderColor);
 
     if (!(view = vkd3d_view_create(VKD3D_DESCRIPTOR_MAGIC_SAMPLER, VK_DESCRIPTOR_TYPE_SAMPLER,
             VKD3D_VIEW_TYPE_SAMPLER, device)))
@@ -3726,9 +3775,9 @@ void d3d12_desc_create_sampler(struct d3d12_desc *sampler,
     view->v.u.vk_sampler = VK_NULL_HANDLE;
     view->v.format = NULL;
 
-    if (d3d12_create_sampler(device, desc->Filter, desc->AddressU,
-            desc->AddressV, desc->AddressW, desc->MipLODBias, desc->MaxAnisotropy,
-            desc->ComparisonFunc, desc->MinLOD, desc->MaxLOD, &view->v.u.vk_sampler) < 0)
+    if (d3d12_create_sampler(device, desc->Filter, desc->AddressU, desc->AddressV,
+            desc->AddressW, desc->MipLODBias, desc->MaxAnisotropy, desc->ComparisonFunc,
+            static_colour, desc->MinLOD, desc->MaxLOD, &view->v.u.vk_sampler) < 0)
     {
         vkd3d_view_decref(view, device);
         return;
@@ -3742,14 +3791,9 @@ HRESULT vkd3d_create_static_sampler(struct d3d12_device *device,
 {
     VkResult vr;
 
-    if (desc->AddressU == D3D12_TEXTURE_ADDRESS_MODE_BORDER
-            || desc->AddressV == D3D12_TEXTURE_ADDRESS_MODE_BORDER
-            || desc->AddressW == D3D12_TEXTURE_ADDRESS_MODE_BORDER)
-        FIXME("Ignoring border %#x.\n", desc->BorderColor);
-
-    vr = d3d12_create_sampler(device, desc->Filter, desc->AddressU,
-            desc->AddressV, desc->AddressW, desc->MipLODBias, desc->MaxAnisotropy,
-            desc->ComparisonFunc, desc->MinLOD, desc->MaxLOD, vk_sampler);
+    vr = d3d12_create_sampler(device, desc->Filter, desc->AddressU, desc->AddressV,
+            desc->AddressW, desc->MipLODBias, desc->MaxAnisotropy, desc->ComparisonFunc,
+            desc->BorderColor, desc->MinLOD, desc->MaxLOD, vk_sampler);
     return hresult_from_vk_result(vr);
 }
 
@@ -3997,6 +4041,9 @@ static ULONG STDMETHODCALLTYPE d3d12_descriptor_heap_Release(ID3D12DescriptorHea
             {
                 struct d3d12_desc *descriptors = (struct d3d12_desc *)heap->descriptors;
 
+                if (heap->use_vk_heaps)
+                    d3d12_device_remove_descriptor_heap(device, heap);
+
                 for (i = 0; i < heap->desc.NumDescriptors; ++i)
                 {
                     d3d12_desc_destroy(&descriptors[i], device);
@@ -4175,9 +4222,11 @@ static HRESULT d3d12_descriptor_heap_create_descriptor_pool(struct d3d12_descrip
 
     for (set = 0, pool_desc.poolSizeCount = 0; set < ARRAY_SIZE(device->vk_descriptor_heap_layouts); ++set)
     {
-        if (device->vk_descriptor_heap_layouts[set].applicable_heap_type == desc->Type)
+        if (device->vk_descriptor_heap_layouts[set].applicable_heap_type == desc->Type
+                && device->vk_descriptor_heap_layouts[set].vk_set_layout)
         {
-            pool_sizes[pool_desc.poolSizeCount].type = device->vk_descriptor_heap_layouts[set].type;
+            pool_sizes[pool_desc.poolSizeCount].type = (device->vk_info.EXT_mutable_descriptor_type && !set)
+                    ? VK_DESCRIPTOR_TYPE_MUTABLE_EXT : device->vk_descriptor_heap_layouts[set].type;
             pool_sizes[pool_desc.poolSizeCount++].descriptorCount = desc->NumDescriptors;
         }
     }
@@ -4202,6 +4251,16 @@ static HRESULT d3d12_descriptor_heap_create_descriptor_set(struct d3d12_descript
     VkDescriptorSetVariableDescriptorCountAllocateInfoEXT set_size;
     VkDescriptorSetAllocateInfo set_desc;
     VkResult vr;
+
+    if (!device->vk_descriptor_heap_layouts[set].vk_set_layout)
+    {
+        /* Set 0 uses mutable descriptors, and this set is unused. */
+        if (!descriptor_heap->vk_descriptor_sets[0].vk_set)
+            d3d12_descriptor_heap_create_descriptor_set(descriptor_heap, device, 0);
+        descriptor_set->vk_set = descriptor_heap->vk_descriptor_sets[0].vk_set;
+        descriptor_set->vk_type = device->vk_descriptor_heap_layouts[set].type;
+        return S_OK;
+    }
 
     set_desc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     set_desc.pNext = &set_size;
@@ -4320,6 +4379,12 @@ HRESULT d3d12_descriptor_heap_create(struct d3d12_device *device,
             dst[i].next = 0;
         }
         object->dirty_list_head = UINT_MAX;
+
+        if (object->use_vk_heaps && FAILED(hr = d3d12_device_add_descriptor_heap(device, object)))
+        {
+            vkd3d_free(object);
+            return hr;
+        }
     }
     else
     {

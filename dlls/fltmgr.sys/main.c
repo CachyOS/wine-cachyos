@@ -23,7 +23,6 @@
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
 #include "windef.h"
-#include "winbase.h"
 #include "winternl.h"
 #include "ddk/fltkernel.h"
 
@@ -92,4 +91,78 @@ void* WINAPI FltGetRoutineAddress(LPCSTR name)
         FIXME( "%s not found\n", debugstr_a(name) );
 
     return func;
+}
+
+NTSTATUS WINAPI FltBuildDefaultSecurityDescriptor(PSECURITY_DESCRIPTOR *descriptor, ACCESS_MASK access)
+{
+    PACL dacl;
+    NTSTATUS ret = STATUS_INSUFFICIENT_RESOURCES;
+    DWORD sid_len;
+    SID *sid;
+    SID *sid_system = NULL;
+    PSECURITY_DESCRIPTOR sec_desc = NULL;
+    SID_IDENTIFIER_AUTHORITY auth = { SECURITY_NULL_SID_AUTHORITY };
+
+    *descriptor = NULL;
+
+    sid_len = RtlLengthRequiredSid(2);
+    sid = ExAllocatePool(PagedPool, sid_len);
+    if (!sid)
+        goto done;
+    RtlInitializeSid(sid, &auth, 2);
+    sid->SubAuthority[1] = DOMAIN_GROUP_RID_ADMINS;
+    sid->SubAuthority[0] = SECURITY_BUILTIN_DOMAIN_RID;
+
+    sid_len = RtlLengthRequiredSid(1);
+    sid_system = ExAllocatePool(PagedPool, sid_len);
+    if (!sid_system)
+        goto done;
+    RtlInitializeSid(sid_system, &auth, 1);
+    sid_system->SubAuthority[0] = SECURITY_LOCAL_SYSTEM_RID;
+
+    sid_len = SECURITY_DESCRIPTOR_MIN_LENGTH + sizeof(ACL) +
+            sizeof(ACCESS_ALLOWED_ACE) + RtlLengthSid(sid) +
+            sizeof(ACCESS_ALLOWED_ACE) + RtlLengthSid(sid_system);
+
+    sec_desc = ExAllocatePool(PagedPool, sid_len);
+    if (!sec_desc)
+    {
+        ret = STATUS_NO_MEMORY;
+        goto done;
+    }
+
+    ret = RtlCreateSecurityDescriptor(sec_desc, SECURITY_DESCRIPTOR_REVISION);
+    if (ret != STATUS_SUCCESS)
+        goto done;
+
+    dacl = (PACL)((char*)sec_desc + SECURITY_DESCRIPTOR_MIN_LENGTH);
+    ret = RtlCreateAcl(dacl, sid_len - SECURITY_DESCRIPTOR_MIN_LENGTH, ACL_REVISION);
+    if (ret != STATUS_SUCCESS)
+        goto done;
+
+    ret = RtlAddAccessAllowedAce(dacl, ACL_REVISION, access, sid);
+    if (ret != STATUS_SUCCESS)
+        goto done;
+
+    ret = RtlAddAccessAllowedAce(dacl, ACL_REVISION, access, sid_system);
+    if (ret != STATUS_SUCCESS)
+        goto done;
+
+    ret = RtlSetDaclSecurityDescriptor(sec_desc, 1, dacl, 0);
+    if (ret == STATUS_SUCCESS)
+        *descriptor = sec_desc;
+
+done:
+    if (ret != STATUS_SUCCESS)
+        ExFreePool(sec_desc);
+
+    ExFreePool(sid);
+    ExFreePool(sid_system);
+
+    return ret;
+}
+
+void WINAPI FltFreeSecurityDescriptor(PSECURITY_DESCRIPTOR descriptor)
+{
+    ExFreePool(descriptor);
 }

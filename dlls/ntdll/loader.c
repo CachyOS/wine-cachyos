@@ -43,6 +43,7 @@ WINE_DECLARE_DEBUG_CHANNEL(relay);
 WINE_DECLARE_DEBUG_CHANNEL(snoop);
 WINE_DECLARE_DEBUG_CHANNEL(loaddll);
 WINE_DECLARE_DEBUG_CHANNEL(imports);
+WINE_DECLARE_DEBUG_CHANNEL(winediag);
 
 #ifdef _WIN64
 #define DEFAULT_SECURITY_COOKIE_64  (((ULONGLONG)0x00002b99 << 32) | 0x2ddfa232)
@@ -92,6 +93,9 @@ const WCHAR system_dir[] = L"C:\\windows\\system32\\";
 /* system search path */
 static const WCHAR system_path[] = L"C:\\windows\\system32;C:\\windows\\system;C:\\windows;C:\\Program Files (x86)\\Steam";
 
+#define IS_OPTION_TRUE(ch) ((ch) == 'y' || (ch) == 'Y' || (ch) == 't' || (ch) == 'T' || (ch) == '1')
+
+
 static BOOL is_prefix_bootstrap;  /* are we bootstrapping the prefix? */
 static BOOL imports_fixup_done = FALSE;  /* set once the imports have been fixed up, before attaching them */
 static BOOL process_detaching = FALSE;  /* set on process detach to avoid deadlocks with thread detach */
@@ -110,6 +114,8 @@ struct dll_dir_entry
 };
 
 static struct list dll_dir_list = LIST_INIT( dll_dir_list );  /* extra dirs from LdrAddDllDirectory */
+
+static BOOL hide_wine_exports = FALSE;  /* try to hide ntdll wine exports from applications */
 
 struct ldr_notification
 {
@@ -2153,6 +2159,96 @@ NTSTATUS WINAPI LdrUnlockLoaderLock( ULONG flags, ULONG_PTR magic )
 }
 
 
+/***********************************************************************
+ *           hidden_exports_init
+ *
+ * Initializes the hide_wine_exports options.
+ */
+static void hidden_exports_init( const WCHAR *appname )
+{
+    static const WCHAR configW[] = {'S','o','f','t','w','a','r','e','\\','W','i','n','e',0};
+    static const WCHAR appdefaultsW[] = {'A','p','p','D','e','f','a','u','l','t','s','\\',0};
+    static const WCHAR hideWineExports[] = {'H','i','d','e','W','i','n','e','E','x','p','o','r','t','s',0};
+    OBJECT_ATTRIBUTES attr;
+    UNICODE_STRING nameW;
+    HANDLE root, config_key, hkey;
+    BOOL got_hide_wine_exports = FALSE;
+    char tmp[80];
+    DWORD dummy;
+
+    RtlOpenCurrentUser( KEY_ALL_ACCESS, &root );
+    attr.Length = sizeof(attr);
+    attr.RootDirectory = root;
+    attr.ObjectName = &nameW;
+    attr.Attributes = OBJ_CASE_INSENSITIVE;
+    attr.SecurityDescriptor = NULL;
+    attr.SecurityQualityOfService = NULL;
+    RtlInitUnicodeString( &nameW, configW );
+
+    /* @@ Wine registry key: HKCU\Software\Wine */
+    if (NtOpenKey( &config_key, KEY_QUERY_VALUE, &attr )) config_key = 0;
+    NtClose( root );
+    if (!config_key) return;
+
+    if (appname && *appname)
+    {
+        const WCHAR *p;
+        WCHAR appversion[MAX_PATH+20];
+
+        if ((p = wcsrchr( appname, '/' ))) appname = p + 1;
+        if ((p = wcsrchr( appname, '\\' ))) appname = p + 1;
+
+        wcscpy( appversion, appdefaultsW );
+        wcscat( appversion, appname );
+        RtlInitUnicodeString( &nameW, appversion );
+        attr.RootDirectory = config_key;
+
+        /* @@ Wine registry key: HKCU\Software\Wine\AppDefaults\app.exe */
+        if (!NtOpenKey( &hkey, KEY_QUERY_VALUE, &attr ))
+        {
+            TRACE( "getting HideWineExports from %s\n", debugstr_w(appversion) );
+
+            RtlInitUnicodeString( &nameW, hideWineExports );
+            if (!NtQueryValueKey( hkey, &nameW, KeyValuePartialInformation, tmp, sizeof(tmp), &dummy ))
+            {
+                WCHAR *str = (WCHAR *)((KEY_VALUE_PARTIAL_INFORMATION *)tmp)->Data;
+                hide_wine_exports = IS_OPTION_TRUE( str[0] );
+                got_hide_wine_exports = TRUE;
+            }
+
+            NtClose( hkey );
+        }
+    }
+
+    if (!got_hide_wine_exports)
+    {
+        TRACE( "getting default HideWineExports\n" );
+
+        RtlInitUnicodeString( &nameW, hideWineExports );
+        if (!NtQueryValueKey( config_key, &nameW, KeyValuePartialInformation, tmp, sizeof(tmp), &dummy ))
+        {
+            WCHAR *str = (WCHAR *)((KEY_VALUE_PARTIAL_INFORMATION *)tmp)->Data;
+            hide_wine_exports = IS_OPTION_TRUE( str[0] );
+        }
+    }
+
+    NtClose( config_key );
+}
+
+
+/***********************************************************************
+ *           is_hidden_export
+ *
+ * Checks if a specific export should be hidden.
+ */
+static BOOL is_hidden_export( void *proc )
+{
+    return hide_wine_exports && (proc == &wine_get_version ||
+                                 proc == &wine_get_build_id ||
+                                 proc == &wine_get_host_version);
+}
+
+
 /******************************************************************
  *		LdrGetProcedureAddress  (NTDLL.@)
  */
@@ -2173,7 +2269,7 @@ NTSTATUS WINAPI LdrGetProcedureAddress(HMODULE module, const ANSI_STRING *name,
     {
         void *proc = name ? find_named_export( module, exports, exp_size, name->Buffer, -1, NULL )
                           : find_ordinal_export( module, exports, exp_size, ord - exports->Base, NULL );
-        if (proc)
+        if (proc && !is_hidden_export( proc ))
         {
             *address = proc;
             ret = STATUS_SUCCESS;
@@ -2497,6 +2593,8 @@ static void build_ntdll_module(void)
     wm->ldr.Flags &= ~LDR_DONT_RESOLVE_REFS;
     node_ntdll = wm->ldr.DdagNode;
     if (TRACE_ON(relay)) RELAY_SetupDLL( module );
+
+    hidden_exports_init( wm->ldr.FullDllName.Buffer );
 }
 
 
@@ -4127,6 +4225,7 @@ void WINAPI LdrShutdownProcess(void)
     process_detach();
 }
 
+extern const char * CDECL wine_get_version(void);
 
 /******************************************************************
  *		RtlExitUserProcess (NTDLL.@)
@@ -4610,6 +4709,9 @@ static void release_address_space(void)
  */
 void loader_init( CONTEXT *context, void **entry )
 {
+    OBJECT_ATTRIBUTES staging_event_attr;
+    UNICODE_STRING staging_event_string;
+    HANDLE staging_event;
     static int attach_done;
     NTSTATUS status;
     ULONG_PTR cookie;
@@ -4712,6 +4814,16 @@ void loader_init( CONTEXT *context, void **entry )
 #ifdef _WIN64
     if (NtCurrentTeb()->WowTebOffset) init_wow64( context );
 #endif
+
+    RtlInitUnicodeString( &staging_event_string, L"\\__wine_staging_warn_event" );
+    InitializeObjectAttributes( &staging_event_attr, &staging_event_string, OBJ_OPENIF, NULL, NULL );
+    if (NtCreateEvent( &staging_event, EVENT_ALL_ACCESS, &staging_event_attr, NotificationEvent, FALSE ) == STATUS_SUCCESS)
+    {
+        FIXME_(winediag)("wine-staging %s is a testing version containing experimental patches.\n", wine_get_version());
+        FIXME_(winediag)("Please mention your exact version when filing bug reports on winehq.org.\n");
+    }
+    else
+        WARN_(winediag)("wine-staging %s is a testing version containing experimental patches.\n", wine_get_version());
 
     NtCurrentTeb()->FlsSlots = fls_alloc_data();
 

@@ -179,7 +179,19 @@ static const TEST_URL_CANONICALIZE TEST_CANONICALIZE[] = {
     {"///A/../B", URL_WININET_COMPATIBILITY, "///B", FALSE},
     {"A", 0, "A", FALSE},
     {"../A", 0, "../A", FALSE},
+    {"./A", 0, "A", FALSE},
+    {"./A/./B", 0, "A/B", FALSE},
+    {"./A", URL_DONT_SIMPLIFY, "./A", FALSE},
+    {"A/./B", 0, "A/B", TRUE},
     {"A/../B", 0, "B", TRUE},
+    {"A/../B/./../C", 0, "C", TRUE},
+    {"A/../B/./../C", URL_DONT_SIMPLIFY, "A/../B/./../C", FALSE},
+    {".\\A", 0, ".\\A", FALSE},
+    {"A\\.\\B", 0, "A\\.\\B", FALSE},
+    {".", 0, "/", TRUE},
+    {"./A", 0, "A", TRUE},
+    {"A/./B", 0, "A/B", TRUE},
+    {"/:test\\", 0, "/:test\\", TRUE},
     {"/uri-res/N2R?urn:sha1:B3K", URL_DONT_ESCAPE_EXTRA_INFO | URL_WININET_COMPATIBILITY /*0x82000000*/, "/uri-res/N2R?urn:sha1:B3K", FALSE} /*LimeWire online installer calls this*/,
     {"http:www.winehq.org/dir/../index.html", 0, "http:www.winehq.org/index.html"},
     {"http://localhost/test.html", URL_FILE_USE_PATHURL, "http://localhost/test.html"},
@@ -315,6 +327,7 @@ typedef struct _TEST_URL_COMBINE {
     const char *url2;
     DWORD flags;
     const char *expecturl;
+    BOOL todo;
 } TEST_URL_COMBINE;
 
 static const TEST_URL_COMBINE TEST_COMBINE[] = {
@@ -336,6 +349,8 @@ static const TEST_URL_COMBINE TEST_COMBINE[] = {
     {"http://www.winehq.org/test14#aaa/bbb#ccc", "#", 0, "http://www.winehq.org/test14#"},
     {"http://www.winehq.org/tests/?query=x/y/z", "tests15", 0, "http://www.winehq.org/tests/tests15"},
     {"http://www.winehq.org/tests/?query=x/y/z#example", "tests16", 0, "http://www.winehq.org/tests/tests16"},
+    {"http://www.winehq.org/tests17", ".", 0, "http://www.winehq.org/"},
+    {"http://www.winehq.org/tests18/test", ".", 0, "http://www.winehq.org/tests18/"},
     {"file:///C:\\dir\\file.txt", "test.txt", 0, "file:///C:/dir/test.txt"},
     {"file:///C:\\dir\\file.txt#hash\\hash", "test.txt", 0, "file:///C:/dir/file.txt#hash/test.txt"},
     {"file:///C:\\dir\\file.html#hash\\hash", "test.html", 0, "file:///C:/dir/test.html"},
@@ -1255,7 +1270,7 @@ static void test_UrlCanonicalizeW(void)
 
 /* ########################### */
 
-static void check_url_combine(const char *szUrl1, const char *szUrl2, DWORD dwFlags, const char *szExpectUrl)
+static void check_url_combine(const char *szUrl1, const char *szUrl2, DWORD dwFlags, const char *szExpectUrl, BOOL todo)
 {
     HRESULT hr;
     CHAR szReturnUrl[INTERNET_MAX_URL_LENGTH];
@@ -1275,17 +1290,28 @@ static void check_url_combine(const char *szUrl1, const char *szUrl2, DWORD dwFl
     dwSize = 0;
     hr = UrlCombineA(szUrl1, szUrl2, NULL, &dwSize, dwFlags);
     ok(hr == E_POINTER, "Checking length of string, return was 0x%08lx, expected 0x%08lx\n", hr, E_POINTER);
-    ok(dwSize == dwExpectLen+1, "Got length %ld, expected %ld\n", dwSize, dwExpectLen+1);
+    ok(todo || dwSize == dwExpectLen+1, "Got length %ld, expected %ld\n", dwSize, dwExpectLen+1);
 
     dwSize--;
     hr = UrlCombineA(szUrl1, szUrl2, szReturnUrl, &dwSize, dwFlags);
     ok(hr == E_POINTER, "UrlCombineA returned 0x%08lx, expected 0x%08lx\n", hr, E_POINTER);
-    ok(dwSize == dwExpectLen+1, "Got length %ld, expected %ld\n", dwSize, dwExpectLen+1);
+    ok(todo || dwSize == dwExpectLen+1, "Got length %ld, expected %ld\n", dwSize, dwExpectLen+1);
 
     hr = UrlCombineA(szUrl1, szUrl2, szReturnUrl, &dwSize, dwFlags);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
     ok(dwSize == dwExpectLen, "Got length %ld, expected %ld\n", dwSize, dwExpectLen);
-    ok(!strcmp(szReturnUrl, szExpectUrl), "Expected %s, got %s.\n", szExpectUrl, szReturnUrl);
+
+    if (todo)
+    {
+        todo_wine ok(dwSize == dwExpectLen && (FAILED(hr) || strcmp(szReturnUrl, szExpectUrl)==0),
+                "Expected %s (len=%ld), but got %s (len=%ld)\n", szExpectUrl, dwExpectLen, SUCCEEDED(hr) ? szReturnUrl : "(null)", dwSize);
+    }
+    else
+    {
+        ok(dwSize == dwExpectLen, "Got length %ld, expected %ld\n", dwSize, dwExpectLen);
+        if (SUCCEEDED(hr))
+            ok(strcmp(szReturnUrl, szExpectUrl)==0, "Expected %s, but got %s\n", szExpectUrl, szReturnUrl);
+     }
 
     dwSize = 0;
     hr = UrlCombineW(wszUrl1, wszUrl2, NULL, &dwSize, dwFlags);
@@ -1316,7 +1342,7 @@ static void test_UrlCombine(void)
 {
     unsigned int i;
     for (i = 0; i < ARRAY_SIZE(TEST_COMBINE); i++) {
-        check_url_combine(TEST_COMBINE[i].url1, TEST_COMBINE[i].url2, TEST_COMBINE[i].flags, TEST_COMBINE[i].expecturl);
+        check_url_combine(TEST_COMBINE[i].url1, TEST_COMBINE[i].url2, TEST_COMBINE[i].flags, TEST_COMBINE[i].expecturl, TEST_COMBINE[i].todo);
     }
 }
 

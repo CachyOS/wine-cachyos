@@ -36,6 +36,7 @@
 #include "ddk/ntddk.h"
 #include "ddk/ntifs.h"
 #include "ddk/wdm.h"
+#include "ddk/fltkernel.h"
 
 #include "driver.h"
 
@@ -56,6 +57,7 @@ static int kmemcmp( const void *ptr1, const void *ptr2, size_t n )
 
 static DRIVER_OBJECT *driver_obj;
 static DEVICE_OBJECT *lower_device, *upper_device;
+static LDR_DATA_TABLE_ENTRY *ldr_module;
 
 static POBJECT_TYPE *pExEventObjectType, *pIoFileObjectType, *pPsThreadType, *pIoDriverObjectType;
 static PEPROCESS *pPsInitialSystemProcess;
@@ -1715,6 +1717,7 @@ static void test_resource(void)
     ok(status == STATUS_SUCCESS, "got status %#lx\n", status);
 }
 
+
 static void test_lookup_thread(void)
 {
     NTSTATUS status;
@@ -2345,6 +2348,131 @@ static void test_driver_object_extension(void)
     ok(get_obj_ext == NULL, "got %p\n", get_obj_ext);
 }
 
+static void test_default_modules(void)
+{
+    BOOL win32k = FALSE, dxgkrnl = FALSE, dxgmms1 = FALSE;
+    LIST_ENTRY *start, *entry;
+    ANSI_STRING name_a;
+    LDR_DATA_TABLE_ENTRY *mod;
+    NTSTATUS status;
+
+    /* Try to find start of the InLoadOrderModuleList list */
+    for (start = ldr_module->InLoadOrderLinks.Flink; ; start = start->Flink)
+    {
+        mod = CONTAINING_RECORD(start, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks);
+
+        if (!MmIsAddressValid(&mod->DllBase) || !mod->DllBase) break;
+        if (!MmIsAddressValid(&mod->LoadCount) || !mod->LoadCount) break;
+        if (!MmIsAddressValid(&mod->SizeOfImage) || !mod->SizeOfImage) break;
+        if (!MmIsAddressValid(&mod->EntryPoint) || mod->EntryPoint < mod->DllBase ||
+            (DWORD_PTR)mod->EntryPoint > (DWORD_PTR)mod->DllBase + mod->SizeOfImage) break;
+    }
+
+    for (entry = start->Flink; entry != start; entry = entry->Flink)
+    {
+        mod = CONTAINING_RECORD(entry, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks);
+
+        status = RtlUnicodeStringToAnsiString(&name_a, &mod->BaseDllName, TRUE);
+        ok(!status, "RtlUnicodeStringToAnsiString failed with %08lx\n", status);
+        if (status) continue;
+
+        if (entry == start->Flink)
+        {
+            ok(!strncmp(name_a.Buffer, "ntoskrnl.exe", name_a.Length),
+               "Expected ntoskrnl.exe, got %.*s\n", name_a.Length, name_a.Buffer);
+        }
+
+        if (!strncmp(name_a.Buffer, "win32k.sys", name_a.Length)) win32k = TRUE;
+        if (!strncmp(name_a.Buffer, "dxgkrnl.sys", name_a.Length)) dxgkrnl = TRUE;
+        if (!strncmp(name_a.Buffer, "dxgmms1.sys", name_a.Length)) dxgmms1 = TRUE;
+
+        RtlFreeAnsiString(&name_a);
+    }
+
+    ok(win32k, "Failed to find win32k.sys\n");
+    ok(dxgkrnl, "Failed to find dxgkrnl.sys\n");
+    ok(dxgmms1, "Failed to find dxgmms1.sys\n");
+}
+
+static void test_default_security(void)
+{
+    PSECURITY_DESCRIPTOR sd = NULL;
+    NTSTATUS status;
+    PSID group = NULL, owner = NULL;
+    BOOLEAN isdefault, present;
+    PACL acl = NULL;
+    PACCESS_ALLOWED_ACE ace;
+    SID_IDENTIFIER_AUTHORITY auth = { SECURITY_NULL_SID_AUTHORITY };
+    SID_IDENTIFIER_AUTHORITY authwine7 = { SECURITY_NT_AUTHORITY };
+    PSID sid1, sid2, sidwin7;
+    BOOL ret;
+
+    status = FltBuildDefaultSecurityDescriptor(&sd, STANDARD_RIGHTS_ALL);
+    ok(status == STATUS_SUCCESS, "got %#lx\n", status);
+    if (status != STATUS_SUCCESS)
+    {
+        win_skip("Skipping FltBuildDefaultSecurityDescriptor tests\n");
+        return;
+    }
+    ok(sd != NULL, "Failed to return descriptor\n");
+
+    status = RtlGetGroupSecurityDescriptor(sd, &group, &isdefault);
+    ok(status == STATUS_SUCCESS, "got %#lx\n", status);
+    ok(group == NULL, "group isn't NULL\n");
+
+    status = RtlGetOwnerSecurityDescriptor(sd, &owner, &isdefault);
+    ok(status == STATUS_SUCCESS, "got %#lx\n", status);
+    ok(owner == NULL, "owner isn't NULL\n");
+
+    status = RtlGetDaclSecurityDescriptor(sd, &present, &acl, &isdefault);
+    ok(status == STATUS_SUCCESS, "got %#lx\n", status);
+    ok(acl != NULL, "acl is NULL\n");
+    ok(acl->AceCount == 2, "got %d\n", acl->AceCount);
+
+    sid1 = ExAllocatePool(NonPagedPool, RtlLengthRequiredSid(2));
+    status = RtlInitializeSid(sid1, &auth, 2);
+    ok(status == STATUS_SUCCESS, "got %#lx\n", status);
+    *RtlSubAuthoritySid(sid1, 0)  = SECURITY_BUILTIN_DOMAIN_RID;
+    *RtlSubAuthoritySid(sid1, 1) = DOMAIN_GROUP_RID_ADMINS;
+
+    sidwin7 = ExAllocatePool(NonPagedPool, RtlLengthRequiredSid(2));
+    status = RtlInitializeSid(sidwin7, &authwine7, 2);
+    ok(status == STATUS_SUCCESS, "got %#lx\n", status);
+    *RtlSubAuthoritySid(sidwin7, 0)  = SECURITY_BUILTIN_DOMAIN_RID;
+    *RtlSubAuthoritySid(sidwin7, 1) = DOMAIN_ALIAS_RID_ADMINS;
+
+    sid2 = ExAllocatePool(NonPagedPool, RtlLengthRequiredSid(1));
+    RtlInitializeSid(sid2, &auth, 1);
+    *RtlSubAuthoritySid(sid2, 0)  = SECURITY_LOCAL_SYSTEM_RID;
+
+    /* SECURITY_BUILTIN_DOMAIN_RID */
+    status = RtlGetAce(acl, 0, (void**)&ace);
+    ok(status == STATUS_SUCCESS, "got %#lx\n", status);
+
+    ok(ace->Header.AceType == ACCESS_ALLOWED_ACE_TYPE, "got %#x\n", ace->Header.AceType);
+    ok(ace->Header.AceFlags == 0, "got %#x\n", ace->Header.AceFlags);
+    ok(ace->Mask == STANDARD_RIGHTS_ALL, "got %#lx\n", ace->Mask);
+
+    ret = RtlEqualSid(sid1, (PSID)&ace->SidStart) || RtlEqualSid(sidwin7, (PSID)&ace->SidStart);
+    ok(ret, "SID not equal\n");
+
+    /* SECURITY_LOCAL_SYSTEM_RID */
+    status = RtlGetAce(acl, 1, (void**)&ace);
+    ok(status == STATUS_SUCCESS, "got %#lx\n", status);
+
+    ok(ace->Header.AceType == ACCESS_ALLOWED_ACE_TYPE, "got %#x\n", ace->Header.AceType);
+    ok(ace->Header.AceFlags == 0, "got %#x\n", ace->Header.AceFlags);
+    ok(ace->Mask == STANDARD_RIGHTS_ALL, "got %#lx\n", ace->Mask);
+
+    ret = RtlEqualSid(sid2, (PSID)&ace->SidStart) || RtlEqualSid(sidwin7, (PSID)&ace->SidStart);
+    ok(ret, "SID not equal\n");
+
+    ExFreePool(sid1);
+    ExFreePool(sid2);
+
+    FltFreeSecurityDescriptor(sd);
+}
+
 static NTSTATUS main_test(DEVICE_OBJECT *device, IRP *irp, IO_STACK_LOCATION *stack)
 {
     void *buffer = irp->AssociatedIrp.SystemBuffer;
@@ -2377,6 +2505,7 @@ static NTSTATUS main_test(DEVICE_OBJECT *device, IRP *irp, IO_STACK_LOCATION *st
     test_stack_callout();
     test_lookaside_list();
     test_ob_reference();
+    test_default_modules();
     test_resource();
     test_lookup_thread();
     test_IoAttachDeviceToDeviceStack();
@@ -2389,6 +2518,7 @@ static NTSTATUS main_test(DEVICE_OBJECT *device, IRP *irp, IO_STACK_LOCATION *st
     test_process_memory(test_input);
     test_permanence();
     test_driver_object_extension();
+    test_default_security();
 
     IoMarkIrpPending(irp);
     IoQueueWorkItem(work_item, main_test_task, DelayedWorkQueue, irp);
@@ -2857,6 +2987,7 @@ NTSTATUS WINAPI DriverEntry(DRIVER_OBJECT *driver, PUNICODE_STRING registry)
     DbgPrint("loading driver\n");
 
     driver_obj = driver;
+    ldr_module = (LDR_DATA_TABLE_ENTRY *)driver->DriverSection;
 
     /* Allow unloading of the driver */
     driver->DriverUnload = driver_Unload;
