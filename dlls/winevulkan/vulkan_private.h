@@ -387,6 +387,19 @@ static inline void free_conversion_context(struct conversion_context *pool)
         free(entry);
 }
 
+/* see include/winnt.h */
+static FORCEINLINE LONG64 ReadAcquire64( LONG64 const volatile *src )
+{
+    LONG64 value;
+    __WINE_ATOMIC_LOAD_ACQUIRE( src, &value );
+    return value;
+}
+
+static FORCEINLINE void WriteRelease64( LONG64 volatile *dest, LONG64 value )
+{
+    __WINE_ATOMIC_STORE_RELEASE( dest, &value );
+}
+
 struct wine_semaphore
 {
     VkSemaphore semaphore;
