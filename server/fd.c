@@ -589,14 +589,16 @@ static inline void remove_epoll_user( struct fd *fd, int user )
     }
 }
 
+__attribute__((weak)) int epoll_pwait2( int, struct epoll_event *, int, const struct timespec *, const sigset_t * );
+
 static inline void main_loop_epoll(void)
 {
     int i, ret, timeout;
     struct timespec ts;
     struct epoll_event events[128];
-#ifdef HAVE_EPOLL_PWAIT2
-    static int failed_epoll_pwait2 = 0;
-#endif
+    int use_epoll_pwait2 = !!epoll_pwait2;
+    if (use_epoll_pwait2 && epoll_pwait2( -1, events, 0, NULL, NULL ) == -1 && errno == ENOSYS)
+        use_epoll_pwait2 = 0;
 
     assert( POLLIN == EPOLLIN );
     assert( POLLOUT == EPOLLOUT );
@@ -612,16 +614,8 @@ static inline void main_loop_epoll(void)
         if (!active_users) break;  /* last user removed by a timeout */
         if (epoll_fd == -1) break;  /* an error occurred with epoll */
 
-#ifdef HAVE_EPOLL_PWAIT2
-        if (!failed_epoll_pwait2)
-        {
-            ret = epoll_pwait2( epoll_fd, events, ARRAY_SIZE( events ), timeout == -1 ? NULL : &ts, NULL );
-            if (ret == -1 && errno == ENOSYS)
-                failed_epoll_pwait2 = 1;
-        }
-        if (failed_epoll_pwait2)
-#endif
-            ret = epoll_wait( epoll_fd, events, ARRAY_SIZE( events ), timeout );
+        if (use_epoll_pwait2) ret = epoll_pwait2( epoll_fd, events, ARRAY_SIZE( events ), timeout == -1 ? NULL : &ts, NULL );
+        else ret = epoll_wait( epoll_fd, events, ARRAY_SIZE( events ), timeout );
 
         set_current_time();
 
