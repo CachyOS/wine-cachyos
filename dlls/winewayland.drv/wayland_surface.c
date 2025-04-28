@@ -248,6 +248,9 @@ void wayland_surface_destroy(struct wayland_surface *surface)
  */
 void wayland_surface_make_toplevel(struct wayland_surface *surface)
 {
+    static char steam_proton[] = "steam_proton";
+    const char *app_id = getenv("SteamAppId");
+    char proton_app_class[128];
     WCHAR text[1024];
 
     TRACE("surface=%p\n", surface);
@@ -267,8 +270,16 @@ void wayland_surface_make_toplevel(struct wayland_surface *surface)
     if (!surface->xdg_toplevel) goto err;
     xdg_toplevel_add_listener(surface->xdg_toplevel, &xdg_toplevel_listener, surface->hwnd);
 
-    if (process_name)
-        xdg_toplevel_set_app_id(surface->xdg_toplevel, process_name);
+    if(!app_id || !*app_id) {
+        app_id = getenv("WINE_WMCLASS");
+    }
+
+    if (app_id && *app_id) {
+        snprintf(proton_app_class, sizeof(proton_app_class), "steam_app_%s", app_id);
+        xdg_toplevel_set_app_id(surface->xdg_toplevel, proton_app_class);
+    } else {
+        xdg_toplevel_set_app_id(surface->xdg_toplevel, steam_proton);
+    }
 
     if (!NtUserInternalGetWindowText(surface->hwnd, text, ARRAY_SIZE(text)))
         text[0] = 0;
