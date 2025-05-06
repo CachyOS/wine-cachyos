@@ -138,6 +138,39 @@ static const struct xdg_toplevel_listener xdg_toplevel_listener =
     xdg_toplevel_handle_close
 };
 
+void wp_fractional_scale_handle_scale(void* user_data,
+                                      struct wp_fractional_scale_v1 *fractional_scale_v1,
+                                      uint32_t scale_fixed)
+{
+    struct wayland_win_data *data;
+    struct wayland_surface *surface;
+    HWND hwnd = user_data;
+    BOOL updated = FALSE;
+
+    if ((data = wayland_win_data_get(hwnd)))
+    {
+        if ((surface = data->wayland_surface))
+        {
+            double scale = scale_fixed / 120.0;
+
+            updated = (scale != surface->window.fractional_scale);
+            surface->window.scale = surface->window.fractional_scale = scale;
+            if (updated) wayland_surface_reconfigure(surface);
+
+            TRACE("Got scale %lf\n", scale);
+        }
+
+        wayland_win_data_release(data);
+    }
+
+    if (updated) NtUserExposeWindowSurface(hwnd, 0, NULL, 0);
+}
+
+static const struct wp_fractional_scale_v1_listener wp_fractional_scale_listener =
+{
+    wp_fractional_scale_handle_scale
+};
+
 /**********************************************************************
  *          wayland_surface_create
  *
@@ -287,6 +320,24 @@ void wayland_surface_make_toplevel(struct wayland_surface *surface)
 
     wayland_surface_assign_icon(surface);
 
+    if (process_wayland.wp_fractional_scale_manager_v1)
+    {
+        surface->window.fractional_scale = 1.0;
+        surface->wp_fractional_scale_v1 =
+            wp_fractional_scale_manager_v1_get_fractional_scale(
+                process_wayland.wp_fractional_scale_manager_v1,
+                surface->wl_surface);
+        if (!surface->wp_fractional_scale_v1)
+        {
+            ERR("Failed to create toplevel wp_fractional_scale_v1\n");
+            goto err;
+        }
+        wp_fractional_scale_v1_add_listener(
+            surface->wp_fractional_scale_v1,
+            &wp_fractional_scale_listener,
+            surface->hwnd);
+    }
+
     wl_surface_commit(surface->wl_surface);
     wl_display_flush(process_wayland.wl_display);
 
@@ -321,6 +372,26 @@ void wayland_surface_make_subsurface(struct wayland_surface *surface,
     {
         ERR("Failed to create client wl_subsurface\n");
         goto err;
+    }
+
+    if (process_wayland.wp_fractional_scale_manager_v1)
+    {
+        /* seed our fractional scaling using the parent */
+        surface->window.fractional_scale =
+            parent->window.fractional_scale;
+        surface->wp_fractional_scale_v1 =
+            wp_fractional_scale_manager_v1_get_fractional_scale(
+                process_wayland.wp_fractional_scale_manager_v1,
+                surface->wl_surface);
+        if (!surface->wp_fractional_scale_v1)
+        {
+            ERR("Failed to create subsurface wp_fractional_scale_v1\n");
+            goto err;
+        }
+        wp_fractional_scale_v1_add_listener(
+            surface->wp_fractional_scale_v1,
+            &wp_fractional_scale_listener,
+            surface->hwnd);
     }
 
     surface->role = WAYLAND_SURFACE_ROLE_SUBSURFACE;
@@ -364,6 +435,12 @@ void wayland_surface_clear_role(struct wayland_surface *surface)
             surface->xdg_toplevel_icon = NULL;
         }
 
+        if (surface->wp_fractional_scale_v1)
+        {
+            wp_fractional_scale_v1_destroy(surface->wp_fractional_scale_v1);
+            surface->wp_fractional_scale_v1 = NULL;
+        }
+
         if (surface->xdg_toplevel)
         {
             xdg_toplevel_destroy(surface->xdg_toplevel);
@@ -378,6 +455,12 @@ void wayland_surface_clear_role(struct wayland_surface *surface)
         break;
 
     case WAYLAND_SURFACE_ROLE_SUBSURFACE:
+        if (surface->wp_fractional_scale_v1)
+        {
+            wp_fractional_scale_v1_destroy(surface->wp_fractional_scale_v1);
+            surface->wp_fractional_scale_v1 = NULL;
+        }
+
         if (surface->wl_subsurface)
         {
             wl_subsurface_destroy(surface->wl_subsurface);
