@@ -214,6 +214,7 @@ struct wayland_output_state
     char *name;
     int logical_x, logical_y;
     int logical_w, logical_h;
+    int transform;
 };
 
 struct wayland_output
