@@ -1724,3 +1724,47 @@ void wayland_surface_set_opacity(struct wayland_surface *surface, BYTE alpha, UI
     wl_surface_commit(surface->wl_surface);
     wl_display_flush(process_wayland.wl_display);
 }
+
+static void xdg_activation_token_handle_done(void *user_data,
+                                             struct xdg_activation_token_v1 *xdg_activation_token_v1,
+                                             const char *token)
+{
+    HWND hwnd = user_data;
+    struct wayland_win_data *data;
+    struct wayland_surface *surface;
+
+
+    if ((data = wayland_win_data_get(hwnd)))
+    {
+        if ((surface = data->wayland_surface))
+            xdg_activation_v1_activate(process_wayland.xdg_activation_v1, token, surface->wl_surface);
+        wayland_win_data_release(data);
+    }
+
+    xdg_activation_token_v1_destroy(xdg_activation_token_v1);
+}
+
+const static struct xdg_activation_token_v1_listener xdg_activation_listener = {
+    xdg_activation_token_handle_done
+};
+
+void wayland_surface_activate(struct wayland_surface *surface)
+{
+    struct xdg_activation_token_v1 *token;
+    assert(surface);
+
+    if (process_wayland.xdg_activation_v1)
+    {
+        token = xdg_activation_v1_get_activation_token(process_wayland.xdg_activation_v1);
+
+        if (!token)
+        {
+            ERR("Failed to create activation token!\n");
+            return;
+        }
+
+        xdg_activation_token_v1_add_listener(token, &xdg_activation_listener, surface->hwnd);
+        xdg_activation_token_v1_set_surface(token, surface->wl_surface);
+        xdg_activation_token_v1_commit(token);
+    }
+}
