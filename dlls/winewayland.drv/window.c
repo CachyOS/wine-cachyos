@@ -897,6 +897,23 @@ BOOL WAYLAND_HasWindowManager(const char *name)
     return FALSE;
 }
 
+/**********************************************************************
+ *          WAYLAND_FlashWindowEx
+ */
+void WAYLAND_FlashWindowEx(FLASHWINFO *info)
+{
+    struct wayland_win_data *data;
+
+    TRACE("hwnd %p flags %u\n", info->hwnd, info->dwFlags);
+
+    if ((data = wayland_win_data_get(info->hwnd)))
+    {
+        if (data->wayland_surface && info->dwFlags)
+            wayland_surface_activate(data->wayland_surface);
+        wayland_win_data_release(data);
+    }
+}
+
 /***********************************************************************
  *           WAYLAND_GetWindowStyleMasks
  */
