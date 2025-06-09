@@ -263,6 +263,11 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
         wl_list_for_each(output, &process_wayland.output_list, link)
             wayland_output_use_image_description(output);
     }
+    else if (strcmp(interface, "xdg_activation_v1") == 0)
+    {
+        process_wayland.xdg_activation_v1 =
+            wl_registry_bind(registry, id, &xdg_activation_v1_interface, 1);
+    }
 }
 
 static void registry_handle_global_remove(void *data, struct wl_registry *registry,
@@ -415,6 +420,9 @@ BOOL wayland_process_init(void)
 
     if (!process_wayland.zxdg_decoration_manager_v1)
         WARN("Wayland compositor doesn't support optional zxdg_decoration_manager_v1!\n");
+
+    if (!process_wayland.xdg_activation_v1)
+        ERR("Wayland compositor doesn't support xdg_activation_v1! (Flash Window will not be supported)\n");
 
     process_wayland.initialized = TRUE;
 
