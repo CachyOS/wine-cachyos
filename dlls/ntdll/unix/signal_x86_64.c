@@ -2133,14 +2133,22 @@ static void install_bpf(struct sigaction *sig_act)
 
     static struct sock_filter filter[] =
     {
-        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, instruction_pointer) + 4),
-        /* Native libs are loaded at high addresses. */
-        BPF_JUMP(BPF_JMP | BPF_JGT | BPF_K, NATIVE_SYSCALL_ADDRESS_START >> 32, 0, 1),
-        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
         /* Allow i386. */
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)),
         BPF_JUMP (BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        /* Native libs are loaded at high addresses. */
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, instruction_pointer) + 4),
+        BPF_JUMP(BPF_JMP | BPF_JGT | BPF_K, NATIVE_SYSCALL_ADDRESS_START >> 32, 0, 8),
+        /* High addresses may be top-down allocations, trap those */
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0x7fff, 1, 0),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, instruction_pointer)),
+        BPF_JUMP(BPF_JMP | BPF_JGE | BPF_K, 0xfe000000, 1, 0),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        BPF_JUMP(BPF_JMP | BPF_JGE | BPF_K, 0xffff0000, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
         /* Allow wine64-preloader */
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, instruction_pointer)),
         BPF_JUMP(BPF_JMP | BPF_JGE | BPF_K, 0x7d400000, 1, 0),
