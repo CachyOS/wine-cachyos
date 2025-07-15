@@ -738,10 +738,10 @@ static DWORD emulate_instruction( EXCEPTION_RECORD *rec, CONTEXT *context )
             TRACE( "mov cr%u,%s at %Ix\n", reg, reg_names[rm], context->Rip );
             switch (reg)
             {
-            case 0: *data = 0x10; break; /* FIXME: set more bits ? */
+            case 0: *data = CR0_PE|CR0_ET|CR0_NE|CR0_WP|CR0_AM|CR0_PG; break;
             case 2: *data = 0; break;
             case 3: *data = 0; break;
-            case 4: *data = 0; break;
+            case 4: *data = 0x20; break;
             case 8: *data = 0; break;
             default: return ExceptionContinueSearch;
             }
