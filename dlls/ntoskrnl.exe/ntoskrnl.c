@@ -4678,6 +4678,12 @@ NTSTATUS WINAPI EtwUnregister(REGHANDLE handle)
     return STATUS_SUCCESS;
 }
 
+BOOL WINAPI VslGetSecurePciEnabled(void)
+{
+    FIXME("stub!\n");
+    return TRUE;
+}
+
 /*****************************************************
  *           DllMain
  */
