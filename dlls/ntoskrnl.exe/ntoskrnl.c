@@ -3735,7 +3735,17 @@ void WINAPI KeBugCheckEx(ULONG code, ULONG_PTR param1, ULONG_PTR param2, ULONG_P
  */
 void WINAPI ProbeForRead(void *address, SIZE_T length, ULONG alignment)
 {
-    FIXME("(%p %Iu %lu) stub\n", address, length, alignment);
+    TRACE("(%p %Iu %lu)\n", address, length, alignment);
+
+    if (length == 0) return;
+
+    if ((ULONG_PTR)address & (alignment-1))
+        RtlRaiseStatus(STATUS_DATATYPE_MISALIGNMENT);
+
+    if ((ULONG_PTR)address + length < (ULONG_PTR)address)
+        RtlRaiseStatus(STATUS_ACCESS_VIOLATION);
+
+    /* TODO: Check if within address space */
 }
 
 /***********************************************************************
@@ -3747,8 +3757,7 @@ void WINAPI ProbeForWrite(void *address, SIZE_T length, ULONG alignment)
 
     if (length == 0) return;
 
-    if ((ULONG_PTR)address & (alignment-1))
-        RtlRaiseStatus(STATUS_DATATYPE_MISALIGNMENT);
+    ProbeForRead(address, length, alignment);
 
     for (volatile char *p = address; p < (char *)address + length; p++)
         *p |= 0;
