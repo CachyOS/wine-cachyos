@@ -3439,6 +3439,14 @@ PEPROCESS WINAPI PsGetCurrentThreadProcess(void)
 }
 
 /***********************************************************************
+ *           PsGetCurrentThreadProcess   (NTOSKRNL.EXE.@)
+ */
+HANDLE WINAPI PsGetCurrentThreadProcessId(void)
+{
+    return PsGetProcessId(PsGetCurrentThreadProcess());
+}
+
+/***********************************************************************
  *           PsIsSystemThread   (NTOSKRNL.EXE.@)
  */
 BOOLEAN WINAPI PsIsSystemThread(PETHREAD thread)
