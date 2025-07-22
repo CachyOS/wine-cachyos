@@ -2646,6 +2646,15 @@ HANDLE WINAPI PsGetThreadId(PETHREAD thread)
 }
 
 /*********************************************************************
+ *           PsGetThreadProcess    (NTOSKRNL.@)
+ */
+PEPROCESS WINAPI PsGetThreadProcess(PETHREAD thread)
+{
+    TRACE("%p -> %p\n", thread, thread->kthread.process);
+    return thread->kthread.process;
+}
+
+/*********************************************************************
  *           PsGetThreadProcessId    (NTOSKRNL.@)
  */
 HANDLE WINAPI PsGetThreadProcessId( PETHREAD thread )
