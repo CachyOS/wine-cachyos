@@ -4835,6 +4835,15 @@ BOOL WINAPI VslGetSecurePciEnabled(void)
     return TRUE;
 }
 
+/***********************************************************************
+ *           IoThreadToProcess / PsGetThreadProcess   (NTOSKRNL.EXE.@)
+ */
+PEPROCESS WINAPI IoThreadToProcess(PETHREAD thread)
+{
+    TRACE("thread %p\n", thread);
+    return thread->kthread.process;
+}
+
 /*****************************************************
  *           DllMain
  */
