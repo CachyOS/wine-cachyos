@@ -915,6 +915,7 @@
 @ stdcall PsGetCurrentProcessSessionId()
 @ stdcall PsGetCurrentThread() KeGetCurrentThread
 @ stdcall PsGetCurrentThreadId()
+@ stdcall PsGetCurrentThreadTeb()
 @ stub PsGetCurrentThreadPreviousMode
 @ stub PsGetCurrentThreadStackBase
 @ stub PsGetCurrentThreadStackLimit

@@ -2566,6 +2566,7 @@ static void *create_thread_object( HANDLE handle )
     if (!NtQueryInformationThread( handle, ThreadBasicInformation, &info, sizeof(info), NULL ))
     {
         thread->id = info.ClientId;
+        thread->teb = info.TebBaseAddress;
         if ((process = OpenProcess( PROCESS_QUERY_INFORMATION, FALSE, HandleToUlong(thread->id.UniqueProcess) )))
         {
             kernel_object_from_handle( process, PsProcessType, (void**)&thread->process );
@@ -3265,6 +3266,13 @@ HANDLE WINAPI PsGetCurrentThreadId(void)
     return KeGetCurrentThread()->id.UniqueThread;
 }
 
+/***********************************************************************
+ *           PsGetCurrentThreadTeb   (NTOSKRNL.EXE.@)
+ */
+TEB *WINAPI PsGetCurrentThreadTeb(void)
+{
+    return KeGetCurrentThread()->teb;
+}
 
 /***********************************************************************
  *           PsIsSystemThread   (NTOSKRNL.EXE.@)
