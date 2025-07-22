@@ -1393,6 +1393,7 @@
 @ stub VfFailDriver
 @ stub VfFailSystemBIOS
 @ stub VfIsVerificationEnabled
+@ stdcall VslGetSecurePciEnabled()
 @ stub WRITE_REGISTER_BUFFER_UCHAR
 @ stub WRITE_REGISTER_BUFFER_ULONG
 @ stub WRITE_REGISTER_BUFFER_USHORT
