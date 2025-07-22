@@ -3743,7 +3743,15 @@ void WINAPI ProbeForRead(void *address, SIZE_T length, ULONG alignment)
  */
 void WINAPI ProbeForWrite(void *address, SIZE_T length, ULONG alignment)
 {
-    FIXME("(%p %Iu %lu) stub\n", address, length, alignment);
+    TRACE("(%p %Iu %lu)\n", address, length, alignment);
+
+    if (length == 0) return;
+
+    if ((ULONG_PTR)address & (alignment-1))
+        RtlRaiseStatus(STATUS_DATATYPE_MISALIGNMENT);
+
+    for (volatile char *p = address; p < (char *)address + length; p++)
+        *p |= 0;
 }
 
 /***********************************************************************
