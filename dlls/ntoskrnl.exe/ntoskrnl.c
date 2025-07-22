@@ -2850,6 +2850,16 @@ BOOL WINAPI KeRegisterBugCheckCallback(void *record, void *routine,
 }
 
 /***********************************************************************
+ *           KeRegisterBugCheckReasonCallback   (NTOSKRNL.EXE.@)
+ */
+BOOL WINAPI KeRegisterBugCheckReasonCallback(void *record, void *routine, ULONG reason, char *component)
+{
+    FIXME("%p %p %lu %s stub!\n", record, routine, reason, debugstr_a(component));
+
+    return TRUE;
+}
+
+/***********************************************************************
  *           IoRegisterFileSystem   (NTOSKRNL.EXE.@)
  */
 VOID WINAPI IoRegisterFileSystem(PDEVICE_OBJECT DeviceObject)
