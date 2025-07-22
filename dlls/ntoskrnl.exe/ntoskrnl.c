@@ -2839,6 +2839,17 @@ void WINAPI KeRevertToUserAffinityThreadEx(KAFFINITY affinity)
 }
 
 /***********************************************************************
+ *           KeRegisterBugCheckCallback   (NTOSKRNL.EXE.@)
+ */
+BOOL WINAPI KeRegisterBugCheckCallback(void *record, void *routine,
+                                       void *buffer, ULONG length, char *component)
+{
+    FIXME("%p %p %p %lu %s stub!\n", record, routine, buffer, length, debugstr_a(component));
+
+    return TRUE;
+}
+
+/***********************************************************************
  *           IoRegisterFileSystem   (NTOSKRNL.EXE.@)
  */
 VOID WINAPI IoRegisterFileSystem(PDEVICE_OBJECT DeviceObject)
