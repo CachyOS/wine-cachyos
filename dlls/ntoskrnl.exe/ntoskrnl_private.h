@@ -68,6 +68,7 @@ struct _KTHREAD
     CLIENT_ID id;
     unsigned int critical_region;
     KAFFINITY user_affinity;
+    void *teb;
 };
 
 struct _ETHREAD
