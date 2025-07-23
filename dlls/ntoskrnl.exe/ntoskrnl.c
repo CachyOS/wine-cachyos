@@ -2478,7 +2478,11 @@ NTSTATUS WINAPI FsRtlRegisterUncProvider(PHANDLE MupHandle, PUNICODE_STRING Redi
 
 static void *create_process_object( HANDLE handle )
 {
+    char *p;
+    ULONG len;
     PEPROCESS process;
+    ANSI_STRING fullImageNameA;
+    UNICODE_STRING *fullImageNameW = NULL;
 
     if (!(process = alloc_kernel_object( PsProcessType, handle, sizeof(*process), 0 ))) return NULL;
 
@@ -2487,6 +2491,33 @@ static void *create_process_object( HANDLE handle )
     NtQueryInformationProcess( handle, ProcessBasicInformation, &process->info, sizeof(process->info), NULL );
     NtQueryInformationProcess( handle, ProcessSessionInformation, &process->session_id, sizeof(process->session_id), NULL );
     NtQueryInformationProcess( handle, ProcessTimes, &process->times, sizeof(process->times), NULL );
+
+    /* get full image name */
+    NtQueryInformationProcess( handle, ProcessImageFileNameWin32, fullImageNameW, 0, &len );
+    fullImageNameW = calloc(len + 1, sizeof(WCHAR));
+    if (fullImageNameW)
+    {
+        fullImageNameW->MaximumLength = len + sizeof(WCHAR);
+        NtQueryInformationProcess( handle, ProcessImageFileNameWin32, fullImageNameW, len, &len );
+        if (fullImageNameW->Buffer)
+        {
+            RtlUnicodeStringToAnsiString(&fullImageNameA, fullImageNameW, TRUE);
+            if (fullImageNameA.Buffer)
+            {
+                /* generate short name */
+                for (p = fullImageNameA.Buffer + fullImageNameA.Length - 1; p > fullImageNameA.Buffer; p--)
+                {
+                    if (*(p-1) == '\\') break;
+                }
+                memcpy(process->imageName, p,
+                       min(fullImageNameA.Buffer + fullImageNameA.Length - p,
+                           sizeof(process->imageName)));
+                RtlFreeAnsiString(&fullImageNameA);
+            }
+        }
+        free(fullImageNameW);
+    }
+
     IsWow64Process( handle, &process->wow64 );
 
     return process;
@@ -2574,6 +2605,15 @@ LONGLONG WINAPI PsGetProcessCreateTimeQuadPart( PEPROCESS process )
 {
     TRACE("%p -> %I64x\n", process, process->times.CreateTime.QuadPart);
     return process->times.CreateTime.QuadPart;
+}
+
+/*********************************************************************
+ *           PsGetProcessImageFileName    (NTOSKRNL.@)
+ */
+const char *WINAPI PsGetProcessImageFileName( PEPROCESS process )
+{
+    TRACE("%p -> %s\n", process, debugstr_an(process->imageName, sizeof(process->imageName)));
+    return process->imageName;
 }
 
 static void *create_thread_object( HANDLE handle )

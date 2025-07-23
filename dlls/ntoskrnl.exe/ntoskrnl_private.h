@@ -58,6 +58,7 @@ struct _EPROCESS
     KERNEL_USER_TIMES times;
     BOOL wow64;
     ULONG session_id;
+    char imageName[16];
 };
 
 struct _KTHREAD

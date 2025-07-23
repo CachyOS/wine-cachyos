@@ -931,7 +931,7 @@
 @ stub PsGetProcessExitStatus
 @ stub PsGetProcessExitTime
 @ stdcall PsGetProcessId(ptr)
-@ stub PsGetProcessImageFileName
+@ stdcall PsGetProcessImageFileName(ptr)
 @ stdcall PsGetProcessInheritedFromUniqueProcessId(ptr)
 @ stub PsGetProcessJob
 @ stdcall PsGetProcessPeb(ptr)
