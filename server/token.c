@@ -108,6 +108,7 @@ struct type_descr token_type =
 struct token
 {
     struct object  obj;             /* object header */
+    struct list    kernel_object;   /* list of kernel object pointers */
     struct luid    token_id;        /* system-unique id of token */
     struct luid    modified_id;     /* new id allocated every time token is modified */
     struct list    privileges;      /* privileges available to the token */
@@ -139,6 +140,7 @@ struct group
 
 static void token_dump( struct object *obj, int verbose );
 static void token_destroy( struct object *obj );
+static struct list *token_get_kernel_obj_list( struct object *obj );
 static int token_set_sd( struct object *obj, const struct security_descriptor *sd,
                          unsigned int set_info );
 
@@ -162,7 +164,7 @@ static const struct object_ops token_ops =
     no_link_name,              /* link_name */
     NULL,                      /* unlink_name */
     no_open_file,              /* open_file */
-    no_kernel_obj_list,        /* get_kernel_obj_list */
+    token_get_kernel_obj_list, /* get_kernel_obj_list */
     no_close_handle,           /* close_handle */
     token_destroy              /* destroy */
 };
@@ -173,6 +175,12 @@ static void token_dump( struct object *obj, int verbose )
     assert( obj->ops == &token_ops );
     fprintf( stderr, "Token id=%d.%u primary=%u impersonation level=%d\n", token->token_id.high_part,
              token->token_id.low_part, token->primary, token->impersonation_level );
+}
+
+static struct list *token_get_kernel_obj_list( struct object *obj )
+{
+    struct token *token = (struct token *)obj;
+    return &token->kernel_object;
 }
 
 static int token_set_sd( struct object *obj, const struct security_descriptor *sd,
@@ -518,6 +526,7 @@ static struct token *create_token( unsigned int primary, unsigned int session_id
             allocate_luid( &token->modified_id );
         list_init( &token->privileges );
         list_init( &token->groups );
+        list_init( &token->kernel_object );
         token->primary = primary;
         token->session_id = session_id;
         /* primary tokens don't have impersonation levels */
