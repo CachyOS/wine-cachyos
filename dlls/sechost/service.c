@@ -1096,6 +1096,26 @@ BOOL WINAPI DECLSPEC_HOTPATCH ControlService( SC_HANDLE service, DWORD control, 
 }
 
 /******************************************************************************
+ *     ControlServiceExA   (sechost.@)
+ */
+BOOL WINAPI DECLSPEC_HOTPATCH ControlServiceExA( SC_HANDLE service, DWORD control, DWORD level, void *params)
+{
+    FIXME( "%p %ld %ld %p stub!\n", service, control, level, params );
+
+    return set_error( ERROR_CALL_NOT_IMPLEMENTED );
+}
+
+/******************************************************************************
+ *     ControlServiceExW   (sechost.@)
+ */
+BOOL WINAPI DECLSPEC_HOTPATCH ControlServiceExW( SC_HANDLE service, DWORD control, DWORD level, void *params)
+{
+    FIXME( "%p %ld %ld %p stub!\n", service, control, level, params );
+
+    return set_error( ERROR_CALL_NOT_IMPLEMENTED );
+}
+
+/******************************************************************************
  *     QueryServiceStatus   (sechost.@)
  */
 BOOL WINAPI DECLSPEC_HOTPATCH QueryServiceStatus( SC_HANDLE service, SERVICE_STATUS *status )
