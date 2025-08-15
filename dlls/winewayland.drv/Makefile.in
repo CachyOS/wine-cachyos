@@ -30,4 +30,5 @@ SOURCES = \
 	wlr-data-control-unstable-v1.xml \
 	xdg-output-unstable-v1.xml \
 	xdg-shell.xml \
-	xdg-toplevel-icon-v1.xml
+	xdg-toplevel-icon-v1.xml \
+	xdg-toplevel-tag-v1.xml
