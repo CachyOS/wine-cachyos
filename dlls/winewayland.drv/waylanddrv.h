@@ -29,6 +29,11 @@
 #include <wayland-client.h>
 #include <xkbcommon/xkbcommon.h>
 #include <xkbcommon/xkbregistry.h>
+#ifdef HAVE_XKBCOMMON_XKBCOMMON_COMPOSE_H
+#include <xkbcommon/xkbcommon-compose.h>
+#else
+struct xkb_compose_table;
+#endif
 #include "cursor-shape-v1-client-protocol.h"
 #include "pointer-constraints-unstable-v1-client-protocol.h"
 #include "relative-pointer-unstable-v1-client-protocol.h"
