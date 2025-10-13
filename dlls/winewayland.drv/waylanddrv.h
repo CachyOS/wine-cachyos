@@ -45,6 +45,7 @@
 #include "xdg-decoration-unstable-v1-client-protocol.h"
 #include "color-management-v1-client-protocol.h"
 #include "xdg-activation-v1-client-protocol.h"
+#include "pointer-warp-v1-client-protocol.h"
 
 #include "windef.h"
 #include "winbase.h"
@@ -232,6 +233,7 @@ struct wayland
     struct zxdg_decoration_manager_v1 *zxdg_decoration_manager_v1;
     struct wp_color_manager_v1 *wp_color_manager_v1;
     struct xdg_activation_v1 *xdg_activation_v1;
+    struct wp_pointer_warp_v1 *wp_pointer_warp_v1;
     struct wayland_seat seat;
     struct wayland_keyboard keyboard;
     struct wayland_pointer pointer;

@@ -1220,8 +1220,29 @@ BOOL WAYLAND_ClipCursor(const RECT *clip, BOOL reset)
     }
     wayland_win_data_release(data);
 
+    /* Broadly, a warp is performed by the following sequence:
+     * 1. lock
+     * 2. position hint
+     * 3. unlock
+     * 4. flush
+     *
+     * Instead, if the protocol is present we can change this sequence to:
+     * 1. warp
+     * 2. flush
+     */
+
     pthread_mutex_lock(&pointer->mutex);
-    if (wl_surface && pointer->pending_warp)
+    if (process_wayland.wp_pointer_warp_v1 && wl_surface && pointer->pending_warp)
+    {
+        wp_pointer_warp_v1_warp_pointer(process_wayland.wp_pointer_warp_v1,
+                                        wl_surface, pointer->wl_pointer,
+                                        wl_fixed_from_int(warp_x),
+                                        wl_fixed_from_int(warp_y),
+                                        pointer->enter_serial);
+        TRACE("Warping hwnd=%p warp_xy=%d,%d\n", hwnd, warp_x, warp_y);
+        pointer->pending_warp = FALSE;
+    }
+    else if (wl_surface && pointer->pending_warp)
     {
         wayland_pointer_update_constraint(wl_surface, NULL, FALSE, TRUE);
         pointer->pending_warp = FALSE;
