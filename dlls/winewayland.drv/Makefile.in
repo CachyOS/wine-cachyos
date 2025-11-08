@@ -8,6 +8,7 @@ SOURCES = \
 	cursor-shape-v1.xml \
 	display.c \
 	dllmain.c \
+	ext-data-control-v1.xml \
 	opengl.c \
 	pointer-constraints-unstable-v1.xml \
 	relative-pointer-unstable-v1.xml \

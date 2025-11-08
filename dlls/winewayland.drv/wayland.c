@@ -148,6 +148,7 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
         if (process_wayland.zwp_text_input_manager_v3) wayland_text_input_init();
         /* Recreate the data device for the new seat. */
         if (process_wayland.data_device.zwlr_data_control_device_v1 ||
+            process_wayland.data_device.ext_data_control_device_v1 ||
             process_wayland.data_device.wl_data_device)
         {
             wayland_data_device_init();
@@ -183,6 +184,11 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
     {
         process_wayland.zwlr_data_control_manager_v1 =
             wl_registry_bind(registry, id, &zwlr_data_control_manager_v1_interface, 1);
+    }
+    else if (strcmp(interface, "ext_data_control_manager_v1") == 0)
+    {
+        process_wayland.ext_data_control_manager_v1 =
+            wl_registry_bind(registry, id, &ext_data_control_manager_v1_interface, 1);
     }
     else if (strcmp(interface, "wl_data_device_manager") == 0)
     {
@@ -327,8 +333,8 @@ BOOL wayland_process_init(void)
     {
         if (!process_wayland.wl_data_device_manager)
             ERR("Wayland compositor doesn't support optional wl_data_device_manager (clipboard won't work)\n");
-        else
-            ERR("Wayland compositor doesn't support optional zwlr_data_control_manager_v1 (clipboard functionality will be limited)\n");
+        else if (!process_wayland.ext_data_control_manager_v1)
+            ERR("Wayland compositor doesn't support optional zwlr_data_control_manager_v1 or ext_data_control_manager_v1 (clipboard functionality will be limited)\n");
     }
 
     if (!process_wayland.xdg_toplevel_icon_manager_v1)

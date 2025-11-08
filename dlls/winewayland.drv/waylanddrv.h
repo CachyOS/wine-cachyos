@@ -37,6 +37,7 @@
 #include "xdg-output-unstable-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
 #include "wlr-data-control-unstable-v1-client-protocol.h"
+#include "ext-data-control-v1-client-protocol.h"
 #include "xdg-toplevel-icon-v1-client-protocol.h"
 
 #include "windef.h"
@@ -152,6 +153,12 @@ struct wayland_data_device
         };
         struct
         {
+            struct ext_data_control_device_v1 *ext_data_control_device_v1;
+            struct ext_data_control_source_v1 *ext_data_control_source_v1;
+            struct ext_data_control_offer_v1 *clipboard_ext_data_control_offer_v1;
+        };
+        struct
+        {
             struct wl_data_device *wl_data_device;
             struct wl_data_source *wl_data_source;
             struct wl_data_offer *clipboard_wl_data_offer;
@@ -176,6 +183,7 @@ struct wayland
     struct zwp_relative_pointer_manager_v1 *zwp_relative_pointer_manager_v1;
     struct zwp_text_input_manager_v3 *zwp_text_input_manager_v3;
     struct zwlr_data_control_manager_v1 *zwlr_data_control_manager_v1;
+    struct ext_data_control_manager_v1 *ext_data_control_manager_v1;
     struct wl_data_device_manager *wl_data_device_manager;
     struct xdg_toplevel_icon_manager_v1 *xdg_toplevel_icon_manager_v1;
     struct wp_cursor_shape_manager_v1 *wp_cursor_shape_manager_v1;
