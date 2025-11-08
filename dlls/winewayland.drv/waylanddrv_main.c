@@ -121,6 +121,7 @@ static NTSTATUS waylanddrv_unix_init_clipboard(void *arg)
      * per-process clipboard window and handling, we can use the default clipboard
      * window from the desktop process. */
     if (process_wayland.zwlr_data_control_manager_v1) return STATUS_UNSUCCESSFUL;
+    if (process_wayland.ext_data_control_manager_v1) return STATUS_UNSUCCESSFUL;
     return STATUS_SUCCESS;
 }
 
