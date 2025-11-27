@@ -828,6 +828,27 @@ DECL_HANDLER(get_thread_desktop)
     release_object( thread );
 }
 
+/* get the thread current keyboard layout */
+DECL_HANDLER(get_thread_layout)
+{
+    struct thread *thread;
+
+    if (!(thread = get_thread_from_id( req->tid ))) return;
+    reply->layout = thread->layout;
+
+    release_object( thread );
+}
+
+/* set the thread current keyboard layout */
+DECL_HANDLER(set_thread_layout)
+{
+    struct thread *thread;
+
+    if (!(thread = get_thread_from_id( req->tid ))) return;
+    thread->layout = req->layout;
+
+    release_object( thread );
+}
 
 /* set the thread current desktop */
 DECL_HANDLER(set_thread_desktop)
