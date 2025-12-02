@@ -2467,8 +2467,8 @@ static int queue_keyboard_message( struct desktop *desktop, user_handle_t win, c
     }
 
     /* send numpad vkeys if NumLock is active */
-    if ((input->kbd.vkey & KBDNUMPAD) && (desktop->keystate[VK_NUMLOCK] & 0x01) &&
-        !(desktop->keystate[VK_SHIFT] & 0x80))
+    if ((input->kbd.vkey & KBDNUMPAD) && (desktop_shm->keystate[VK_NUMLOCK] & 0x01) &&
+        !(desktop_shm->keystate[VK_SHIFT] & 0x80))
     {
        switch (vkey)
        {
