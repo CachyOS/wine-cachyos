@@ -173,14 +173,14 @@ cpp_quote("#define AMD_EXT_WMMA_TYPE_FP8 11")
 
 typedef struct
 {
-    SIZE_T   mSize;
-    SIZE_T   nSize;
-    SIZE_T   kSize;
-    ULONG    aType;
-    ULONG    bType;
-    ULONG    cType;
-    ULONG    resultType;
-    BOOL     saturatingAccumulation;
+    SIZE_T   mSize; /* 0 */
+    SIZE_T   nSize; /* 8 */
+    SIZE_T   kSize; /* 10 */
+    ULONG    aType; /* 14 */
+    ULONG    bType; /* 18 */
+    ULONG    cType; /* 1c */
+    ULONG    resultType; /* 20 */
+    ULONG    saturatingAccumulation; /* 24 */
 } AmdExtWaveMatrixProperties;
 
 typedef struct
