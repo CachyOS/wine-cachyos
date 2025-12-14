@@ -148,6 +148,61 @@ static int dns_only_query( const char *node, const struct addrinfo *hints, struc
     return 0;
 }
 
+static BOOL should_block_host( const char *name )
+{
+    static char lst[16][256] = {};
+    const size_t max_hosts = ARRAY_SIZE( lst ), max_length = sizeof( lst[0] );
+    const char *blk = getenv( "WINE_BLOCK_HOSTS" );
+    char *copy, *host;
+    const char *match;
+    size_t length = 0;
+    unsigned int i = 0;
+
+    if ( !blk || !*blk || !name || !*name ) return FALSE;
+
+    if ( lst[0][0] == '\0' )
+    {
+        copy = strdup( blk );
+        if ( !copy ) return FALSE;
+
+        host = strtok( copy, ",;" );
+        if ( !host )
+        {
+            free( copy );
+            return FALSE;
+        }
+
+        length = strlen( host );
+        memcpy( lst[0], host, length < max_length ? length + 1: max_length );
+        lst[0][max_length - 1] = '\0';
+        TRACE( "Adding host \"%s\" to the block list\n", lst[0] );
+
+        while ( (( host = strtok(NULL, ",;" )) ) && ( ++i < max_hosts ) )
+        {
+            length = strlen( host );
+            memcpy( lst[i], host, length < max_length ? length + 1: max_length );
+            lst[i][max_length - 1] = '\0';
+            TRACE( "Adding host \"%s\" to the block list\n", lst[i] );
+        }
+
+        free( copy );
+    }
+
+    for ( i = 0; i < max_hosts; ++i )
+    {
+        if ( lst[i][0] == '\0' )
+            continue;
+        match = strstr( name, lst[i] );
+        if ( match && ( match == name || *(--match) == '.' ) )
+        {
+            WARN( "Blocking host \"%s\" matching \"%s\"\n", name, lst[i]);
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
 static BOOL eac_download_hack(void)
 {
     static int eac_download_hack_enabled = -1;
@@ -188,6 +243,12 @@ int WINAPI getaddrinfo( const char *node, const char *service,
 
     if (node)
     {
+        if (should_block_host(node))
+        {
+            SetLastError(WSAHOST_NOT_FOUND);
+            return WSAHOST_NOT_FOUND;
+        }
+
         if (eac_download_hack() && !strcmp(node, "download-alt.easyanticheat.net"))
         {
             SetLastError(WSAHOST_NOT_FOUND);
@@ -964,6 +1025,12 @@ struct hostent * WINAPI gethostbyname( const char *name )
     if (!num_startup)
     {
         SetLastError( WSANOTINITIALISED );
+        return NULL;
+    }
+
+    if (should_block_host(name))
+    {
+        SetLastError( WSAHOST_NOT_FOUND );
         return NULL;
     }
 
