@@ -195,7 +195,7 @@ HRESULT STDMETHODCALLTYPE AMDFSR4FFX_UpdateFfxApiProvider(IAmdExtFfxApi *iface, 
     /* required to expose MLFG support */
     struct unk_data unk_data[1] =
     {
-        {{0, 1, 1, 0}, NULL}
+        {{0, 1, 0, 0}, NULL}
     };
     const char *env;
     updateffxapi_pfn_ex pfn_ex;
@@ -205,6 +205,9 @@ HRESULT STDMETHODCALLTYPE AMDFSR4FFX_UpdateFfxApiProvider(IAmdExtFfxApi *iface, 
     TRACE("%p %p %u\n", iface, data, size);
 
     if (!data) return E_INVALIDARG;
+
+    if ((env = getenv("MLFG_UPGRADE")) && !strcmp(env, "1"))
+        unk_data[0].unk[2] = 1;
 
     if ((env = getenv("FSR4_UPGRADE")) && !strcmp(env, "1"))
     {
