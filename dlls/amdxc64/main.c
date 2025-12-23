@@ -604,9 +604,9 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, void *reserved)
         case DLL_PROCESS_ATTACH:
         {
             if ((env = getenv("FSR4_WATERMARK")) && !strcmp(env, "1"))
-            {
                 _putenv("MLSR-WATERMARK=1");
-            }
+            if ((env = getenv("MLFG_WATERMARK")) && !strcmp(env, "1"))
+                _putenv("MLFI-WATERMARK=1");
             break;
         }
         default: break;
