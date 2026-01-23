@@ -199,6 +199,7 @@ static void d2d_device_context_draw(struct d2d_device_context *render_target, en
 
 static void d2d_device_context_set_error(struct d2d_device_context *context, HRESULT code)
 {
+    WARN("code %#lx.\n", code);
     context->error.code = code;
     context->error.tag1 = context->drawing_state.tag1;
     context->error.tag2 = context->drawing_state.tag2;
