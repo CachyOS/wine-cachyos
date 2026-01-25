@@ -2472,16 +2472,31 @@ NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeou
     {
         for (;;) select( 0, NULL, NULL, NULL, NULL );
     }
+    else if (timeout->QuadPart < 0)
+    {
+        timeout_t when = -timeout->QuadPart, diff;
+        LARGE_INTEGER now;
+
+        NtQueryPerformanceCounter( &now, NULL );
+        when += now.QuadPart;
+
+        NtYieldExecution();
+
+        for (;;)
+        {
+            struct timeval tv;
+            NtQueryPerformanceCounter( &now, NULL );
+            diff = (when - now.QuadPart + 9) / 10;
+            if (diff <= 0) break;
+            tv.tv_sec = diff / 1000000;
+            tv.tv_usec = diff % 1000000;
+            if (select( 0, NULL, NULL, NULL, &tv ) != -1) break;
+        }
+    }
     else
     {
+        timeout_t when = timeout->QuadPart, diff;
         LARGE_INTEGER now;
-        timeout_t when, diff;
-
-        if ((when = timeout->QuadPart) < 0)
-        {
-            NtQuerySystemTime( &now );
-            when = now.QuadPart - when;
-        }
 
         /* Note that we yield after establishing the desired timeout, but
            we only care about the result of the yield for zero timeouts */
