@@ -72,6 +72,8 @@ static struct wayland_win_data *wayland_win_data_create(HWND hwnd, const struct 
 
     data->hwnd = hwnd;
     data->rects = *rects;
+    data->ime_enabled = FALSE;
+    data->num_ime_children = 0;
 
     pthread_mutex_lock(&win_data_mutex);
 

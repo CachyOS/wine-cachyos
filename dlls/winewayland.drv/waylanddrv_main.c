@@ -40,6 +40,7 @@ static const struct user_driver_funcs waylanddrv_funcs =
     .pDesktopWindowProc = WAYLAND_DesktopWindowProc,
     .pDestroyWindow = WAYLAND_DestroyWindow,
     .pSetIMECompositionRect = WAYLAND_SetIMECompositionRect,
+    .pSetIMEEnabled = WAYLAND_SetIMEEnabled,
     .pKbdLayerDescriptor = WAYLAND_KbdLayerDescriptor,
     .pReleaseKbdTables = WAYLAND_ReleaseKbdTables,
     .pSetCursor = WAYLAND_SetCursor,
