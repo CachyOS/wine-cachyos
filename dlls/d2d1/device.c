@@ -1875,7 +1875,7 @@ static HRESULT STDMETHODCALLTYPE d2d_device_context_Flush(ID2D1DeviceContext6 *i
     if (context->ops && context->ops->device_context_present)
         context->ops->device_context_present(context->outer_unknown);
 
-    return E_NOTIMPL;
+    return S_OK;
 }
 
 static void STDMETHODCALLTYPE d2d_device_context_SaveDrawingState(ID2D1DeviceContext6 *iface,
