@@ -5584,6 +5584,27 @@ static void test_ImmSetActiveContext(void)
 
     ok_ret( 1, ImmActivateLayout( hkl ) );
     ok_ret( 1, ImmLoadIME( hkl ) );
+    ok_ret( 1, ImmSetActiveContext( hwnd, default_himc, TRUE ) );
+    ok_ret( 1, ImmActivateLayout( default_hkl ) );
+    ok_ret( 1, ImmLoadIME( default_hkl ) );
+    process_messages();
+    memset( ime_calls, 0, sizeof(ime_calls) );
+    ime_call_count = 0;
+    ok_ret( 1, ImmSetActiveContext( hwnd, default_himc, FALSE ) );
+    ok_seq( empty_sequence );
+
+    ok_ret( 1, ImmFreeLayout( hkl ) );
+
+    ok_ret( 1, ImmSetActiveContext( hwnd, default_himc, TRUE ) );
+    ok_ret( 1, ImmActivateLayout( hkl ) );
+    ok_ret( 1, ImmLoadIME( hkl ) );
+    process_messages();
+    memset( ime_calls, 0, sizeof(ime_calls) );
+    ime_call_count = 0;
+    ok_ret( 1, ImmSetActiveContext( hwnd, default_himc, FALSE ) );
+    ok_seq( deactivate_0_seq );
+
+    ok_ret( 1, ImmFreeLayout( default_hkl ) );
     process_messages();
     memset( ime_calls, 0, sizeof(ime_calls) );
     ime_call_count = 0;
