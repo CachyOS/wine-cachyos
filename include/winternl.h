@@ -2466,6 +2466,9 @@ typedef enum _MEMORY_INFORMATION_CLASS {
 #ifdef __WINESRC__
     MemoryWineLoadUnixLib = 1000,
     MemoryWineLoadUnixLibWow64,
+    MemoryWineLoadUnixLibByName,
+    MemoryWineLoadUnixLibByNameWow64,
+    MemoryWineUnloadUnixLib,
 #endif
     MemoryFexStatsShm = 2000,
 } MEMORY_INFORMATION_CLASS;
