@@ -17596,7 +17596,6 @@ static void test_path_geometry_stream(BOOL d3d11)
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
 
     hr = ID2D1PathGeometry_Stream(geometry, &stream_sink.ID2D1GeometrySink_iface);
-    todo_wine
     ok(hr == D2DERR_WRONG_STATE, "Got unexpected hr %#lx.\n", hr);
 
     hr = ID2D1PathGeometry_Open(geometry, &sink);
@@ -17612,10 +17611,8 @@ static void test_path_geometry_stream(BOOL d3d11)
     ID2D1GeometrySink_Release(sink);
 
     hr = ID2D1PathGeometry_Stream(geometry, &stream_sink.ID2D1GeometrySink_iface);
-    todo_wine
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
-    if (SUCCEEDED(hr))
-        geometry_sink_check(&stream_sink, D2D1_FILL_MODE_ALTERNATE, 1, &expected_figures[0], 1);
+    geometry_sink_check(&stream_sink, D2D1_FILL_MODE_ALTERNATE, 1, &expected_figures[0], 1);
     geometry_sink_cleanup(&stream_sink);
     ID2D1PathGeometry_Release(geometry);
 
