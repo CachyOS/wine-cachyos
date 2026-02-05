@@ -4255,9 +4255,69 @@ static HRESULT STDMETHODCALLTYPE d2d_path_geometry_Open(ID2D1PathGeometry1 *ifac
 
 static HRESULT STDMETHODCALLTYPE d2d_path_geometry_Stream(ID2D1PathGeometry1 *iface, ID2D1GeometrySink *sink)
 {
-    FIXME("iface %p, sink %p stub!\n", iface, sink);
+    struct d2d_geometry *geometry = impl_from_ID2D1PathGeometry1(iface);
+    unsigned int flags = 0;
 
-    return E_NOTIMPL;
+    TRACE("iface %p, sink %p.\n", iface, sink);
+
+    if (geometry->u.path.state != D2D_GEOMETRY_STATE_CLOSED)
+        return D2DERR_WRONG_STATE;
+
+    for (size_t i = 0; i < geometry->u.path.figure_count; ++i)
+    {
+        const struct d2d_figure *figure = &geometry->u.path.figures[i];
+        union
+        {
+            const struct d2d_segment *segment;
+            const struct d2d_segment_beziers *beziers;
+            const struct d2d_segment_quadratic_beziers *quad_beziers;
+            const struct d2d_segment_lines *lines;
+            const struct d2d_segment_arcs *arcs;
+        } s = { (struct d2d_segment *)figure->segments.data };
+        size_t size = 0;
+
+        ID2D1GeometrySink_BeginFigure(sink, figure->vertices[0], figure->flags & D2D_FIGURE_FLAG_HOLLOW ?
+                D2D1_FIGURE_BEGIN_HOLLOW : D2D1_FIGURE_BEGIN_FILLED);
+
+        for (size_t j = 0; j < figure->segments.count; ++j)
+        {
+            if (flags != s.segment->flags)
+            {
+                ID2D1GeometrySink_SetSegmentFlags(sink, s.segment->flags);
+                flags = s.segment->flags;
+            }
+
+            switch (s.segment->type)
+            {
+                case D2D_SEGMENT_TYPE_BEZIERS:
+                    ID2D1GeometrySink_AddBeziers(sink, s.beziers->segments, s.beziers->count);
+                    size = FIELD_OFFSET(struct d2d_segment_beziers, segments[s.beziers->count]);
+                    break;
+                case D2D_SEGMENT_TYPE_QUADRATIC_BEZIERS:
+                    ID2D1GeometrySink_AddQuadraticBeziers(sink, s.quad_beziers->segments, s.quad_beziers->count);
+                    size = FIELD_OFFSET(struct d2d_segment_quadratic_beziers, segments[s.quad_beziers->count]);
+                    break;
+                case D2D_SEGMENT_TYPE_LINES:
+                    ID2D1GeometrySink_AddLines(sink, s.lines->points, s.lines->count);
+                    size = FIELD_OFFSET(struct d2d_segment_lines, points[s.lines->count]);
+                    break;
+                case D2D_SEGMENT_TYPE_ARCS:
+                    for (unsigned int k = 0; k < s.arcs->count; ++k)
+                        ID2D1GeometrySink_AddArc(sink, &s.arcs->segments[k]);
+                    size = FIELD_OFFSET(struct d2d_segment_arcs, segments[s.arcs->count]);
+                    break;
+                default:
+                    ;
+            }
+
+            s.segment = (struct d2d_segment *)((uint8_t *)s.segment + size);
+        }
+
+        ID2D1GeometrySink_EndFigure(sink, figure->flags & D2D_FIGURE_FLAG_CLOSED ?
+                D2D1_FIGURE_END_CLOSED : D2D1_FIGURE_END_OPEN);
+    }
+
+    return S_OK;
 }
 
 static HRESULT STDMETHODCALLTYPE d2d_path_geometry_GetSegmentCount(ID2D1PathGeometry1 *iface, UINT32 *count)
