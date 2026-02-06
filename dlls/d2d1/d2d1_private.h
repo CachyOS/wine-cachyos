@@ -615,6 +615,7 @@ struct d2d_geometry
             ID2D1Geometry **src_geometries;
             UINT32 geometry_count;
             D2D1_FILL_MODE fill_mode;
+            ID2D1PathGeometry *path;
         } group;
     } u;
 };
