@@ -511,10 +511,20 @@ struct d2d_curve_outline_vertex
     D2D1_POINT_2F prev, next;
 };
 
+struct d2d_geometry;
+
+struct d2d_geometry_ops
+{
+    void (*stream)(struct d2d_geometry *geometry, const D2D_MATRIX_3X2_F *transform,
+            ID2D1GeometrySink *sink);
+};
+
 struct d2d_geometry
 {
     ID2D1Geometry ID2D1Geometry_iface;
     LONG refcount;
+
+    const struct d2d_geometry_ops *ops;
 
     ID2D1Factory *factory;
 
