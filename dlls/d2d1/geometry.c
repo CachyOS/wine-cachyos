@@ -4794,7 +4794,7 @@ static void d2d_ellipse_geometry_stream(struct d2d_geometry *geometry, const D2D
 
     arcs[0].size.width = e->radiusX;
     arcs[0].size.height = e->radiusY;
-    arcs[0].rotationAngle = 90.0f;
+    arcs[0].rotationAngle = 0.0f;
     arcs[0].sweepDirection = D2D1_SWEEP_DIRECTION_CLOCKWISE;
     arcs[0].arcSize = D2D1_ARC_SIZE_SMALL;
     arcs[1] = arcs[2] = arcs[3] = arcs[0];
