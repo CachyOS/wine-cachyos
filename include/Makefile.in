@@ -391,6 +391,7 @@ SOURCES = \
 	iimgctx.idl \
 	imagehlp.h \
 	ime.h \
+	imfbytestream_read_hack.h \
 	imm.h \
 	immdev.h \
 	imnact.idl \

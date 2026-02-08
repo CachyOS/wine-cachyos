@@ -27,6 +27,8 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(mfplat);
 
+#include "imfbytestream_read_hack.h"
+
 struct object_context
 {
     IUnknown IUnknown_iface;
@@ -924,7 +926,7 @@ static DWORD CALLBACK read_thread(void *arg)
         ret_size = 0;
 
         if (SUCCEEDED(hr = IMFByteStream_SetCurrentPosition(byte_stream, offset)))
-            hr = IMFByteStream_Read(byte_stream, data, size, &ret_size);
+            hr = IMFByteStream_Read_Hack(byte_stream, data, size, &ret_size);
         if (FAILED(hr))
             ERR("Failed to read %u bytes at offset %I64u, hr %#lx.\n", size, offset, hr);
         else if (ret_size != size)
