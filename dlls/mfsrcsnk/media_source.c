@@ -72,6 +72,8 @@ WINE_DEFAULT_DEBUG_CHANNEL(mfplat);
         return object;                                                                             \
     }
 
+#include "imfbytestream_read_hack.h"
+
 #define DEFINE_MF_ASYNC_CALLBACK_(type, name, impl_from, pfx, mem, expr)                           \
     static struct type *impl_from(IMFAsyncCallback *iface)                                         \
     {                                                                                              \
@@ -1789,7 +1791,7 @@ static NTSTATUS CDECL media_source_read_cb(struct winedmo_stream *stream, BYTE *
             && FAILED(IMFByteStream_SetCurrentPosition(source->stream, source->position)))
         WARN("Failed to set current position\n");
 
-    if (FAILED(IMFByteStream_Read(source->stream, buffer, *size, size)))
+    if (FAILED(IMFByteStream_Read_Hack(source->stream, buffer, *size, size)))
         return STATUS_UNSUCCESSFUL;
 
     source->position += *size;
