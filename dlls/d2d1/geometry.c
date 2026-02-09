@@ -6391,133 +6391,149 @@ static HRESULT STDMETHODCALLTYPE d2d_geometry_group_GetBounds(ID2D1GeometryGroup
         const D2D1_MATRIX_3X2_F *transform, D2D1_RECT_F *bounds)
 {
     struct d2d_geometry *geometry = impl_from_ID2D1GeometryGroup(iface);
-    D2D1_RECT_F rect;
-    unsigned int i;
 
     TRACE("iface %p, transform %p, bounds %p.\n", iface, transform, bounds);
 
-    bounds->left = FLT_MAX;
-    bounds->top = FLT_MAX;
-    bounds->right = -FLT_MAX;
-    bounds->bottom = -FLT_MAX;
-
-    for (i = 0; i < geometry->u.group.geometry_count; ++i)
-    {
-        if (SUCCEEDED(ID2D1Geometry_GetBounds(geometry->u.group.src_geometries[i], transform, &rect)))
-            d2d_rect_union(bounds, &rect);
-    }
-
-    return S_OK;
+    return ID2D1PathGeometry_GetBounds(geometry->u.group.path, transform, bounds);
 }
 
 static HRESULT STDMETHODCALLTYPE d2d_geometry_group_GetWidenedBounds(ID2D1GeometryGroup *iface,
         float stroke_width, ID2D1StrokeStyle *stroke_style, const D2D1_MATRIX_3X2_F *transform,
         float tolerance, D2D1_RECT_F *bounds)
 {
-    FIXME("iface %p, stroke_width %.8e, stroke_style %p, transform %p, tolerance %.8e, bounds %p stub!\n",
+    struct d2d_geometry *geometry = impl_from_ID2D1GeometryGroup(iface);
+
+    TRACE("iface %p, stroke_width %.8e, stroke_style %p, transform %p, tolerance %.8e, bounds %p.\n",
             iface, stroke_width, stroke_style, transform, tolerance, bounds);
 
-    return E_NOTIMPL;
+    return ID2D1PathGeometry_GetWidenedBounds(geometry->u.group.path, stroke_width, stroke_style, transform,
+            tolerance, bounds);
 }
 
 static HRESULT STDMETHODCALLTYPE d2d_geometry_group_StrokeContainsPoint(ID2D1GeometryGroup *iface,
         D2D1_POINT_2F point, float stroke_width, ID2D1StrokeStyle *stroke_style, const D2D1_MATRIX_3X2_F *transform,
         float tolerance, BOOL *contains)
 {
-    FIXME("iface %p, point %s, stroke_width %.8e, stroke_style %p, transform %p, tolerance %.8e, contains %p.\n",
+    struct d2d_geometry *geometry = impl_from_ID2D1GeometryGroup(iface);
+
+    TRACE("iface %p, point %s, stroke_width %.8e, stroke_style %p, transform %p, tolerance %.8e, contains %p.\n",
             iface, debug_d2d_point_2f(&point), stroke_width, stroke_style, transform, tolerance, contains);
 
-    return E_NOTIMPL;
+    return ID2D1PathGeometry_StrokeContainsPoint(geometry->u.group.path, point, stroke_width,
+            stroke_style, transform, tolerance, contains);
 }
 
 static HRESULT STDMETHODCALLTYPE d2d_geometry_group_FillContainsPoint(ID2D1GeometryGroup *iface,
         D2D1_POINT_2F point, const D2D1_MATRIX_3X2_F *transform, float tolerance, BOOL *contains)
 {
-    FIXME("iface %p, point %s, transform %p, tolerance %.8e, contains %p stub!.\n",
+    struct d2d_geometry *geometry = impl_from_ID2D1GeometryGroup(iface);
+
+    TRACE("iface %p, point %s, transform %p, tolerance %.8e, contains %p.\n",
             iface, debug_d2d_point_2f(&point), transform, tolerance, contains);
 
-    return E_NOTIMPL;
+    return ID2D1PathGeometry_FillContainsPoint(geometry->u.group.path, point, transform, tolerance, contains);
 }
 
 static HRESULT STDMETHODCALLTYPE d2d_geometry_group_CompareWithGeometry(ID2D1GeometryGroup *iface,
-        ID2D1Geometry *geometry, const D2D1_MATRIX_3X2_F *transform, float tolerance, D2D1_GEOMETRY_RELATION *relation)
+        ID2D1Geometry *geometry2, const D2D1_MATRIX_3X2_F *transform, float tolerance, D2D1_GEOMETRY_RELATION *relation)
 {
-    FIXME("iface %p, geometry %p, transform %p, tolerance %.8e, relation %p stub!\n",
-            iface, geometry, transform, tolerance, relation);
+    struct d2d_geometry *geometry = impl_from_ID2D1GeometryGroup(iface);
 
-    return E_NOTIMPL;
+    TRACE("iface %p, geometry %p, transform %p, tolerance %.8e, relation %p.\n",
+            iface, geometry2, transform, tolerance, relation);
+
+    return ID2D1PathGeometry_CompareWithGeometry(geometry->u.group.path, geometry2, transform, tolerance, relation);
 }
 
 static HRESULT STDMETHODCALLTYPE d2d_geometry_group_Simplify(ID2D1GeometryGroup *iface,
         D2D1_GEOMETRY_SIMPLIFICATION_OPTION option, const D2D1_MATRIX_3X2_F *transform, float tolerance,
         ID2D1SimplifiedGeometrySink *sink)
 {
-    FIXME("iface %p, option %#x, transform %p, tolerance %.8e, sink %p stub!.\n",
+    struct d2d_geometry *geometry = impl_from_ID2D1GeometryGroup(iface);
+
+    TRACE("iface %p, option %#x, transform %p, tolerance %.8e, sink %p.\n",
             iface, option, transform, tolerance, sink);
 
-    return E_NOTIMPL;
+    return ID2D1PathGeometry_Simplify(geometry->u.group.path, option, transform, tolerance, sink);
 }
 
 static HRESULT STDMETHODCALLTYPE d2d_geometry_group_Tessellate(ID2D1GeometryGroup *iface,
         const D2D1_MATRIX_3X2_F *transform, float tolerance, ID2D1TessellationSink *sink)
 {
-    FIXME("iface %p, transform %p, tolerance %.8e, sink %p stub!\n", iface, transform, tolerance, sink);
+    struct d2d_geometry *geometry = impl_from_ID2D1GeometryGroup(iface);
 
-    return E_NOTIMPL;
+    TRACE("iface %p, transform %p, tolerance %.8e, sink %p.\n", iface, transform, tolerance, sink);
+
+    return ID2D1PathGeometry_Tessellate(geometry->u.group.path, transform, tolerance, sink);
 }
 
 static HRESULT STDMETHODCALLTYPE d2d_geometry_group_CombineWithGeometry(ID2D1GeometryGroup *iface,
-        ID2D1Geometry *geometry, D2D1_COMBINE_MODE combine_mode, const D2D1_MATRIX_3X2_F *transform,
+        ID2D1Geometry *geometry2, D2D1_COMBINE_MODE combine_mode, const D2D1_MATRIX_3X2_F *transform,
         float tolerance, ID2D1SimplifiedGeometrySink *sink)
 {
-    FIXME("iface %p, geometry %p, combine_mode %#x, transform %p, tolerance %.8e, sink %p stub!\n",
-            iface, geometry, combine_mode, transform, tolerance, sink);
+    struct d2d_geometry *geometry = impl_from_ID2D1GeometryGroup(iface);
 
-    return E_NOTIMPL;
+    TRACE("iface %p, geometry %p, combine_mode %#x, transform %p, tolerance %.8e, sink %p.\n",
+            iface, geometry2, combine_mode, transform, tolerance, sink);
+
+    return ID2D1PathGeometry_CombineWithGeometry(geometry->u.group.path, geometry2, combine_mode,
+            transform, tolerance, sink);
 }
 
 static HRESULT STDMETHODCALLTYPE d2d_geometry_group_Outline(ID2D1GeometryGroup *iface,
         const D2D1_MATRIX_3X2_F *transform, float tolerance, ID2D1SimplifiedGeometrySink *sink)
 {
-    FIXME("iface %p, transform %p, tolerance %.8e, sink %p stub!\n", iface, transform, tolerance, sink);
+    struct d2d_geometry *geometry = impl_from_ID2D1GeometryGroup(iface);
 
-    return E_NOTIMPL;
+    TRACE("iface %p, transform %p, tolerance %.8e, sink %p.\n", iface, transform, tolerance, sink);
+
+    return ID2D1PathGeometry_Outline(geometry->u.group.path, transform, tolerance, sink);
 }
 
 static HRESULT STDMETHODCALLTYPE d2d_geometry_group_ComputeArea(ID2D1GeometryGroup *iface,
         const D2D1_MATRIX_3X2_F *transform, float tolerance, float *area)
 {
-    FIXME("iface %p, transform %p, tolerance %.8e, area %p stub!\n", iface, transform, tolerance, area);
+    struct d2d_geometry *geometry = impl_from_ID2D1GeometryGroup(iface);
 
-    return E_NOTIMPL;
+    TRACE("iface %p, transform %p, tolerance %.8e, area %p.\n", iface, transform, tolerance, area);
+
+    return ID2D1PathGeometry_ComputeArea(geometry->u.group.path, transform, tolerance, area);
 }
 
 static HRESULT STDMETHODCALLTYPE d2d_geometry_group_ComputeLength(ID2D1GeometryGroup *iface,
         const D2D1_MATRIX_3X2_F *transform, float tolerance, float *length)
 {
-    FIXME("iface %p, transform %p, tolerance %.8e, length %p stub!\n", iface, transform, tolerance, length);
+    struct d2d_geometry *geometry = impl_from_ID2D1GeometryGroup(iface);
 
-    return E_NOTIMPL;
+    TRACE("iface %p, transform %p, tolerance %.8e, length %p.\n", iface, transform, tolerance, length);
+
+    return ID2D1PathGeometry_ComputeLength(geometry->u.group.path, transform, tolerance, length);
 }
 
 static HRESULT STDMETHODCALLTYPE d2d_geometry_group_ComputePointAtLength(ID2D1GeometryGroup *iface,
         float length, const D2D1_MATRIX_3X2_F *transform, float tolerance, D2D1_POINT_2F *point,
         D2D1_POINT_2F *tangent)
 {
-    FIXME("iface %p, length %.8e, transform %p, tolerance %.8e, point %p, tangent %p stub!\n",
+    struct d2d_geometry *geometry = impl_from_ID2D1GeometryGroup(iface);
+
+    TRACE("iface %p, length %.8e, transform %p, tolerance %.8e, point %p, tangent %p.\n",
             iface, length, transform, tolerance, point, tangent);
 
-    return E_NOTIMPL;
+    return ID2D1PathGeometry_ComputePointAtLength(geometry->u.group.path, length, transform, tolerance,
+            point, tangent);
 }
 
 static HRESULT STDMETHODCALLTYPE d2d_geometry_group_Widen(ID2D1GeometryGroup *iface, float stroke_width,
         ID2D1StrokeStyle *stroke_style, const D2D1_MATRIX_3X2_F *transform, float tolerance,
         ID2D1SimplifiedGeometrySink *sink)
 {
-    FIXME("iface %p, stroke_width %.8e, stroke_style %p, transform %p, tolerance %.8e, sink %p stub!\n",
+    struct d2d_geometry *geometry = impl_from_ID2D1GeometryGroup(iface);
+
+    TRACE("iface %p, stroke_width %.8e, stroke_style %p, transform %p, tolerance %.8e, sink %p.\n",
             iface, stroke_width, stroke_style, transform, tolerance, sink);
 
-    return E_NOTIMPL;
+    return ID2D1PathGeometry_Widen(geometry->u.group.path, stroke_width, stroke_style, transform,
+            tolerance, sink);
 }
 
 static D2D1_FILL_MODE STDMETHODCALLTYPE d2d_geometry_group_GetFillMode(ID2D1GeometryGroup *iface)
