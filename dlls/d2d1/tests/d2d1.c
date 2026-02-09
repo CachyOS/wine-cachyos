@@ -11483,7 +11483,6 @@ static void test_geometry_group(BOOL d3d11)
     hr = ID2D1GeometryGroup_GetBounds(group, NULL, &rect);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
     match = compare_rect(&rect, INFINITY, INFINITY, FLT_MAX, FLT_MAX, 0);
-    todo_wine
     ok(match, "Got unexpected rectangle {%.8e, %.8e, %.8e, %.8e}.\n",
             rect.left, rect.top, rect.right, rect.bottom);
 
@@ -11502,7 +11501,6 @@ static void test_geometry_group(BOOL d3d11)
     hr = ID2D1GeometryGroup_GetBounds(group, NULL, &rect);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
     match = compare_rect(&rect, INFINITY, INFINITY, FLT_MAX, FLT_MAX, 0);
-    todo_wine
     ok(match, "Got unexpected rectangle {%.8e, %.8e, %.8e, %.8e}.\n",
             rect.left, rect.top, rect.right, rect.bottom);
 
@@ -17915,7 +17913,7 @@ START_TEST(d2d1)
     queue_test(test_wic_bitmap_format);
     queue_d3d10_test(test_math);
     queue_d3d10_test(test_colour_space);
-    queue_test(test_geometry_group);
+    queue_d3d10_test(test_geometry_group);
     queue_test(test_mt_factory);
     queue_d3d10_test(test_effect_register);
     queue_test(test_effect_context);
