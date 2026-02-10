@@ -4726,6 +4726,14 @@ static void test_path_geometry(BOOL d3d11)
     /* ComputeArea */
     hr = ID2D1Factory_CreatePathGeometry(factory, &geometry);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+
+    area = 123.0f;
+    hr = ID2D1PathGeometry_ComputeArea(geometry, NULL, 1.0f, &area);
+    todo_wine
+    ok(hr == D2DERR_WRONG_STATE, "Got unexpected hr %#lx.\n", hr);
+    todo_wine
+    ok(area == 123.0f, "Unexpected area value %.8e.\n", area);
+
     hr = ID2D1PathGeometry_Open(geometry, &sink);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
 
@@ -17707,6 +17715,21 @@ static void test_transformed_geometry(BOOL d3d11)
     hr = ID2D1TransformedGeometry_ComputeArea(geometry2, NULL, 0.0f, &area);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
     ok(area > 0.0f, "Unexpected value %.8e.\n", area);
+
+    set_rect(&bounds, 1.0f, 2.0f, 3.0f, 4.0f);
+    hr = ID2D1TransformedGeometry_GetBounds(geometry, NULL, &bounds);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    match = compare_rect(&bounds, 240.0f, 720.0f, 250.0f, 730.0f, 0);
+    ok(match, "Got unexpected bounds {%.8e, %.8e, %.8e, %.8e}.\n",
+            bounds.left, bounds.top, bounds.right, bounds.bottom);
+
+    set_rect(&bounds, 1.0f, 2.0f, 3.0f, 4.0f);
+    hr = ID2D1TransformedGeometry_GetBounds(geometry2, NULL, &bounds);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    match = compare_rect(&bounds, 720.0f, 2160.0f, 730.0f, 2170.0f, 0);
+    todo_wine
+    ok(match, "Got unexpected bounds {%.8e, %.8e, %.8e, %.8e}.\n",
+            bounds.left, bounds.top, bounds.right, bounds.bottom);
 
     ID2D1TransformedGeometry_Release(geometry2);
     ID2D1TransformedGeometry_Release(geometry);
