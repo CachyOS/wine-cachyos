@@ -6079,7 +6079,7 @@ static HRESULT STDMETHODCALLTYPE d2d_transformed_geometry_GetBounds(ID2D1Transfo
 
     TRACE("iface %p, transform %p, bounds %p.\n", iface, transform, bounds);
 
-    g = geometry->transform;
+    g = geometry->u.transformed.transform;
     if (transform)
         d2d_matrix_multiply(&g, transform);
 
@@ -6106,7 +6106,7 @@ static HRESULT STDMETHODCALLTYPE d2d_transformed_geometry_StrokeContainsPoint(ID
     TRACE("iface %p, point %s, stroke_width %.8e, stroke_style %p, transform %p, tolerance %.8e, contains %p.\n",
             iface, debug_d2d_point_2f(&point), stroke_width, stroke_style, transform, tolerance, contains);
 
-    g = geometry->transform;
+    g = geometry->u.transformed.transform;
     stroke_width /= g.m11;
     if (transform)
         d2d_matrix_multiply(&g, transform);
@@ -6127,7 +6127,7 @@ static HRESULT STDMETHODCALLTYPE d2d_transformed_geometry_FillContainsPoint(ID2D
     TRACE("iface %p, point %s, transform %p, tolerance %.8e, contains %p.\n",
             iface, debug_d2d_point_2f(&point), transform, tolerance, contains);
 
-    g = geometry->transform;
+    g = geometry->u.transformed.transform;
     if (transform)
         d2d_matrix_multiply(&g, transform);
 
@@ -6153,7 +6153,7 @@ static HRESULT STDMETHODCALLTYPE d2d_transformed_geometry_Simplify(ID2D1Transfor
     TRACE("iface %p, option %#x, transform %p, tolerance %.8e, sink %p.\n",
             iface, option, transform, tolerance, sink);
 
-    g = geometry->transform;
+    g = geometry->u.transformed.transform;
     if (transform)
         d2d_matrix_multiply(&g, transform);
 
@@ -6168,7 +6168,7 @@ static HRESULT STDMETHODCALLTYPE d2d_transformed_geometry_Tessellate(ID2D1Transf
 
     TRACE("iface %p, transform %p, tolerance %.8e, sink %p.\n", iface, transform, tolerance, sink);
 
-    g = geometry->transform;
+    g = geometry->u.transformed.transform;
     if (transform)
         d2d_matrix_multiply(&g, transform);
 
@@ -6201,7 +6201,7 @@ static HRESULT STDMETHODCALLTYPE d2d_transformed_geometry_ComputeArea(ID2D1Trans
 
     TRACE("iface %p, transform %p, tolerance %.8e, area %p.\n", iface, transform, tolerance, area);
 
-    g = geometry->transform;
+    g = geometry->u.transformed.transform;
     if (transform)
         d2d_matrix_multiply(&g, transform);
 
