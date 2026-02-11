@@ -86,6 +86,17 @@ static const struct wl_seat_listener seat_listener =
     wl_seat_handle_name
 };
 
+static int wayland_disable_ssd(void)
+{
+    static int disabled = -1;
+    const char *env;
+
+    if (disabled == -1)
+        disabled = (env = getenv("WAYLANDDRV_SSD")) && !strcmp(env, "0");
+
+    return disabled;
+}
+
 /**********************************************************************
  *          Registry handling
  */
@@ -220,6 +231,20 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
     {
         process_wayland.wp_content_type_manager_v1 =
             wl_registry_bind(registry, id, &wp_content_type_manager_v1_interface, 1);
+    }
+    else if (strcmp(interface, "zxdg_decoration_manager_v1") == 0)
+    {
+        if (wayland_disable_ssd()) return;
+        if (version >= 2)
+        {
+            process_wayland.zxdg_decoration_manager_v1 =
+                wl_registry_bind(registry, id, &zxdg_decoration_manager_v1_interface, 2);
+        }
+        else if (WAYLAND_HasWindowManager("KDE"))
+        {
+            process_wayland.zxdg_decoration_manager_v1 =
+                wl_registry_bind(registry, id, &zxdg_decoration_manager_v1_interface, 1);
+        }
     }
 }
 
@@ -363,6 +388,9 @@ BOOL wayland_process_init(void)
 
     if (!process_wayland.wp_content_type_manager_v1)
         WARN("Wayland compositor doesn't support optional wp_content_type_manager_v1!\n");
+
+    if (!process_wayland.zxdg_decoration_manager_v1)
+        WARN("Wayland compositor doesn't support optional zxdg_decoration_manager_v1!\n");
 
     process_wayland.initialized = TRUE;
 

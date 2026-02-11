@@ -42,6 +42,7 @@
 #include "fractional-scale-v1-client-protocol.h"
 #include "xdg-toplevel-tag-v1-client-protocol.h"
 #include "content-type-v1-client-protocol.h"
+#include "xdg-decoration-unstable-v1-client-protocol.h"
 
 #include "windef.h"
 #include "winbase.h"
@@ -193,6 +194,7 @@ struct wayland
     struct wp_cursor_shape_manager_v1 *wp_cursor_shape_manager_v1;
     struct xdg_toplevel_tag_manager_v1 *xdg_toplevel_tag_manager_v1;
     struct wp_content_type_manager_v1 *wp_content_type_manager_v1;
+    struct zxdg_decoration_manager_v1 *zxdg_decoration_manager_v1;
     struct wayland_seat seat;
     struct wayland_keyboard keyboard;
     struct wayland_pointer pointer;
@@ -238,6 +240,7 @@ struct wayland_surface_config
 {
     int32_t width, height;
     enum wayland_surface_config_state state;
+    enum zxdg_toplevel_decoration_v1_mode decor;
     uint32_t serial;
     BOOL processed;
 };
@@ -245,6 +248,7 @@ struct wayland_surface_config
 struct wayland_window_config
 {
     RECT rect;
+    RECT window_rect;
     RECT client_rect;
     enum wayland_surface_config_state state;
     /* The scaling reported by the compositor */
@@ -297,6 +301,7 @@ struct wayland_surface
             struct xdg_surface *xdg_surface;
             struct xdg_toplevel *xdg_toplevel;
             struct xdg_toplevel_icon_v1 *xdg_toplevel_icon;
+            struct zxdg_toplevel_decoration_v1 *zxdg_toplevel_decoration_v1;
             struct wl_output *requested_output;
         };
         struct
@@ -334,7 +339,7 @@ struct wayland_output *wayland_output_for_rect(const RECT *rect);
 
 struct wayland_surface *wayland_surface_create(HWND hwnd);
 void wayland_surface_destroy(struct wayland_surface *surface);
-void wayland_surface_make_toplevel(struct wayland_surface *surface);
+void wayland_surface_make_toplevel(struct wayland_surface *surface, BOOL server_decor);
 void wayland_surface_make_subsurface(struct wayland_surface *surface,
                                      struct wayland_surface *parent);
 void wayland_surface_clear_role(struct wayland_surface *surface);
@@ -457,6 +462,17 @@ static inline LRESULT send_message(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lp
     return NtUserMessageCall(hwnd, msg, wparam, lparam, NULL, NtUserSendMessage, FALSE);
 }
 
+static inline BOOL is_decoration_enabled(DWORD style, DWORD ex_style)
+{
+    if (ex_style & WS_EX_TOOLWINDOW) return FALSE;
+    if (ex_style & WS_EX_LAYERED) return FALSE;
+
+    if ((style & WS_CAPTION) == WS_CAPTION)
+        return TRUE;
+
+    return FALSE;
+}
+
 RGNDATA *get_region_data(HRGN region);
 
 /**********************************************************************
@@ -482,6 +498,7 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UIN
                               const struct window_rects *new_rects, struct window_surface *surface);
 BOOL WAYLAND_WindowPosChanging(HWND hwnd, UINT swp_flags, BOOL shaped, const struct window_rects *rects);
 BOOL WAYLAND_CreateWindowSurface(HWND hwnd, BOOL layered, const RECT *surface_rect, struct window_surface **surface);
+BOOL WAYLAND_GetWindowStyleMasks(HWND hwnd,  UINT style, UINT ex_style, UINT *style_mask, UINT *ex_style_mask);
 BOOL WAYLAND_HasWindowManager(const char *name);
 UINT WAYLAND_VulkanInit(UINT version, void *vulkan_handle, const struct vulkan_driver_funcs **driver_funcs);
 UINT WAYLAND_OpenGLInit(UINT version, const struct opengl_funcs *opengl_funcs, const struct opengl_driver_funcs **driver_funcs);
