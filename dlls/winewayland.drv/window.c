@@ -139,7 +139,8 @@ static void wayland_win_data_get_config(struct wayland_win_data *data,
     enum wayland_surface_config_state window_state = 0;
     DWORD style;
 
-    conf->rect = data->rects.window;
+    conf->rect = data->rects.visible;
+    conf->window_rect = data->rects.window;
     conf->client_rect = data->rects.client;
     style = NtUserGetWindowLongW(data->hwnd, GWL_STYLE);
 
@@ -176,13 +177,14 @@ static BOOL wayland_win_data_create_wayland_surface(struct wayland_win_data *dat
 {
     struct wayland_surface *surface;
     enum wayland_surface_role role;
-    BOOL visible;
+    BOOL visible, server_decor = FALSE;
     DWORD exstyle = NtUserGetWindowLongW(data->hwnd, GWL_EXSTYLE);
+    DWORD style = NtUserGetWindowLongW(data->hwnd, GWL_STYLE);
     struct wl_region *input_region;
 
     TRACE("hwnd=%p\n", data->hwnd);
 
-    visible = ((NtUserGetWindowLongW(data->hwnd, GWL_STYLE) & WS_VISIBLE) == WS_VISIBLE) &&
+    visible = ((style & WS_VISIBLE) == WS_VISIBLE) &&
                (!(exstyle & WS_EX_LAYERED) || data->layered_attribs_set);
 
     if (!visible) role = WAYLAND_SURFACE_ROLE_NONE;
@@ -212,6 +214,12 @@ static BOOL wayland_win_data_create_wayland_surface(struct wayland_win_data *dat
 
     surface->ensured_contents = WAYLAND_SURFACE_NOT_ENSURED;
 
+    if (!EqualRect(&data->rects.visible, &data->rects.window)
+        && is_decoration_enabled(style, exstyle))
+    {
+        server_decor = TRUE;
+    }
+
     wayland_win_data_get_config(data, &surface->window);
 
     /* If the window is a visible toplevel make it a wayland
@@ -226,7 +234,7 @@ static BOOL wayland_win_data_create_wayland_surface(struct wayland_win_data *dat
         wayland_surface_make_popup(surface, owner_surface);
         break;
     case WAYLAND_SURFACE_ROLE_TOPLEVEL:
-        wayland_surface_make_toplevel(surface);
+        wayland_surface_make_toplevel(surface, server_decor);
         break;
     }
 
@@ -514,7 +522,7 @@ static void wayland_configure_window(HWND hwnd)
 
     if (!surface->requested.serial)
     {
-        TRACE("requested configure event already handled, returning\n");
+        TRACE("hwnd=%p requested configure event already handled, returning\n", hwnd);
         wayland_win_data_release(data);
         return;
     }
@@ -560,6 +568,11 @@ static void wayland_configure_window(HWND hwnd)
     {
         flags |= SWP_FRAMECHANGED;
     }
+    /* Transitions between decoration modes may entail a frame change. */
+    else if (surface->processing.decor != surface->current.decor)
+    {
+        flags |= SWP_FRAMECHANGED;
+    }
 
     surface_rect = map_rect_to_surface(surface, surface->window.rect);
 
@@ -577,16 +590,17 @@ static void wayland_configure_window(HWND hwnd)
     SetRect(&rect, 0, 0, width, height);
     rect = map_rect_from_surface(surface, rect);
     OffsetRect(&rect, data->rects.window.left, data->rects.window.top);
+    if (!IsRectEmpty(&rect)) rect = window_rect_from_visible(&data->rects, rect);
 
     wayland_win_data_release(data);
 
-    TRACE("processing=%dx%d,%#x\n", width, height, state);
+    TRACE("hwnd=%p processing=%s,%#x\n", hwnd, wine_dbgstr_rect(&rect), state);
 
     if (needs_enter_size_move) send_message(hwnd, WM_ENTERSIZEMOVE, 0, 0);
     if (needs_exit_size_move) send_message(hwnd, WM_EXITSIZEMOVE, 0, 0);
 
     flags |= SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOMOVE;
-    if (rect.left == rect.right || rect.bottom == rect.top) flags |= SWP_NOSIZE;
+    if (IsRectEmpty(&rect)) flags |= SWP_NOSIZE;
 
     style = NtUserGetWindowLongW(hwnd, GWL_STYLE);
     if (!(state & WAYLAND_SURFACE_CONFIG_STATE_MAXIMIZED) != !(style & WS_MAXIMIZE)
@@ -817,6 +831,41 @@ BOOL WAYLAND_HasWindowManager(const char *name)
     if (env && !strcmp(env, name)) return TRUE;
 
     return FALSE;
+}
+
+/***********************************************************************
+ *           WAYLAND_GetWindowStyleMasks
+ */
+BOOL WAYLAND_GetWindowStyleMasks(HWND hwnd, UINT style, UINT ex_style, UINT *style_mask, UINT *ex_style_mask)
+{
+    BOOL ret = TRUE;
+    struct wayland_win_data *data;
+    struct wayland_surface *surface;
+
+    TRACE("%p %x %x %p %p\n", hwnd, style, ex_style, style_mask, ex_style_mask);
+
+    *style_mask = *ex_style_mask = 0;
+
+    if (!process_wayland.zxdg_decoration_manager_v1) return FALSE;
+
+    if (!(data = wayland_win_data_get(hwnd))) return FALSE;
+
+    if ((surface = data->wayland_surface) && wayland_surface_is_toplevel(surface))
+    {
+        if (!data->managed) ret = FALSE;
+        else if (surface->current.decor == ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE)
+            ret = FALSE;
+    }
+
+    wayland_win_data_release(data);
+
+    if (ret && (ret = is_decoration_enabled(style, ex_style)))
+    {
+        *style_mask |= WS_CAPTION | WS_DLGFRAME | WS_THICKFRAME;
+        *ex_style_mask |= WS_EX_DLGMODALFRAME;
+    }
+
+    return ret;
 }
 
 void set_client_surface(HWND hwnd, struct wayland_client_surface *new_client)
