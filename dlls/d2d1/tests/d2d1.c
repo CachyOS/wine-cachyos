@@ -17709,12 +17709,12 @@ static void test_transformed_geometry(BOOL d3d11)
     area = 0.0f;
     hr = ID2D1TransformedGeometry_ComputeArea(geometry, NULL, 0.0f, &area);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
-    ok(area > 0.0f, "Unexpected value %.8e.\n", area);
+    ok(compare_float(area, 50.0f, 0), "Unexpected value %.8e.\n", area);
 
     area = 0.0f;
     hr = ID2D1TransformedGeometry_ComputeArea(geometry2, NULL, 0.0f, &area);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
-    ok(area > 0.0f, "Unexpected value %.8e.\n", area);
+    ok(compare_float(area, 50.0f, 0), "Unexpected value %.8e.\n", area);
 
     set_rect(&bounds, 1.0f, 2.0f, 3.0f, 4.0f);
     hr = ID2D1TransformedGeometry_GetBounds(geometry, NULL, &bounds);
@@ -17727,7 +17727,6 @@ static void test_transformed_geometry(BOOL d3d11)
     hr = ID2D1TransformedGeometry_GetBounds(geometry2, NULL, &bounds);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
     match = compare_rect(&bounds, 720.0f, 2160.0f, 730.0f, 2170.0f, 0);
-    todo_wine
     ok(match, "Got unexpected bounds {%.8e, %.8e, %.8e, %.8e}.\n",
             bounds.left, bounds.top, bounds.right, bounds.bottom);
 
