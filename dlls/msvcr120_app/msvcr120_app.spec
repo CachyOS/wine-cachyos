@@ -1586,7 +1586,7 @@
 @ cdecl _wcstof_l(wstr ptr ptr) msvcr120._wcstof_l
 @ cdecl -ret64 _wcstoi64(wstr ptr long) msvcr120._wcstoi64
 @ cdecl -ret64 _wcstoi64_l(wstr ptr long ptr) msvcr120._wcstoi64_l
-@ stub _wcstoimax_l
+@ cdecl -ret64 _wcstoimax_l(wstr ptr long ptr) msvcr120._wcstoimax_l
 @ cdecl _wcstol_l(wstr ptr long ptr) msvcr120._wcstol_l
 @ cdecl _wcstold_l(wstr ptr ptr) msvcr120._wcstold_l
 @ cdecl -ret64 _wcstoll_l(wstr ptr long ptr) msvcr120._wcstoll_l
@@ -1596,7 +1596,7 @@
 @ cdecl -ret64 _wcstoui64_l(wstr ptr long ptr) msvcr120._wcstoui64_l
 @ cdecl _wcstoul_l(wstr ptr long ptr) msvcr120._wcstoul_l
 @ cdecl -ret64 _wcstoull_l(wstr ptr long ptr) msvcr120._wcstoull_l
-@ stub _wcstoumax_l
+@ cdecl -ret64 _wcstoumax_l(wstr ptr long ptr) msvcr120._wcstoumax_l
 @ cdecl _wcsupr(wstr) msvcr120._wcsupr
 @ cdecl _wcsupr_l(wstr ptr) msvcr120._wcsupr_l
 @ cdecl _wcsupr_s(wstr long) msvcr120._wcsupr_s
@@ -2135,7 +2135,7 @@
 @ cdecl wcsstr(wstr wstr) msvcr120.wcsstr
 @ cdecl wcstod(wstr ptr) msvcr120.wcstod
 @ cdecl wcstof(ptr ptr) msvcr120.wcstof
-@ stub wcstoimax
+@ cdecl -ret64 wcstoimax(wstr ptr long) msvcr120.wcstoimax
 @ cdecl wcstok(wstr wstr) msvcr120.wcstok
 @ cdecl wcstok_s(ptr wstr ptr) msvcr120.wcstok_s
 @ cdecl wcstol(wstr ptr long) msvcr120.wcstol
@@ -2145,7 +2145,7 @@
 @ cdecl wcstombs_s(ptr ptr long wstr long) msvcr120.wcstombs_s
 @ cdecl wcstoul(wstr ptr long) msvcr120.wcstoul
 @ cdecl -ret64 wcstoull(wstr ptr long) msvcr120.wcstoull
-@ stub wcstoumax
+@ cdecl -ret64 wcstoumax(wstr ptr long) msvcr120.wcstoumax
 @ cdecl wcsxfrm(ptr wstr long) msvcr120.wcsxfrm
 @ cdecl wctob(long) msvcr120.wctob
 @ cdecl wctomb(ptr long) msvcr120.wctomb
