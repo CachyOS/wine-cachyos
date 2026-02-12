@@ -1892,7 +1892,7 @@
 @ cdecl _wcstof_l(wstr ptr ptr)
 @ cdecl -ret64 _wcstoi64(wstr ptr long)
 @ cdecl -ret64 _wcstoi64_l(wstr ptr long ptr)
-@ stub _wcstoimax_l
+@ cdecl -ret64 _wcstoimax_l(wstr ptr long ptr) _wcstoi64_l
 @ cdecl _wcstol_l(wstr ptr long ptr)
 @ cdecl _wcstold_l(wstr ptr ptr) _wcstod_l
 @ cdecl -ret64 _wcstoll_l(wstr ptr long ptr) _wcstoi64_l
@@ -1902,7 +1902,7 @@
 @ cdecl -ret64 _wcstoui64_l(wstr ptr long ptr)
 @ cdecl _wcstoul_l(wstr ptr long ptr)
 @ cdecl -ret64 _wcstoull_l(wstr ptr long ptr) _wcstoui64_l
-@ stub _wcstoumax_l
+@ cdecl -ret64 _wcstoumax_l(wstr ptr long ptr) _wcstoui64_l
 @ cdecl _wcsupr(wstr)
 @ cdecl _wcsupr_l(wstr ptr)
 @ cdecl _wcsupr_s(wstr long)
@@ -2472,7 +2472,7 @@
 @ cdecl wcsstr(wstr wstr)
 @ cdecl wcstod(wstr ptr)
 @ cdecl wcstof(ptr ptr)
-@ stub wcstoimax
+@ cdecl -ret64 wcstoimax(wstr ptr long) _wcstoi64
 @ cdecl wcstok(wstr wstr)
 @ cdecl wcstok_s(ptr wstr ptr)
 @ cdecl wcstol(wstr ptr long)
@@ -2482,7 +2482,7 @@
 @ cdecl wcstombs_s(ptr ptr long wstr long)
 @ cdecl wcstoul(wstr ptr long)
 @ cdecl -ret64 wcstoull(wstr ptr long) _wcstoui64
-@ stub wcstoumax
+@ cdecl -ret64 wcstoumax(wstr ptr long) _wcstoui64
 @ cdecl wcsxfrm(ptr wstr long)
 @ cdecl wctob(long)
 @ cdecl wctomb(ptr long)
