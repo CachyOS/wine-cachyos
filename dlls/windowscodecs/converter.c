@@ -1535,8 +1535,44 @@ static HRESULT copypixels_to_24bppBGR(struct FormatConverter *This, const WICRec
         return S_OK;
 
     default:
-        FIXME("Unimplemented conversion path! (%d)\n", source_format);
-        return WINCODEC_ERR_UNSUPPORTEDOPERATION;
+    {
+        UINT srcstride, srcdatasize;
+        const BYTE *srcpixel, *srcrow;
+        BYTE *dstpixel, *srcdata, *dstrow;
+        INT x, y;
+
+        if (!prc)
+            return copypixels_to_32bppBGRA(This, NULL, 0, 0, NULL, source_format);
+
+        srcstride = 4 * prc->Width;
+        srcdatasize = srcstride * prc->Height;
+
+        srcdata = malloc(srcdatasize);
+        if (!srcdata) return E_OUTOFMEMORY;
+
+        hr = copypixels_to_32bppBGRA(This, prc, srcstride, srcdatasize, srcdata, source_format);
+        if (SUCCEEDED(hr))
+        {
+            srcrow = srcdata;
+            dstrow = pbBuffer;
+            for (y = 0; y < prc->Height; y++)
+            {
+                srcpixel = srcrow;
+                dstpixel = dstrow;
+                for (x = 0; x < prc->Width; x++)
+                {
+                    *dstpixel++ = *srcpixel++;
+                    *dstpixel++ = *srcpixel++;
+                    *dstpixel++ = *srcpixel++;
+                    srcpixel++;
+                }
+                srcrow += srcstride;
+                dstrow += cbStride;
+            }
+        }
+        free(srcdata);
+        return hr;
+    }
     }
 }
 
