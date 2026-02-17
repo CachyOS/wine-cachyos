@@ -12,6 +12,7 @@ SOURCES = \
 	lib/builtins/divmodsi4.c \
 	lib/builtins/divsi3.c \
 	lib/builtins/divti3.c \
+	lib/builtins/emutls.c \
 	lib/builtins/fixdfdi.c \
 	lib/builtins/fixsfdi.c \
 	lib/builtins/fixunsdfdi.c \
