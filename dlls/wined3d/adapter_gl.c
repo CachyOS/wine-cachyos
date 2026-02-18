@@ -3978,7 +3978,6 @@ static void wined3d_adapter_init_fb_cfgs(struct wined3d_adapter_gl *adapter_gl, 
             if (!GL_EXTCALL(wglGetPixelFormatAttribivARB(dc, format_id, 0, attrib_count, attribs, values)))
                 continue;
 
-            cfg->iPixelFormat = format_id;
             cfg->redSize = values[0];
             cfg->greenSize = values[1];
             cfg->blueSize = values[2];
@@ -4011,7 +4010,7 @@ static void wined3d_adapter_init_fb_cfgs(struct wined3d_adapter_gl *adapter_gl, 
 
             TRACE("iPixelFormat=%d, iPixelType=%#x, doubleBuffer=%d, RGBA=%d/%d/%d/%d, "
                     "depth=%d, stencil=%d, samples=%d, windowDrawable=%d\n",
-                    cfg->iPixelFormat, cfg->iPixelType, cfg->doubleBuffer,
+                    format_id, cfg->iPixelType, cfg->doubleBuffer,
                     cfg->redSize, cfg->greenSize, cfg->blueSize, cfg->alphaSize,
                     cfg->depthSize, cfg->stencilSize, cfg->numSamples, cfg->windowDrawable);
 
@@ -4044,7 +4043,6 @@ static void wined3d_adapter_init_fb_cfgs(struct wined3d_adapter_gl *adapter_gl, 
                 continue;
             }
 
-            cfg->iPixelFormat = format_id;
             cfg->redSize = pfd.cRedBits;
             cfg->greenSize = pfd.cGreenBits;
             cfg->blueSize = pfd.cBlueBits;
@@ -4061,7 +4059,7 @@ static void wined3d_adapter_init_fb_cfgs(struct wined3d_adapter_gl *adapter_gl, 
 
             TRACE("iPixelFormat=%d, iPixelType=%#x, doubleBuffer=%d, RGBA=%d/%d/%d/%d, "
                     "depth=%d, stencil=%d, windowDrawable=%d\n",
-                    cfg->iPixelFormat, cfg->iPixelType, cfg->doubleBuffer,
+                    format_id, cfg->iPixelType, cfg->doubleBuffer,
                     cfg->redSize, cfg->greenSize, cfg->blueSize, cfg->alphaSize,
                     cfg->depthSize, cfg->stencilSize, cfg->windowDrawable);
 
