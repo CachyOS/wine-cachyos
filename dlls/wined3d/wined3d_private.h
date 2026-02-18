@@ -2072,7 +2072,6 @@ extern const struct wined3d_light WINED3D_default_light;
 
 struct wined3d_pixel_format
 {
-    int iPixelFormat; /* WGL pixel format */
     int iPixelType; /* WGL pixel type e.g. WGL_TYPE_RGBA_ARB, WGL_TYPE_RGBA_FLOAT_ARB or WGL_TYPE_COLORINDEX_ARB */
     int redSize, greenSize, blueSize, alphaSize, colorSize;
     int depthSize, stencilSize;
