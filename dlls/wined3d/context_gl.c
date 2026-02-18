@@ -1700,7 +1700,7 @@ static int context_choose_pixel_format(const struct wined3d_device *device, HDC 
 
         if (value > current_value)
         {
-            iPixelFormat = cfg->iPixelFormat;
+            iPixelFormat = i + 1;
             current_value = value;
         }
     }
