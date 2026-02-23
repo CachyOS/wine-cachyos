@@ -2546,7 +2546,6 @@ static void test_color_brush(BOOL d3d11)
 
     get_surface_readback(&ctx, &rb);
     colour = get_readback_colour(&rb, 0, 0);
-    todo_wine
     ok(compare_colour(colour, 0xff7f0000, 1), "Got unexpected colour 0x%08lx.\n", colour);
     colour = get_readback_colour(&rb, 1, 0);
     ok(compare_colour(colour, 0xff010000, 1), "Got unexpected colour 0x%08lx.\n", colour);
@@ -2972,7 +2971,6 @@ static void test_bitmap_brush(BOOL d3d11)
 
     get_surface_readback(&ctx, &rb);
     colour = get_readback_colour(&rb, 0, 0);
-    todo_wine
     ok(compare_colour(colour, 0xff7f0000, 1), "Got unexpected colour 0x%08lx.\n", colour);
     colour = get_readback_colour(&rb, 1, 0);
     ok(compare_colour(colour, 0xff010000, 1), "Got unexpected colour 0x%08lx.\n", colour);
@@ -2993,7 +2991,6 @@ static void test_bitmap_brush(BOOL d3d11)
 
     get_surface_readback(&ctx, &rb);
     colour = get_readback_colour(&rb, 0, 0);
-    todo_wine
     ok(compare_colour(colour, 0xff7f0000, 1), "Got unexpected colour 0x%08lx.\n", colour);
     colour = get_readback_colour(&rb, 1, 0);
     ok(compare_colour(colour, 0xff010000, 1), "Got unexpected colour 0x%08lx.\n", colour);
@@ -3023,7 +3020,6 @@ static void test_bitmap_brush(BOOL d3d11)
 
     get_surface_readback(&ctx, &rb);
     colour = get_readback_colour(&rb, 0, 0);
-    todo_wine
     ok(compare_colour(colour, 0xff7f0000, 1), "Got unexpected colour 0x%08lx.\n", colour);
     colour = get_readback_colour(&rb, 1, 0);
     ok(compare_colour(colour, 0xff010000, 1), "Got unexpected colour 0x%08lx.\n", colour);
