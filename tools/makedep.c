@@ -2333,8 +2333,7 @@ static struct strarray get_default_imports( const struct makefile *make, struct 
 
     if (nodefaultlibs)
     {
-        STRARRAY_FOR_EACH( imp, &imports ) if (!strcmp( imp, "winecrt0" )) return ret;
-        strarray_add( &ret, "winecrt0" );
+        if (!strarray_exists( ret, "winecrt0" )) strarray_add( &ret, "winecrt0" );
         if (compiler_rt) strarray_add( &ret, compiler_rt );
         return ret;
     }
