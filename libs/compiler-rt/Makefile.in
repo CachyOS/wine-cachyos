@@ -1,6 +1,7 @@
 EXTLIB    = libcompiler-rt.a
 
 SOURCES = \
+	lib/builtins/aarch64/chkstk.S \
 	lib/builtins/arm/aeabi_idivmod.S \
 	lib/builtins/arm/aeabi_ldivmod.S \
 	lib/builtins/arm/aeabi_uidivmod.S \
