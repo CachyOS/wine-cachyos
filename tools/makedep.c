@@ -157,7 +157,6 @@ static const char *ln_s;
 static const char *sed_cmd;
 static const char *wayland_scanner;
 static const char *sarif_converter;
-static const char *compiler_rt;
 static const char *buildimage;
 static const char *runtest;
 static const char *install;
@@ -2334,14 +2333,14 @@ static struct strarray get_default_imports( const struct makefile *make, struct 
     if (nodefaultlibs)
     {
         if (!strarray_exists( ret, "winecrt0" )) strarray_add( &ret, "winecrt0" );
-        if (compiler_rt) strarray_add( &ret, compiler_rt );
+        if (archs.count > 1) strarray_add( &ret, "compiler-rt" );
         return ret;
     }
 
     STRARRAY_FOR_EACH( imp, &imports ) if (is_crt_module( imp )) crt_dll = imp;
 
     strarray_add( &ret, "winecrt0" );
-    if (compiler_rt) strarray_add( &ret, compiler_rt );
+    if (archs.count > 1) strarray_add( &ret, "compiler-rt" );
     if (crt_dll) strarray_add( &ret, crt_dll );
 
     if (make->is_win16 && (!make->importlib || strcmp( make->importlib, "kernel" )))
@@ -4849,7 +4848,6 @@ int main( int argc, char *argv[] )
     ln_s               = get_expanded_make_variable( top_makefile, "LN_S" );
     wayland_scanner    = get_expanded_make_variable( top_makefile, "WAYLAND_SCANNER" );
     sarif_converter    = get_expanded_make_variable( top_makefile, "SARIF_CONVERTER" );
-    compiler_rt        = get_expanded_make_variable( top_makefile, "COMPILER_RT_PE_LIBS" );
 
     if (root_src_dir && !strcmp( root_src_dir, "." )) root_src_dir = NULL;
     if (tools_dir && !strcmp( tools_dir, "." )) tools_dir = NULL;

@@ -550,10 +550,6 @@ This is an error since --enable-archs=$wine_arch was requested.])])
 
     AS_VAR_IF([wine_arch],[$extra_arch],[],[AS_VAR_APPEND([PE_ARCHS],[" $wine_arch"])])
 
-    case "$target" in
-      *-windows) wine_compiler_rt_libs="compiler-rt" ;;
-    esac
-
     AS_VAR_IF([res],[no],[AS_VAR_SET([${wine_arch}_CXX],[])],
               [case "$target" in
                  *mingw*|*-windows-gnu) enable_cppabi="$enable_cppabi,$wine_arch" ;;
@@ -1236,7 +1232,6 @@ then
 fi
 
 WINE_EXTLIB_FLAGS(CAPSTONE, capstone, capstone, "-I\$(top_srcdir)/libs/capstone/include")
-WINE_EXTLIB_FLAGS(COMPILER_RT, compiler-rt, "$wine_compiler_rt_libs")
 WINE_EXTLIB_FLAGS(CXX, c++, "c++ \$(CXXABI_PE_LIBS) msvcp140 vcruntime140")
 WINE_EXTLIB_FLAGS(CXXABI, c++abi, "c++abi \$(UNWIND_PE_LIBS) c++", "-I\$(top_srcdir)/libs/c++abi/include")
 WINE_EXTLIB_FLAGS(FAUDIO, faudio, "faudio mfplat mfreadwrite mfuuid propsys", "-I\$(top_srcdir)/libs/faudio/include")
@@ -3791,7 +3786,7 @@ WINE_CONFIG_MAKEFILE(tools/wmc)
 WINE_CONFIG_MAKEFILE(tools/wrc)
 dnl End of auto-generated output commands
 
-dnl Main ignore file
+WINE_EXTERNAL(libs/compiler-rt)
 
 WINE_IGNORE_FILE(TAGS)
 WINE_IGNORE_FILE(tags)
