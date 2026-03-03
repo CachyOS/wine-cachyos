@@ -4756,6 +4756,13 @@ NTSTATUS WINAPI KeCapturePersistentThreadState(CONTEXT *context, PKTHREAD thread
     return STATUS_NOT_IMPLEMENTED;
 }
 
+NTSTATUS WINAPI KdChangeOption(ULONG option, ULONG in_size, PVOID in_buffer,
+                               ULONG out_size, PVOID out_buffer, PULONG ret_size)
+{
+    FIXME( "stub: %lu %lu %p %lu %p %p\n", option, in_size, in_buffer, out_size, out_buffer, ret_size );
+    return STATUS_DEBUGGER_INACTIVE;
+}
+
 NTSTATUS WINAPI KdDisableDebugger(void)
 {
     FIXME(": stub.\n");
