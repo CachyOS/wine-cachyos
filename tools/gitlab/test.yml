@@ -62,7 +62,7 @@
 test-linux-64:
   extends: .wine-test
   variables:
-    INCLUDE_TESTS: "dinput ntoskrnl.exe"
+    INCLUDE_TESTS: "dinput ntdll ntoskrnl.exe"
   rules:
     - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
   needs:
