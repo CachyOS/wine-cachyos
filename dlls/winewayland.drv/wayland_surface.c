@@ -1503,7 +1503,7 @@ static const struct wl_buffer_listener dummy_buffer_listener =
 void wayland_surface_ensure_contents(struct wayland_surface *surface)
 {
     struct wayland_shm_buffer *dummy_shm_buffer;
-    HRGN damage;
+    HRGN damage = NULL;
     int width, height;
     BOOL needs_contents;
 
@@ -1518,27 +1518,23 @@ void wayland_surface_ensure_contents(struct wayland_surface *surface)
 
     if (!needs_contents) return;
 
-    /* Create a transparent dummy buffer. */
-    dummy_shm_buffer = wayland_shm_buffer_create(width, height, WL_SHM_FORMAT_ARGB8888);
-    if (!dummy_shm_buffer)
-    {
-        ERR("Failed to create dummy buffer\n");
-        return;
-    }
-    wl_buffer_add_listener(dummy_shm_buffer->wl_buffer, &dummy_buffer_listener,
-                           dummy_shm_buffer);
-
-    if (!(damage = NtGdiCreateRectRgn(0, 0, width, height)))
-        WARN("Failed to create damage region for dummy buffer\n");
-
     if (wayland_surface_reconfigure(surface))
     {
+        /* Create a transparent dummy buffer. */
+        dummy_shm_buffer = wayland_shm_buffer_create(width, height, WL_SHM_FORMAT_ARGB8888);
+        if (!dummy_shm_buffer)
+        {
+            ERR("Failed to create dummy buffer\n");
+            return;
+        }
+        wl_buffer_add_listener(dummy_shm_buffer->wl_buffer, &dummy_buffer_listener,
+                               dummy_shm_buffer);
+
+        if (!(damage = NtGdiCreateRectRgn(0, 0, width, height)))
+            WARN("Failed to create damage region for dummy buffer\n");
+
         wayland_surface_attach_shm(surface, dummy_shm_buffer, damage);
         wl_surface_commit(surface->wl_surface);
-    }
-    else
-    {
-        wayland_shm_buffer_unref(dummy_shm_buffer);
     }
 
     if (damage) NtGdiDeleteObjectApp(damage);
