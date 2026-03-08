@@ -2684,7 +2684,7 @@ void toggle_caret( HWND hwnd )
 BOOL WINAPI NtUserEnableMouseInPointer( BOOL enable )
 {
     FIXME( "enable %u semi-stub!\n", enable );
-    enable_mouse_in_pointer = TRUE;
+    enable_mouse_in_pointer = enable;
     return TRUE;
 }
 
