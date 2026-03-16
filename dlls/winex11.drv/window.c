@@ -1236,6 +1236,10 @@ static void set_initial_wm_hints( Display *display, Window window )
         const char *app_id = getenv("SteamAppId");
         char proton_app_class[128];
 
+        if(!app_id || !*app_id) {
+            app_id = getenv("WINE_WMCLASS");
+        }
+
         if(app_id && *app_id){
             snprintf(proton_app_class, sizeof(proton_app_class), "steam_app_%s", app_id);
             class_hints->res_name = proton_app_class;
