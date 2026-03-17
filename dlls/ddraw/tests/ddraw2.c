@@ -15431,7 +15431,10 @@ static void test_caps(void)
         {
             .dwSize = sizeof(DDSURFACEDESC),
             .dwFlags = DDSD_CAPS | DDSD_ZBUFFERBITDEPTH | DDSD_WIDTH | DDSD_HEIGHT,
-            .ddsCaps.dwCaps = DDSCAPS_ZBUFFER,
+            .ddsCaps =
+            {
+                .dwCaps = DDSCAPS_ZBUFFER,
+            },
             .dwZBufferBitDepth = depth_caps[i].depth,
             .dwWidth = 64,
             .dwHeight = 64,
@@ -15524,7 +15527,10 @@ static void test_caps(void)
             {
                 .dwSize = sizeof(DDSURFACEDESC),
                 .dwFlags = DDSD_CAPS | DDSD_ZBUFFERBITDEPTH | DDSD_WIDTH | DDSD_HEIGHT,
-                .ddsCaps.dwCaps = DDSCAPS_ZBUFFER,
+                .ddsCaps =
+                {
+                    .dwCaps = DDSCAPS_ZBUFFER,
+                },
                 .dwZBufferBitDepth = depth_caps[i].depth,
                 .dwWidth = 64,
                 .dwHeight = 64,
