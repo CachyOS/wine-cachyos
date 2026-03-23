@@ -1132,6 +1132,21 @@ void *get_wow_context( CONTEXT *context )
     return get_cpu_area( IMAGE_FILE_MACHINE_I386 );
 }
 
+void deferred_sigusr1(void);
+
+static inline void block_sigusr1(void)
+{
+    amd64_thread_data()->sigusr1_blocked++;
+}
+
+static inline void unblock_sigusr1(void)
+{
+    if (!--(amd64_thread_data()->sigusr1_blocked) &&
+        amd64_thread_data()->sigusr1_pending)
+    {
+        deferred_sigusr1();
+    }
+}
 
 /***********************************************************************
  *              NtSetContextThread  (NTDLL.@)
@@ -1159,6 +1174,7 @@ NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
     else flags &= ~CONTEXT_XSTATE;
 
     /* debug registers require a server call */
+    block_sigusr1();
     if (self && (flags & CONTEXT_DEBUG_REGISTERS))
         self = (amd64_thread_data()->dr0 == context->Dr0 &&
                 amd64_thread_data()->dr1 == context->Dr1 &&
@@ -1232,6 +1248,7 @@ NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
     }
 
     frame->restore_flags |= flags & ~CONTEXT_INTEGER;
+    unblock_sigusr1();
     return STATUS_SUCCESS;
 }
 
@@ -1260,6 +1277,7 @@ NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
         if (ret || !self) return ret;
     }
 
+    block_sigusr1();
     if (needed_flags & CONTEXT_INTEGER)
     {
         context->Rax = frame->rax;
@@ -1338,8 +1356,10 @@ NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
         UINT64 mask;
 
         if (context_ex->XState.Length < sizeof(XSAVE_AREA_HEADER) ||
-            context_ex->XState.Length > xstate_size)
+            context_ex->XState.Length > xstate_size) {
+            unblock_sigusr1();
             return STATUS_INVALID_PARAMETER;
+        }
 
         if (user_shared_data->XState.CompactionEnabled)
         {
@@ -1357,8 +1377,10 @@ NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
         memset( xstate->Reserved2, 0, sizeof(xstate->Reserved2) );
         if (xstate->Mask)
         {
-            if (context_ex->XState.Length < xstate_get_size( xstate->CompactionMask, xstate->Mask ))
+            if (context_ex->XState.Length < xstate_get_size( xstate->CompactionMask, xstate->Mask )) {
+                unblock_sigusr1();
                 return STATUS_BUFFER_OVERFLOW;
+            }
             copy_xstate( xstate, &frame->xstate, xstate->Mask );
             /* copy_xstate may use avx in memcpy, restore xstate not to break the tests. */
             frame->restore_flags |= CONTEXT_XSTATE;
@@ -1386,6 +1408,7 @@ NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
             amd64_thread_data()->dr7 = context->Dr7;
         }
     }
+    unblock_sigusr1();
     set_context_exception_reporting_flags( &context->ContextFlags, CONTEXT_SERVICE_ACTIVE );
     return STATUS_SUCCESS;
 }
