@@ -164,8 +164,14 @@ static void wayland_win_data_get_config(struct wayland_win_data *data,
 
     TRACE("window=%s style=%#x\n", wine_dbgstr_rect(&conf->rect), style);
 
+    conf->minimized = FALSE;
+
+    if (style & WS_MINIMIZE)
+    {
+        conf->minimized = TRUE;
+    }
     /* The fullscreen state is implied by the window position and style. */
-    if (data->is_fullscreen)
+    else if (data->is_fullscreen)
     {
         if ((style & WS_MAXIMIZE) && (style & WS_CAPTION) == WS_CAPTION)
             window_state |= WAYLAND_SURFACE_CONFIG_STATE_MAXIMIZED;
@@ -325,6 +331,10 @@ static void wayland_surface_update_state_toplevel(struct wayland_surface *surfac
 
             skip_fullscreen:
             pthread_mutex_unlock(&process_wayland.output_mutex);
+        }
+        if (surface->window.minimized)
+        {
+            xdg_toplevel_set_minimized(surface->xdg_toplevel);
         }
     }
     else
@@ -680,8 +690,21 @@ LRESULT WAYLAND_WindowMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         wayland_configure_window(hwnd);
         return 0;
     case WM_WAYLAND_SET_FOREGROUND:
-        NtUserSetForegroundWindowInternal(hwnd);
+    {
+        HWND focused;
+        pthread_mutex_lock(&process_wayland.keyboard.mutex);
+        focused = process_wayland.keyboard.focused_hwnd;
+        pthread_mutex_unlock(&process_wayland.keyboard.mutex);
+        /* if the focused hwnd is already == hwnd, this was a spurious leave event. */
+        if (wp && NtUserGetForegroundWindow() == hwnd && focused != hwnd)
+            NtUserSetForegroundWindowInternal(NtUserGetDesktopWindow());
+        /* the same applies here */
+        else if (!wp && focused == hwnd)
+            NtUserSetForegroundWindowInternal(hwnd);
+        else
+            WARN("Ignoring stale %s message\n", wp ? "focus loss" : "focus gain");
         return 0;
+    }
     default:
         FIXME("got window msg %x hwnd %p wp %lx lp %lx\n", msg, hwnd, (long)wp, lp);
         return 0;
