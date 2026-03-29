@@ -628,13 +628,6 @@ static void wayland_configure_window(HWND hwnd)
     offset_y = ((surface->window.rect.top - surface->window.window_rect.top) +
                 (surface->window.window_rect.bottom - surface->window.rect.bottom));
 
-    wayland_win_data_release(data);
-
-    TRACE("processing=%dx%d,%#x\n", width, height, state);
-
-    if (needs_enter_size_move) send_message(hwnd, WM_ENTERSIZEMOVE, 0, 0);
-    if (needs_exit_size_move) send_message(hwnd, WM_EXITSIZEMOVE, 0, 0);
-
     flags |= SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOMOVE;
     if (window_width == 0 || window_height == 0) flags |= SWP_NOSIZE;
     /* avoid any behavior differences when server side decorations is disabled */
@@ -643,6 +636,16 @@ static void wayland_configure_window(HWND hwnd)
         window_height += offset_y;
         window_width += offset_x;
     }
+
+    SetRect(&rect, 0, 0, window_width, window_height);
+    OffsetRect(&rect, data->rects.window.left, data->rects.window.top);
+
+    wayland_win_data_release(data);
+
+    TRACE("processing=%dx%d,%#x\n", width, height, state);
+
+    if (needs_enter_size_move) send_message(hwnd, WM_ENTERSIZEMOVE, 0, 0);
+    if (needs_exit_size_move) send_message(hwnd, WM_EXITSIZEMOVE, 0, 0);
 
     style = NtUserGetWindowLongW(hwnd, GWL_STYLE);
     if (!(state & WAYLAND_SURFACE_CONFIG_STATE_MAXIMIZED) != !(style & WS_MAXIMIZE))
@@ -659,8 +662,6 @@ static void wayland_configure_window(HWND hwnd)
         flags |= SWP_NOSENDCHANGING;
     }
 
-    SetRect(&rect, 0, 0, window_width, window_height);
-    OffsetRect(&rect, data->rects.window.left, data->rects.window.top);
     NtUserSetRawWindowPos(hwnd, rect, flags, FALSE);
 }
 
