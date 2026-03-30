@@ -529,8 +529,14 @@ static void wayland_configure_window(HWND hwnd)
 
     state = surface->processing.state;
     /* Ignore size hints if we don't have a state that requires strict
-     * size adherence, in order to avoid spurious resizes. */
-    if (state)
+     * size adherence, in order to avoid spurious resizes.
+     * The tiled and maximized states have a strict size adherance, so
+     * their sizes cannot change while we are still processing the new config.
+     * This allows us to respect the size hint on transitions of maximized/tiled
+     * to a stateless regular window. */
+    if (state || surface->current.state &
+        (WAYLAND_SURFACE_CONFIG_STATE_MAXIMIZED |
+               WAYLAND_SURFACE_CONFIG_STATE_TILED))
     {
         width = surface->processing.width;
         height = surface->processing.height;
