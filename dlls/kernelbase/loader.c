@@ -551,6 +551,68 @@ HMODULE WINAPI DECLSPEC_HOTPATCH LoadLibraryExA( LPCSTR name, HANDLE file, DWORD
 
 
 /*
+ * LoadLibraryExW redirect hack
+ */
+BOOL loaddll_redirect(LPCWSTR name, LPWSTR override, DWORD size)
+{
+    WCHAR *entry, *next, *match, *token, *path, *stem;
+    WCHAR envW[MAX_PATH * 8] = {0}, nameW[MAX_PATH] = {0};
+    UINT ret;
+
+    if ( wcsstr( name, L"nvidia/wine/nvngx_dlssg.dll" ) )
+    {
+        TRACE("refusing to redirect %ls\n", name);
+        return FALSE;
+    }
+
+    ret = GetEnvironmentVariableW( L"WINE_LOADDLL_REDIRECT", envW, sizeof(envW));
+    if ( !ret ) return FALSE;
+    if ( ret >= ARRAY_SIZE(envW) )
+    {
+        ERR("WINE_LOADDLL_REDIRECT larger than %lu (%u)\n", (unsigned long)ARRAY_SIZE(envW), ret);
+        return FALSE;
+    }
+
+    wcscpy(nameW, name);
+    stem = wcspbrk( nameW, L"\\/" );
+    while (stem)
+    {
+        if ( !wcspbrk( stem + 1, L"\\/" ) )
+            break;
+        stem = wcspbrk( ++stem, L"\\/" );
+    }
+    if ( stem ) stem++;
+    else stem = nameW;
+
+    TRACE("looking for %ls redirect\n", stem);
+
+    entry = envW;
+    while (*entry)
+    {
+        while (*entry == L';') entry++;
+        if (!*entry) break;
+        next = wcschr( entry, L';' );
+        if (next) *next++ = 0;
+        else next = entry + wcslen(entry);
+        if ( (match = wcsstr( entry, stem)) )
+        {
+            path = wcschr( match, L'=' );
+            if (path) *path++ = 0;
+            else return FALSE;
+            token = wcschr( match, L',' );
+            if (token) *token = 0;
+            if ( wcsstr( path, match ) || !wcscmp ( path + wcslen(path) - 4, L".dll" ) )
+                wcscpy( override, path );
+            else
+                swprintf( override, size, L"%s\\%s", path, match );
+            return TRUE;
+        }
+        entry = next;
+    }
+    return FALSE;
+}
+
+/*
  * LoadLibraryExW upscaler hack
  */
 BOOL loaddll_upscaler_hack(LPCWSTR name, LPWSTR override)
