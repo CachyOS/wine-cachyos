@@ -206,6 +206,7 @@ static BOOL wayland_win_data_create_wayland_surface(struct wayland_win_data *dat
     struct wayland_client_surface *client = data->client_surface;
     struct wayland_surface *surface;
     enum wayland_surface_role role;
+    HWND focused;
     BOOL visible, server_decor = FALSE;
     DWORD exstyle = NtUserGetWindowLongW(data->hwnd, GWL_EXSTYLE);
     DWORD style = NtUserGetWindowLongW(data->hwnd, GWL_STYLE);
@@ -242,6 +243,21 @@ static BOOL wayland_win_data_create_wayland_surface(struct wayland_win_data *dat
         && is_decoration_enabled(style, exstyle))
     {
         server_decor = TRUE;
+    }
+
+    pthread_mutex_lock(&process_wayland.keyboard.mutex);
+    focused = process_wayland.keyboard.focused_hwnd;
+    pthread_mutex_unlock(&process_wayland.keyboard.mutex);
+
+    /* Force recreate the toplevel if it is now unminimized.
+     * This resets the toplevel state, effectively making it unminimized.
+     * Ensure that this restoration is not user driven,
+     * as this case is already handled by the compositor */
+    if (surface->window.minimized && focused != data->hwnd &&
+        role == surface->role && role == WAYLAND_SURFACE_ROLE_TOPLEVEL &&
+        !(style & WS_MINIMIZE))
+    {
+        wayland_surface_clear_role(surface);
     }
 
     /* If the window is a visible toplevel make it a wayland
