@@ -89,6 +89,16 @@ enum wayland_surface_role
     WAYLAND_SURFACE_ROLE_SUBSURFACE,
 };
 
+enum wayland_surface_wm_caps
+{
+
+    WAYLAND_SURFACE_WM_CAPS_CHANGED = (1 << 0),
+    WAYLAND_SURFACE_WM_CAPS_SHOW_WINDOW = (1 << 1),
+    WAYLAND_SURFACE_WM_CAPS_MAXIMIZE = (1 << 2),
+    WAYLAND_SURFACE_WM_CAPS_FULLSCREEN = (1 << 3),
+    WAYLAND_SURFACE_WM_CAPS_MINIMIZE = (1 << 4)
+};
+
 struct wayland_keyboard
 {
     struct wl_keyboard *wl_keyboard;
@@ -241,6 +251,7 @@ struct wayland_surface_config
     int32_t width, height;
     enum wayland_surface_config_state state;
     enum zxdg_toplevel_decoration_v1_mode decor;
+    enum wayland_surface_wm_caps caps;
     uint32_t serial;
     BOOL processed;
 };

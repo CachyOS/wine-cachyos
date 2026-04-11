@@ -818,7 +818,8 @@ static void keyboard_handle_leave(void *private, struct wl_keyboard *wl_keyboard
              * directly once it's updated to not explicitly deactivate the old
              * foreground window when both the old and new foreground windows
              * are in the same non-current thread. */
-            if (surface->window.managed)
+            if (surface->window.managed &&
+                (surface->current.caps & WAYLAND_SURFACE_WM_CAPS_MINIMIZE))
                 NtUserPostMessage(hwnd, WM_WAYLAND_SET_FOREGROUND, 1, 0);
         }
 

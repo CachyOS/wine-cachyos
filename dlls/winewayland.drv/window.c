@@ -252,11 +252,15 @@ static BOOL wayland_win_data_create_wayland_surface(struct wayland_win_data *dat
     /* Force recreate the toplevel if it is now unminimized.
      * This resets the toplevel state, effectively making it unminimized.
      * Ensure that this restoration is not user driven,
-     * as this case is already handled by the compositor */
+     * as this case is already handled by the compositor.
+     * If we don't have caps yet, assume that minimize is supported. */
     if (surface->window.minimized && focused != data->hwnd &&
         role == surface->role && role == WAYLAND_SURFACE_ROLE_TOPLEVEL &&
+        (!surface->current.caps ||
+          surface->current.caps & WAYLAND_SURFACE_WM_CAPS_MINIMIZE) &&
         !(style & WS_MINIMIZE))
     {
+        TRACE("restoring hwnd %p\n", data->hwnd);
         wayland_surface_clear_role(surface);
     }
 
@@ -294,8 +298,8 @@ static void wayland_surface_update_state_toplevel(struct wayland_surface *surfac
     BOOL processing_config = surface->processing.serial &&
                              !surface->processing.processed;
 
-    TRACE("hwnd=%p window_state=%#x %s->state=%#x\n",
-          surface->hwnd, surface->window.state,
+    TRACE("hwnd=%p window_state=%#x minimized=%u %s->state=%#x\n",
+          surface->hwnd, surface->window.state, surface->window.minimized,
           processing_config ? "processing" : "current",
           processing_config ? surface->processing.state : surface->current.state);
 

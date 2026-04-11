@@ -135,7 +135,7 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
          * states, instead of falling back to (ab)using the maximized state. */
         process_wayland.xdg_wm_base =
             wl_registry_bind(registry, id, &xdg_wm_base_interface,
-                             version < 2 ? version : 2);
+                             version < 5 ? version : 5);
         xdg_wm_base_add_listener(process_wayland.xdg_wm_base, &xdg_wm_base_listener, NULL);
     }
     else if (strcmp(interface, "wl_shm") == 0)

@@ -57,6 +57,8 @@ static void xdg_surface_handle_configure(void *private, struct xdg_surface *xdg_
         should_post = surface->requested.serial == 0;
         initial_configure = surface->current.serial == 0;
         surface->pending.serial = serial;
+        if (!surface->pending.caps && surface->current.caps)
+            surface->pending.caps = surface->current.caps;
         if (!surface->pending.decor && surface->current.decor)
             surface->pending.decor = surface->current.decor;
         else if (surface->pending.decor)
@@ -139,10 +141,67 @@ static void xdg_toplevel_handle_close(void *data, struct xdg_toplevel *xdg_tople
     NtUserPostMessage((HWND)data, WM_SYSCOMMAND, SC_CLOSE, 0);
 }
 
+static void xdg_toplevel_handle_configure_bounds(void *private, struct xdg_toplevel *xdg_toplevel, int width, int height)
+{
+    HWND hwnd = private;
+
+    /* FIXME: we don't respect these yet */
+    TRACE("hwnd %p, (%d, %d)\n", hwnd, width, height);
+}
+
+static void xdg_toplevel_handle_wm_caps(void *private, struct xdg_toplevel *xdg_toplevel, struct wl_array *caps)
+{
+    int *state;
+    HWND hwnd = private;
+    struct wayland_surface *surface;
+    struct wayland_win_data *data;
+    enum wayland_surface_wm_caps cap = WAYLAND_SURFACE_WM_CAPS_CHANGED;
+
+    wl_array_for_each(state, caps)
+    {
+        switch (*state)
+        {
+            case XDG_TOPLEVEL_WM_CAPABILITIES_FULLSCREEN:
+                cap |= WAYLAND_SURFACE_WM_CAPS_FULLSCREEN;
+                break;
+            case XDG_TOPLEVEL_WM_CAPABILITIES_MINIMIZE:
+                cap |= WAYLAND_SURFACE_WM_CAPS_MINIMIZE;
+                break;
+            case XDG_TOPLEVEL_WM_CAPABILITIES_MAXIMIZE:
+                cap |= WAYLAND_SURFACE_WM_CAPS_MAXIMIZE;
+                break;
+            case XDG_TOPLEVEL_WM_CAPABILITIES_WINDOW_MENU:
+                cap |= WAYLAND_SURFACE_WM_CAPS_SHOW_WINDOW;
+                break;
+            default: break;
+        }
+    }
+
+    TRACE("hwnd %p caps %x\n", hwnd, cap);
+
+    if (!(cap & WAYLAND_SURFACE_WM_CAPS_FULLSCREEN))
+        WARN("Compositor does not support fullscreen!\n");
+    if (!(cap & WAYLAND_SURFACE_WM_CAPS_MAXIMIZE))
+        WARN("Compositor does not support maximize!\n");
+    if (!(cap & WAYLAND_SURFACE_WM_CAPS_MINIMIZE))
+        WARN("Compositor does not support minimize, cannot implement window focus loss!\n");
+
+    if (!(data = wayland_win_data_get(hwnd))) return;
+
+    if ((surface = data->wayland_surface) && wayland_surface_is_toplevel(surface))
+    {
+        surface->pending.caps = cap;
+    }
+
+    wayland_win_data_release(data);
+}
+
 static const struct xdg_toplevel_listener xdg_toplevel_listener =
 {
     xdg_toplevel_handle_configure,
-    xdg_toplevel_handle_close
+    xdg_toplevel_handle_close,
+    xdg_toplevel_handle_configure_bounds,
+    xdg_toplevel_handle_wm_caps
 };
 
 void wp_fractional_scale_handle_scale(void* user_data,
