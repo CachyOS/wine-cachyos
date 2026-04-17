@@ -249,6 +249,7 @@ struct wayland_window_config
     double scale;
     BOOL visible;
     BOOL managed;
+    BOOL resizeable;
 };
 
 struct wayland_client_surface

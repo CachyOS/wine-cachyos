@@ -175,6 +175,7 @@ static void wayland_win_data_get_config(struct wayland_win_data *data,
         window_state |= WAYLAND_SURFACE_CONFIG_STATE_MAXIMIZED;
     }
 
+    conf->resizeable = !!(style & WS_THICKFRAME);
     conf->state = window_state;
     if (process_wayland.wp_fractional_scale_manager_v1)
         conf->scale = conf->fractional_scale;
