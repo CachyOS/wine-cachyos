@@ -2162,7 +2162,8 @@ static struct window_surface *get_window_surface( HWND hwnd, UINT swp_flags, BOO
     if (IsRectEmpty( surface_rect )) needs_surface = FALSE;
     else if (create_layered || is_layered) needs_surface = TRUE;
 
-    if (needs_surface && !is_layered && !create_layered && window_clip_client_surfaces( hwnd )
+    /* At the present time, winewayland requires a toplevel surfaces for its client surfaces */
+    if (needs_surface && !is_layered && !create_layered && window_clip_client_surfaces( hwnd ) && !user_driver->pHasWindowManager("waylanddrv")
         && !(!create_opaque && NtUserGetLayeredWindowAttributes( hwnd, NULL, NULL, &layered_flags ) && layered_flags & LWA_COLORKEY))
     {
         if (new_surface) window_surface_release( new_surface );
