@@ -43,6 +43,7 @@ WINE_DECLARE_DEBUG_CHANNEL(relay);
 WINE_DECLARE_DEBUG_CHANNEL(snoop);
 WINE_DECLARE_DEBUG_CHANNEL(loaddll);
 WINE_DECLARE_DEBUG_CHANNEL(imports);
+WINE_DECLARE_DEBUG_CHANNEL(winediag);
 
 #ifdef _WIN64
 #define DEFAULT_SECURITY_COOKIE_64  (((ULONGLONG)0x00002b99 << 32) | 0x2ddfa232)
@@ -4631,6 +4632,9 @@ static void release_address_space(void)
  */
 void loader_init( CONTEXT *context, void **entry )
 {
+    OBJECT_ATTRIBUTES cachyos_event_attr;
+    UNICODE_STRING cachyos_event_string;
+    HANDLE cachyos_event;
     static int attach_done;
     NTSTATUS status;
     ULONG_PTR cookie, port = 0;
@@ -4792,6 +4796,18 @@ void loader_init( CONTEXT *context, void **entry )
 
         NtQueryInformationProcess( GetCurrentProcess(), ProcessDebugPort, &port, sizeof(port), NULL );
         if (port) process_breakpoint();
+        RtlInitUnicodeString( &cachyos_event_string, L"\\__wine_cachyos_warn_event" );
+        InitializeObjectAttributes( &cachyos_event_attr, &cachyos_event_string, OBJ_OPENIF, NULL, NULL );
+        if (NtCreateEvent( &cachyos_event, EVENT_ALL_ACCESS, &cachyos_event_attr, NotificationEvent, FALSE ) == STATUS_SUCCESS)
+        {
+            FIXME_(winediag)("wine-cachyos %s is a testing version containing experimental patches.\n", wine_get_version());
+            FIXME_(winediag)("this wine contains many experimental patches, please don't report bugs to winehq.org.\n");
+        }
+        else
+        {
+            WARN_(winediag)("wine-cachyos %s is a testing version containing experimental patches.\n", wine_get_version());
+            NtClose( cachyos_event );
+        }
     }
     else
     {
