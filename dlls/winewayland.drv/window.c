@@ -779,6 +779,22 @@ LRESULT WAYLAND_SysCommand(HWND hwnd, WPARAM wparam, LPARAM lparam, const POINT 
     return ret;
 }
 
+/***********************************************************************
+ *          WAYLAND_HasWindowManager
+ */
+BOOL WAYLAND_HasWindowManager(const char *name)
+{
+    static int once;
+    const char *env = getenv("XDG_CURRENT_DESKTOP");
+
+    if (!once++) TRACE("DE: %s\n", debugstr_a(env));
+
+    if (!strcmp("waylanddrv", name)) return TRUE;
+    if (env && !strcmp(env, name)) return TRUE;
+
+    return FALSE;
+}
+
 void set_client_surface(HWND hwnd, struct wayland_client_surface *new_client)
 {
     HWND toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
