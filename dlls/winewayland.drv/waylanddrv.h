@@ -297,6 +297,7 @@ struct wayland_surface
             struct xdg_surface *xdg_surface;
             struct xdg_toplevel *xdg_toplevel;
             struct xdg_toplevel_icon_v1 *xdg_toplevel_icon;
+            struct wl_output *requested_output;
         };
         struct
         {
@@ -325,6 +326,7 @@ BOOL wayland_process_init(void);
 BOOL wayland_output_create(uint32_t id, uint32_t version);
 void wayland_output_destroy(struct wayland_output *output);
 void wayland_output_use_xdg_extension(struct wayland_output *output);
+struct wayland_output *wayland_output_for_rect(const RECT *rect);
 
 /**********************************************************************
  *          Wayland surface

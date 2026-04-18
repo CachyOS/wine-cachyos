@@ -263,31 +263,86 @@ static void wayland_add_device_modes(const struct gdi_device_manager *device_man
     free(modes);
 }
 
+static void output_info_array_init(struct wl_array *output_info_array)
+{
+    struct output_info *output_info;
+    struct wayland_output *output;
+
+    wl_list_for_each(output, &process_wayland.output_list, link)
+    {
+        if (!output->current.current_mode) continue;
+        output_info = wl_array_add(output_info_array, sizeof(*output_info));
+        if (output_info) output_info->output = &output->current;
+        else ERR("Failed to allocate space for output_info\n");
+    }
+
+    output_info_array_arrange_physical_coords(output_info_array);
+}
+
+/* Locking is done externally to ensure wl_output remains valid */
+struct wayland_output *wayland_output_for_rect(const RECT *window_rect)
+{
+    struct wayland_output *best = NULL;
+    struct wl_array output_info_array;
+    struct output_info *output_info;
+    HMONITOR target = NtUserMonitorFromRect(window_rect, 0);
+
+    TRACE("window %s\n", wine_dbgstr_rect(window_rect));
+
+    if (!target) return NULL;
+
+    /* Setup monitor positions */
+    wl_array_init(&output_info_array);
+    output_info_array_init(&output_info_array);
+
+    wl_array_for_each(output_info, &output_info_array)
+    {
+        RECT rect;
+        SetRect(&rect, 0, 0,
+                output_info->output->current_mode->width,
+                output_info->output->current_mode->height);
+        OffsetRect(&rect, output_info->x, output_info->y);
+
+        TRACE("output %s: %s\n",
+              debugstr_a(output_info->output->name),
+              wine_dbgstr_rect(&rect));
+
+        if (NtUserMonitorFromRect(&rect, 0) == target)
+        {
+            best = CONTAINING_RECORD(output_info->output,
+                                     struct wayland_output,
+                                     current);
+            break;
+        }
+    }
+
+    wl_array_release(&output_info_array);
+
+    if (!best)
+    {
+        WARN("Could not find associated wayland output for rect %s!\n",
+             wine_dbgstr_rect(window_rect));
+        return NULL;
+    }
+
+    return best;
+}
+
 /***********************************************************************
  *      UpdateDisplayDevices (WAYLAND.@)
  */
 UINT WAYLAND_UpdateDisplayDevices(const struct gdi_device_manager *device_manager, void *param)
 {
-    struct wayland_output *output;
     DWORD state_flags = DISPLAY_DEVICE_ATTACHED_TO_DESKTOP | DISPLAY_DEVICE_PRIMARY_DEVICE;
     struct wl_array output_info_array;
     struct output_info *output_info;
 
     TRACE("\n");
 
-    wl_array_init(&output_info_array);
-
     pthread_mutex_lock(&process_wayland.output_mutex);
 
-    wl_list_for_each(output, &process_wayland.output_list, link)
-    {
-        if (!output->current.current_mode) continue;
-        output_info = wl_array_add(&output_info_array, sizeof(*output_info));
-        if (output_info) output_info->output = &output->current;
-        else ERR("Failed to allocate space for output_info\n");
-    }
-
-    output_info_array_arrange_physical_coords(&output_info_array);
+    wl_array_init(&output_info_array);
+    output_info_array_init(&output_info_array);
 
     /* Populate GDI devices. */
     wayland_add_device_gpu(device_manager, param);

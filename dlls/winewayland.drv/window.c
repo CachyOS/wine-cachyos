@@ -259,6 +259,7 @@ static BOOL wayland_win_data_create_wayland_surface(struct wayland_win_data *dat
 
 static void wayland_surface_update_state_toplevel(struct wayland_surface *surface)
 {
+    const RECT *rect = &surface->window.rect;
     BOOL processing_config = surface->processing.serial &&
                              !surface->processing.processed;
 
@@ -282,6 +283,7 @@ static void wayland_surface_update_state_toplevel(struct wayland_surface *surfac
             (surface->current.state & WAYLAND_SURFACE_CONFIG_STATE_FULLSCREEN))
         {
             xdg_toplevel_unset_fullscreen(surface->xdg_toplevel);
+            surface->requested_output = NULL;
         }
 
         if ((surface->window.state & WAYLAND_SURFACE_CONFIG_STATE_MAXIMIZED) &&
@@ -289,10 +291,31 @@ static void wayland_surface_update_state_toplevel(struct wayland_surface *surfac
         {
             xdg_toplevel_set_maximized(surface->xdg_toplevel);
         }
-        if ((surface->window.state & WAYLAND_SURFACE_CONFIG_STATE_FULLSCREEN) &&
-           !(surface->current.state & WAYLAND_SURFACE_CONFIG_STATE_FULLSCREEN))
+        if (surface->window.state & WAYLAND_SURFACE_CONFIG_STATE_FULLSCREEN)
         {
-            xdg_toplevel_set_fullscreen(surface->xdg_toplevel, NULL);
+            struct wayland_output *wayland_output;
+            struct wl_output *output = NULL;
+            pthread_mutex_lock(&process_wayland.output_mutex);
+
+            if ((wayland_output = wayland_output_for_rect(rect)))
+                output = wayland_output->wl_output;
+
+            if (surface->current.state & WAYLAND_SURFACE_CONFIG_STATE_FULLSCREEN)
+            {
+                if (surface->requested_output != output)
+                {
+                    xdg_toplevel_unset_fullscreen(surface->xdg_toplevel);
+                    wl_display_flush(process_wayland.wl_display);
+                }
+                else
+                    goto skip_fullscreen;
+            }
+
+            xdg_toplevel_set_fullscreen(surface->xdg_toplevel, output);
+            surface->requested_output = output;
+
+            skip_fullscreen:
+            pthread_mutex_unlock(&process_wayland.output_mutex);
         }
     }
     else
