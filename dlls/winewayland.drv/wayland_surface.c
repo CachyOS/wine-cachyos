@@ -605,6 +605,8 @@ void wayland_surface_clear_role(struct wayland_surface *surface)
             xdg_surface_destroy(surface->xdg_surface);
             surface->xdg_surface = NULL;
         }
+
+        surface->requested_output = NULL;
         break;
     }
 
