@@ -1168,6 +1168,8 @@ static void wayland_client_surface_destroy(struct client_surface *client)
 
     TRACE("%s\n", debugstr_client_surface(client));
 
+    if (surface->wp_content_type_v1)
+        wp_content_type_v1_destroy(surface->wp_content_type_v1);
     if (surface->wp_viewport)
         wp_viewport_destroy(surface->wp_viewport);
     if (surface->wl_subsurface)
@@ -1254,6 +1256,21 @@ struct wayland_client_surface *wayland_client_surface_create(HWND hwnd)
     {
         ERR("Failed to create client wp_viewport\n");
         goto err;
+    }
+
+    if (process_wayland.wp_content_type_manager_v1)
+    {
+        client->wp_content_type_v1 =
+            wp_content_type_manager_v1_get_surface_content_type(
+                process_wayland.wp_content_type_manager_v1,
+                client->wl_surface
+            );
+        if (client->wp_content_type_v1)
+        {
+            wp_content_type_v1_set_content_type(client->wp_content_type_v1,
+                                                WP_CONTENT_TYPE_V1_TYPE_GAME);
+            TRACE("set game content on client surface!\n");
+        }
     }
 
     return client;

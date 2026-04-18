@@ -41,6 +41,7 @@
 #include "xdg-toplevel-icon-v1-client-protocol.h"
 #include "fractional-scale-v1-client-protocol.h"
 #include "xdg-toplevel-tag-v1-client-protocol.h"
+#include "content-type-v1-client-protocol.h"
 
 #include "windef.h"
 #include "winbase.h"
@@ -191,6 +192,7 @@ struct wayland
     struct xdg_toplevel_icon_manager_v1 *xdg_toplevel_icon_manager_v1;
     struct wp_cursor_shape_manager_v1 *wp_cursor_shape_manager_v1;
     struct xdg_toplevel_tag_manager_v1 *xdg_toplevel_tag_manager_v1;
+    struct wp_content_type_manager_v1 *wp_content_type_manager_v1;
     struct wayland_seat seat;
     struct wayland_keyboard keyboard;
     struct wayland_pointer pointer;
@@ -261,6 +263,7 @@ struct wayland_client_surface
     struct wl_surface *wl_surface;
     struct wl_subsurface *wl_subsurface;
     struct wp_viewport *wp_viewport;
+    struct wp_content_type_v1 *wp_content_type_v1;
 };
 
 struct wayland_shm_buffer
