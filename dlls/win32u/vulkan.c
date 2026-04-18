@@ -144,6 +144,7 @@ struct surface
 {
     struct vulkan_surface obj;
     struct client_surface *client;
+    struct swapchain *swapchain;
     HWND hwnd;
 };
 
@@ -2598,14 +2599,18 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
                    create_info_host.imageFormat );
     }
 
+    InterlockedIncrement( &surface->client->busy_ref );
+
     if ((res = device->p_vkCreateSwapchainKHR( device->host.device, &create_info_host, NULL, &host_swapchain )))
     {
+        InterlockedDecrement( &surface->client->busy_ref );
         free( swapchain );
         return res;
     }
 
     vulkan_object_init( &swapchain->obj.obj, host_swapchain );
     swapchain->surface = surface;
+    surface->swapchain = swapchain;
     swapchain->extents = create_info->imageExtent;
     instance->p_insert_object( instance, &swapchain->obj.obj );
 
@@ -2641,6 +2646,7 @@ void win32u_vkDestroySwapchainKHR( VkDevice client_device, VkSwapchainKHR client
     struct vulkan_device *device = vulkan_device_from_handle( client_device );
     struct vulkan_instance *instance = device->physical_device->instance;
     struct swapchain *swapchain = swapchain_from_handle( client_swapchain );
+    struct surface *surface;
 
     if (allocator) FIXME( "Support for allocation callbacks not implemented yet\n" );
     if (!swapchain) return;
@@ -2668,6 +2674,11 @@ void win32u_vkDestroySwapchainKHR( VkDevice client_device, VkSwapchainKHR client
     }
 
     device->p_vkDestroySwapchainKHR( device->host.device, swapchain->obj.host.swapchain, NULL );
+    if ((surface = swapchain->surface))
+    {
+        surface->swapchain = NULL;
+        InterlockedDecrement( &surface->client->busy_ref );
+    }
     instance->p_remove_object( instance, &swapchain->obj.obj );
 
     free( swapchain );

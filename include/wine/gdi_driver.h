@@ -263,6 +263,7 @@ struct client_surface
     const struct client_surface_funcs *funcs;
     struct list                        entry;          /* entry in win32u managed list */
     LONG                               ref;            /* reference count */
+    LONG                               busy_ref;       /* count of drawables/swapchains referencing this surface */
     HWND                               hwnd;           /* window the surface was created for */
     LONG                               updated;        /* has been moved / resized / reparented */
     LONG                               offscreen;      /* client window is offscreen */
