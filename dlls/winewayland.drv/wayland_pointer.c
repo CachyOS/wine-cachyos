@@ -332,6 +332,13 @@ static void pointer_handle_frame(void *data, struct wl_pointer *wl_pointer)
 
     pthread_mutex_lock(&pointer->mutex);
 
+    /* cannot handle any new motion events when a warp is pending */
+    if (pointer->pending_warp)
+    {
+        frame->flags &= ~(WAYLAND_POINTER_FRAME_ABSOLUTE
+                          | WAYLAND_POINTER_FRAME_RELATIVE);
+    }
+
     input.mi.dwFlags = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE;
 
     if (frame->flags & WAYLAND_POINTER_FRAME_ABSOLUTE)
