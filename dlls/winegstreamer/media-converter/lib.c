@@ -21,16 +21,7 @@
 #pragma makedep unix
 #endif
 
-#include "config.h"
 #include "media-converter.h"
-
-#ifdef _WINEDMO
-
-#include <errno.h>
-#include "wine/debug.h"
-WINE_DEFAULT_DEBUG_CHANNEL(dmo);
-
-#else /*  _WINEDMO */
 
 GST_ELEMENT_REGISTER_DECLARE(protonvideoconverter);
 GST_ELEMENT_REGISTER_DECLARE(protonaudioconverter);
@@ -38,8 +29,6 @@ GST_ELEMENT_REGISTER_DECLARE(protonaudioconverterbin);
 GST_ELEMENT_REGISTER_DECLARE(protondemuxer);
 
 GST_DEBUG_CATEGORY(media_converter_debug);
-
-#endif /* _WINEDMO */
 
 static void get_dirname(const char *path, char *result)
 {
@@ -316,8 +305,6 @@ void dump_fozdb_close(struct dump_fozdb *db)
     }
 }
 
-#ifndef _WINEDMO
-
 bool media_converter_init(void)
 {
     GST_DEBUG_CATEGORY_INIT(media_converter_debug,
@@ -349,5 +336,3 @@ bool media_converter_init(void)
 
     return true;
 }
-
-#endif /* _WINEDMO */
