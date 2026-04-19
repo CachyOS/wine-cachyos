@@ -39,6 +39,42 @@ WINE_DEFAULT_DEBUG_CHANNEL(vulkan);
 
 static const struct vulkan_driver_funcs wayland_vulkan_driver_funcs;
 
+static struct wayland_client_surface *stash_client_surface(HWND hwnd,
+                                                           struct wayland_client_surface *surface)
+{
+    struct wayland_client_surface *ret = NULL;
+    struct wayland_win_data *data;
+
+    if (!(data = wayland_win_data_get(hwnd))) return NULL;
+
+    if (surface)
+    {
+        if ((ret = data->stashed_client) == surface)
+        {
+            wayland_win_data_release(data);
+            return ret;
+        }
+        client_surface_add_ref(&surface->client);
+        data->stashed_client = surface;
+    }
+    else if ((ret = data->stashed_client) && !ReadAcquire(&ret->client.busy_ref))
+    {
+        /* cannot decrease the ref count here as there is a
+         * new VkSurface referencing this client surface */
+        data->stashed_client = NULL;
+        /* detach the client surface to ensure it is reparented */
+        wayland_client_surface_attach(ret, NULL);
+        if (data->client_surface == ret) data->client_surface = NULL;
+    }
+    else ret = NULL;
+
+    wayland_win_data_release(data);
+
+    if (ret && surface) client_surface_release(&ret->client);
+
+    return ret;
+}
+
 static VkResult wayland_vulkan_surface_create(HWND hwnd, BOOL raw, const struct vulkan_instance *instance,
                                               VkSurfaceKHR *handle, struct client_surface **client)
 {
@@ -48,7 +84,8 @@ static VkResult wayland_vulkan_surface_create(HWND hwnd, BOOL raw, const struct 
 
     TRACE("%p %p %p %p\n", hwnd, instance, handle, client);
 
-    if (!(surface = wayland_client_surface_create(hwnd)))
+    if (!(surface = stash_client_surface(hwnd, NULL)) &&
+        !(surface = wayland_client_surface_create(hwnd)))
     {
         ERR("Failed to create vulkan client surface\n");
         return VK_ERROR_OUT_OF_HOST_MEMORY;
@@ -69,6 +106,7 @@ static VkResult wayland_vulkan_surface_create(HWND hwnd, BOOL raw, const struct 
     }
 
     set_client_surface(hwnd, surface);
+    stash_client_surface(hwnd, surface);
     *client = &surface->client;
 
     TRACE("Created surface=0x%s, client=%p\n", wine_dbgstr_longlong(*handle), *client);
