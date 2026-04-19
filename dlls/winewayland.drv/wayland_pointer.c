@@ -125,10 +125,10 @@ static void wayland_pointer_reset_frame(void)
 {
     struct wayland_pointer_frame *frame = &process_wayland.pointer.frame;
 
-    frame->dx = 0.0;
-    frame->dy = 0.0;
-    frame->dx_raw = 0.0;
-    frame->dy_raw = 0.0;
+    frame->dx = frame->dy = 0.0;
+    frame->dx_raw = frame->dy_raw = 0.0;
+    frame->horz_scroll = frame->scroll = 0.0;
+    frame->horz_axis = frame->axis = 0.0;
     frame->flags = 0;
 }
 
@@ -288,9 +288,33 @@ static void pointer_handle_button(void *data, struct wl_pointer *wl_pointer,
     NtUserSendHardwareInput(hwnd, 0, &input, 0);
 }
 
-static void pointer_handle_axis(void *data, struct wl_pointer *wl_pointer,
+static void pointer_handle_axis(void *user_data, struct wl_pointer *wl_pointer,
                                 uint32_t time, uint32_t axis, wl_fixed_t value)
 {
+    HWND hwnd;
+    struct wayland_pointer *pointer = &process_wayland.pointer;
+    struct wayland_pointer_frame *frame = &pointer->frame;
+    /* on KWin one tick is 15.0 of whatever unit this is */
+    double scroll = wl_fixed_to_double(value) / 15.0;
+
+    if (!(hwnd = wayland_pointer_get_focused_hwnd())) return;
+
+    pthread_mutex_lock(&pointer->mutex);
+    switch (axis)
+    {
+        case WL_POINTER_AXIS_VERTICAL_SCROLL:
+            frame->axis += -scroll * WHEEL_DELTA;
+            frame->flags |= WAYLAND_POINTER_FRAME_AXIS;
+            break;
+        case WL_POINTER_AXIS_HORIZONTAL_SCROLL:
+            frame->horz_axis += scroll * WHEEL_DELTA;
+            frame->flags |= WAYLAND_POINTER_FRAME_AXIS_HORZ;
+            break;
+        default: break;
+    }
+    pthread_mutex_unlock(&pointer->mutex);
+
+    TRACE("hwnd %p scroll %.3f\n", hwnd, scroll);
 }
 
 static void pointer_handle_frame(void *data, struct wl_pointer *wl_pointer)
@@ -301,6 +325,8 @@ static void pointer_handle_frame(void *data, struct wl_pointer *wl_pointer)
     struct wayland_pointer_frame *frame = &pointer->frame;
 
     if (!(hwnd = wayland_pointer_get_focused_hwnd())) return;
+
+    TRACE("hwnd %p\n", hwnd);
 
     input.type = INPUT_MOUSE;
 
@@ -343,6 +369,14 @@ static void pointer_handle_frame(void *data, struct wl_pointer *wl_pointer)
         if (input.mi.mouseData)
             NtUserSendHardwareInput(hwnd, 0, &input, 0);
     }
+    else if (frame->flags & WAYLAND_POINTER_FRAME_AXIS)
+    {
+        /* many apps cannot handle high resolution scrolling */
+        input.mi.mouseData = trunc(frame->axis / WHEEL_DELTA) * WHEEL_DELTA;
+        frame->axis -= (int)input.mi.mouseData;
+        if (input.mi.mouseData)
+            NtUserSendHardwareInput(hwnd, 0, &input, 0);
+    }
 
     input.mi.dwFlags = MOUSEEVENTF_HWHEEL;
 
@@ -352,6 +386,20 @@ static void pointer_handle_frame(void *data, struct wl_pointer *wl_pointer)
         if (input.mi.mouseData)
             NtUserSendHardwareInput(hwnd, 0, &input, 0);
     }
+    else if (frame->flags & WAYLAND_POINTER_FRAME_AXIS_HORZ)
+    {
+        /* many apps cannot handle high resolution scrolling */
+        input.mi.mouseData = trunc(frame->horz_axis / WHEEL_DELTA) * WHEEL_DELTA;
+        frame->horz_axis -= (int)input.mi.mouseData;
+        if (input.mi.mouseData)
+            NtUserSendHardwareInput(hwnd, 0, &input, 0);
+    }
+
+    if (frame->flags & WAYLAND_POINTER_FRAME_AXIS_STOP)
+        frame->axis = 0.0;
+
+    if (frame->flags & WAYLAND_POINTER_FRAME_AXIS_HORZ_STOP)
+        frame->horz_axis = 0.0;
 
     frame->flags = 0;
     frame->scroll = frame->horz_scroll = 0;
@@ -366,6 +414,26 @@ static void pointer_handle_axis_source(void *data, struct wl_pointer *wl_pointer
 static void pointer_handle_axis_stop(void *data, struct wl_pointer *wl_pointer,
                                      uint32_t time, uint32_t axis)
 {
+    struct wayland_pointer *pointer = &process_wayland.pointer;
+    struct wayland_pointer_frame *frame = &pointer->frame;
+    HWND hwnd;
+
+    if (!(hwnd = wayland_pointer_get_focused_hwnd())) return;
+
+    pthread_mutex_lock(&pointer->mutex);
+    switch (axis)
+    {
+        case WL_POINTER_AXIS_HORIZONTAL_SCROLL:
+            frame->flags |= WAYLAND_POINTER_FRAME_AXIS_HORZ_STOP;
+            break;
+        case WL_POINTER_AXIS_VERTICAL_SCROLL:
+            frame->flags |= WAYLAND_POINTER_FRAME_AXIS_STOP;
+            break;
+        default: break;
+    }
+    pthread_mutex_unlock(&pointer->mutex);
+
+    TRACE("hwnd %p axis %u\n", hwnd, axis);
 }
 
 static void pointer_handle_axis_value120(void *data, struct wl_pointer *wl_pointer,

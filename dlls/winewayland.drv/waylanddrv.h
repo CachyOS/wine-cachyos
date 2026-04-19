@@ -121,7 +121,11 @@ enum wayland_pointer_frame_flags
     WAYLAND_POINTER_FRAME_RELATIVE = (1 << 0),
     WAYLAND_POINTER_FRAME_ABSOLUTE = (1 << 1),
     WAYLAND_POINTER_FRAME_DISCRETE_WHEEL = (1 << 2),
-    WAYLAND_POINTER_FRAME_DISCRETE_WHEEL_HORZ = (1 << 3)
+    WAYLAND_POINTER_FRAME_DISCRETE_WHEEL_HORZ = (1 << 3),
+    WAYLAND_POINTER_FRAME_AXIS = (1 << 4),
+    WAYLAND_POINTER_FRAME_AXIS_HORZ = (1 << 5),
+    WAYLAND_POINTER_FRAME_AXIS_STOP = (1 << 6),
+    WAYLAND_POINTER_FRAME_AXIS_HORZ_STOP = (1 << 7)
 };
 
 struct wayland_pointer_frame
@@ -129,6 +133,7 @@ struct wayland_pointer_frame
     LONG x, y;
     double dx, dy;
     double dx_raw, dy_raw;
+    double axis, horz_axis;
     LONG scroll, horz_scroll;
 
     enum wayland_pointer_frame_flags flags;
