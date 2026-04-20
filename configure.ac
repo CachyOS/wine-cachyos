@@ -1462,6 +1462,12 @@ else
                      [enable_winex11_drv])
 fi
 
+dnl **** Check for OpenCL ****
+if test "$ac_cv_header_CL_cl_h" = "yes"
+then
+    AC_CHECK_LIB(OpenCL,clGetPlatformInfo,[AC_SUBST(OPENCL_LIBS,["-lOpenCL"])])
+fi
+
 dnl **** Check for libpcap ****
 if test "$ac_cv_header_pcap_pcap_h" = "yes"
 then
