@@ -58,7 +58,7 @@ int fsync_check_support(void)
 {
 #ifdef __linux__
     syscall( __NR_futex_waitv, 0, 0, 0, 0, 0 );
-    return getenv( "WINEFSYNC" ) && atoi(getenv( "WINEFSYNC" )) && errno != ENOSYS && errno != EPERM;
+    return !(getenv( "WINEFSYNC" ) && !atoi(getenv( "WINEFSYNC" ))) && errno != ENOSYS && errno != EPERM;
 #else
     return 0;
 #endif
