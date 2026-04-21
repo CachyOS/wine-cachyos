@@ -833,7 +833,7 @@ struct futex_queue
     LONG lock;
 };
 
-static struct futex_queue futex_queues[256];
+static struct futex_queue futex_queues[1024];
 
 static struct futex_queue *get_futex_queue( const void *addr )
 {
