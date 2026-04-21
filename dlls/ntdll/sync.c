@@ -847,8 +847,24 @@ static struct futex_queue *get_futex_queue( const void *addr )
 
 static void spin_lock( LONG *lock )
 {
-    while (InterlockedCompareExchange( lock, -1, 0 ))
+    unsigned int i;
+
+    if (!InterlockedCompareExchange( lock, -1, 0 ))
+        return;
+
+    for (i = 0; i < 64; i++)
+    {
         YieldProcessor();
+        if (!ReadNoFence( lock ) && !InterlockedCompareExchange( lock, -1, 0 ))
+            return;
+    }
+
+    for (;;)
+    {
+        NtYieldExecution();
+        if (!ReadNoFence( lock ) && !InterlockedCompareExchange( lock, -1, 0 ))
+            return;
+    }
 }
 
 static void spin_unlock( LONG *lock )
