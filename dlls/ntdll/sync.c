@@ -840,9 +840,12 @@ static struct futex_queue futex_queues[1024];
 
 static struct futex_queue *get_futex_queue( const void *addr )
 {
-    ULONG_PTR val = (ULONG_PTR)addr;
+    ULONG_PTR val = (ULONG_PTR)addr >> 4;
 
-    return &futex_queues[(val >> 4) % ARRAY_SIZE(futex_queues)];
+    /* Mix the bits a bit to avoid collisions on low bits. */
+    val ^= val >> 11;
+    val ^= val >> 22;
+    return &futex_queues[val % ARRAY_SIZE(futex_queues)];
 }
 
 static void spin_lock( LONG *lock )
