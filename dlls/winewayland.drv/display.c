@@ -208,20 +208,36 @@ static void wayland_add_device_source(const struct gdi_device_manager *device_ma
 static UINT get_edid(struct output_info *output_info, unsigned char **edid)
 {
     struct wayland_output_mode *mode = output_info->output->current_mode;
+    const char *model = output_info->output->model;
     unsigned int edid_size = 128, extensions = 0;
+    unsigned char l[3] = {19, 1, 13}; /* SAM */
     unsigned int i, mwidth, mheight;
     unsigned char *data, *p, c;
+    char temp_model[13] = {0};
 
     if (!(*edid = calloc(edid_size, sizeof(**edid))))
         return 0;
 
     data = *edid;
 
-    /* assume ~150 dpi */
-    mwidth = mode->width / 60;
-    mheight = mode->width / 60;
+    mwidth = output_info->output->physical_w;
+    mheight = output_info->output->physical_h;
+
+    if (mwidth == 0 || mheight == 0)
+    {
+        /* assume ~150 dpi */
+        mwidth = mode->width / 60;
+        mheight = mode->width / 60;
+    }
 
     *(uint64_t*)data = 0x00ffffffffffff00;
+
+    /* we cannot get this information from wayland, so make something up */
+    data[8] = ((l[0] & 0x1f) << 2) | ((l[1] & 0x18) >> 3);
+    data[9] = ((l[1] & 0x7) << 5) | (l[2] & 0x1f);
+    data[10] = 0xad;
+    data[11] = 0xde;
+    /* serial number is all zeros */
     data[16] = 0xFF;
     data[17] = 31; /* 2021 */
     data[18] = 1;
@@ -248,7 +264,25 @@ static UINT get_edid(struct output_info *output_info, unsigned char **edid)
 
     p += 18;
     p[3] = 0xfc;
-    strcpy( (char *)p + 5, "Default" );
+
+    if (model) lstrcpynA(temp_model, model, sizeof(temp_model));
+    else strcpy(temp_model, "Default");
+
+    for (i = 0; i < sizeof(temp_model); i++)
+    {
+        if (!temp_model[i])
+        {
+            temp_model[i++] = '\n';
+            break;
+        }
+    }
+    for (; i < sizeof(temp_model); i++)
+    {
+        if (!temp_model[i]) temp_model[i] = ' ';
+    }
+
+    TRACE("edid model %s\n", debugstr_an(temp_model, sizeof(temp_model)));
+    memcpy((char *)p + 5, temp_model, sizeof(temp_model));
 
     p += 18;
     p[3] = 0x10;
