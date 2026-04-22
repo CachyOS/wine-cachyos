@@ -87,7 +87,7 @@ const WCHAR windows_dir[] = L"C:\\windows";
 static const WCHAR system_dir[] = L"C:\\windows\\system32\\";
 
 /* system search path */
-static const WCHAR system_path[] = L"C:\\windows\\system32;C:\\windows\\system;C:\\windows;C:\\Program Files (x86)\\Steam";
+static const WCHAR system_path[] = L"C:\\windows\\system32;C:\\windows\\system;C:\\windows";
 
 #define IS_OPTION_TRUE(ch) ((ch) == 'y' || (ch) == 'Y' || (ch) == 't' || (ch) == 'T' || (ch) == '1')
 
