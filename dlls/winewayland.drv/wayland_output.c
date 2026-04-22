@@ -39,7 +39,7 @@ static uint32_t next_output_id = 0;
 #define WAYLAND_OUTPUT_CHANGED_NAME       0x02
 #define WAYLAND_OUTPUT_CHANGED_LOGICAL_XY 0x04
 #define WAYLAND_OUTPUT_CHANGED_LOGICAL_WH 0x08
-#define WAYLAND_OUTPUT_CHANGED_TRANSFORM  0x10
+#define WAYLAND_OUTPUT_CHANGED_GEOMETRY   0x10
 
 /**********************************************************************
  *          Output handling
@@ -136,9 +136,15 @@ static void wayland_output_done(struct wayland_output *output)
     /* Update current state from pending state. */
     pthread_mutex_lock(&process_wayland.output_mutex);
 
-    if (output->pending_flags & WAYLAND_OUTPUT_CHANGED_TRANSFORM)
+    if (output->pending_flags & WAYLAND_OUTPUT_CHANGED_GEOMETRY)
     {
+        free(output->current.make);
+        free(output->current.model);
         output->current.transform = output->pending.transform;
+        output->current.physical_w = output->pending.physical_w;
+        output->current.physical_h = output->pending.physical_h;
+        output->current.make = output->pending.make;
+        output->current.model = output->pending.model;
     }
 
     if (output->pending_flags & WAYLAND_OUTPUT_CHANGED_MODES)
@@ -216,8 +222,12 @@ static void output_handle_geometry(void *data, struct wl_output *wl_output,
     struct wayland_output *output = data;
 
     output->pending.transform = output_transform;
+    output->pending.physical_w = physical_width;
+    output->pending.physical_h = physical_height;
+    output->pending.model = strdup(model);
+    output->pending.make = strdup(make);
 
-    output->pending_flags |= WAYLAND_OUTPUT_CHANGED_TRANSFORM;
+    output->pending_flags |= WAYLAND_OUTPUT_CHANGED_GEOMETRY;
 }
 
 static void output_handle_mode(void *data, struct wl_output *wl_output,
@@ -355,6 +365,18 @@ BOOL wayland_output_create(uint32_t id, uint32_t version)
     else
     {
         ERR("Couldn't allocate space for output name\n");
+        goto err;
+    }
+
+    if (!(output->current.model = strdup("Monitor")))
+    {
+        ERR("Couldn't allocate space for output model\n");
+        goto err;
+    }
+
+    if (!(output->current.make = strdup("Wine")))
+    {
+        ERR("Couldn't allocate space for output make\n");
         goto err;
     }
 
