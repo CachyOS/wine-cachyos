@@ -40,7 +40,10 @@ struct wayland process_wayland =
     .text_input.mutex = PTHREAD_MUTEX_INITIALIZER,
     .data_device.mutex = PTHREAD_MUTEX_INITIALIZER,
     .output_list = {&process_wayland.output_list, &process_wayland.output_list},
-    .output_mutex = PTHREAD_MUTEX_INITIALIZER
+    .output_mutex = PTHREAD_MUTEX_INITIALIZER,
+    .supports_extended_volume = FALSE,
+    .supports_pq = FALSE,
+    .supports_scrgb = FALSE
 };
 
 /**********************************************************************
@@ -246,6 +249,19 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
         if (version < 2) return;
         process_wayland.zxdg_decoration_manager_v1 =
             wl_registry_bind(registry, id, &zxdg_decoration_manager_v1_interface, 2);
+    }
+    else if (strcmp(interface, "wp_color_manager_v1") == 0)
+    {
+        struct wayland_output *output;
+
+        process_wayland.wp_color_manager_v1 =
+            wl_registry_bind(registry, id, &wp_color_manager_v1_interface,
+                             version < 2 ? version : 2);
+
+        wayland_color_manager_init();
+        /* Add image descriptions to existing outputs. */
+        wl_list_for_each(output, &process_wayland.output_list, link)
+            wayland_output_use_image_description(output);
     }
 }
 
