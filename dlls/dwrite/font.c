@@ -4796,7 +4796,6 @@ HRESULT create_font_collection_from_set(IDWriteFactory7 *factory, IDWriteFontSet
     struct dwrite_fontcollection *collection;
     HRESULT hr = S_OK;
     size_t i;
-    const char *sgi = getenv("SteamGameId");
 
     *ret = NULL;
 
@@ -4837,9 +4836,7 @@ HRESULT create_font_collection_from_set(IDWriteFactory7 *factory, IDWriteFontSet
         if (FAILED(hr = collection_add_font_entry(collection, &desc)))
             WARN("Failed to add font collection element, hr %#lx.\n", hr);
 
-        if ((!sgi) | (sgi && strcmp(sgi, "244210"))) {
-            IDWriteFontFileStream_Release(stream);
-        }
+        IDWriteFontFileStream_Release(stream);
     }
 
     if (family_model == DWRITE_FONT_FAMILY_MODEL_WEIGHT_STRETCH_STYLE)
