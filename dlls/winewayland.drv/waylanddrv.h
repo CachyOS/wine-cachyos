@@ -43,6 +43,7 @@
 #include "xdg-toplevel-tag-v1-client-protocol.h"
 #include "content-type-v1-client-protocol.h"
 #include "xdg-decoration-unstable-v1-client-protocol.h"
+#include "color-management-v1-client-protocol.h"
 
 #include "windef.h"
 #include "winbase.h"
@@ -228,6 +229,7 @@ struct wayland
     struct xdg_toplevel_tag_manager_v1 *xdg_toplevel_tag_manager_v1;
     struct wp_content_type_manager_v1 *wp_content_type_manager_v1;
     struct zxdg_decoration_manager_v1 *zxdg_decoration_manager_v1;
+    struct wp_color_manager_v1 *wp_color_manager_v1;
     struct wayland_seat seat;
     struct wayland_keyboard keyboard;
     struct wayland_pointer pointer;
@@ -237,6 +239,9 @@ struct wayland
     /* Protects the output_list and the wayland_output.current states. */
     pthread_mutex_t output_mutex;
     LONG input_serial;
+    BOOL supports_pq;
+    BOOL supports_scrgb;
+    BOOL supports_extended_volume;
 };
 
 struct wayland_output_mode
@@ -247,11 +252,24 @@ struct wayland_output_mode
     int32_t refresh;
 };
 
+struct wayland_primaries
+{
+    int32_t r_x;
+    int32_t r_y;
+    int32_t g_x;
+    int32_t g_y;
+    int32_t b_x;
+    int32_t b_y;
+    int32_t w_x;
+    int32_t w_y;
+};
+
 struct wayland_output_state
 {
     int modes_count;
     struct rb_tree modes;
     struct wayland_output_mode *current_mode;
+    struct wayland_primaries primaries;
     char *name;
     char *make;
     char *model;
@@ -259,6 +277,11 @@ struct wayland_output_state
     int logical_w, logical_h;
     int physical_w, physical_h;
     int transform;
+    uint32_t max_fall;
+    uint32_t max_cll;
+    uint32_t max_target_lum;
+    uint32_t ref_lum;
+    BOOL supports_hdr;
 };
 
 struct wayland_output
@@ -266,6 +289,9 @@ struct wayland_output
     struct wl_list link;
     struct wl_output *wl_output;
     struct zxdg_output_v1 *zxdg_output_v1;
+    struct wp_image_description_v1 *wp_image_description_v1;
+    struct wp_image_description_info_v1 *wp_image_description_info_v1;
+    struct wp_color_management_output_v1 *wp_color_management_output_v1;
     uint32_t global_id;
     unsigned int pending_flags;
     struct wayland_output_state pending;
@@ -370,6 +396,7 @@ BOOL wayland_output_create(uint32_t id, uint32_t version);
 void wayland_output_destroy(struct wayland_output *output);
 void wayland_output_use_xdg_extension(struct wayland_output *output);
 struct wayland_output *wayland_output_for_rect(const RECT *rect);
+void wayland_color_manager_init(void);
 
 /**********************************************************************
  *          Wayland surface

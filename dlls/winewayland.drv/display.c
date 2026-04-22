@@ -205,8 +205,18 @@ static void wayland_add_device_source(const struct gdi_device_manager *device_ma
     device_manager->add_source(output_info->output->name, state_flags, dpi, param);
 }
 
+/* borrowed from gamescope with permission */
+static uint8_t encode_max_luminance(float nits)
+{
+    if (nits == 0.0f)
+        return 0;
+
+    return ceilf((logf(nits / 50.0f) / logf(2.0f)) * 32.0f);
+}
+
 static UINT get_edid(struct output_info *output_info, unsigned char **edid)
 {
+    const struct wayland_primaries *primaries = &output_info->output->primaries;
     struct wayland_output_mode *mode = output_info->output->current_mode;
     const char *model = output_info->output->model;
     unsigned int edid_size = 128, extensions = 0;
@@ -214,6 +224,12 @@ static UINT get_edid(struct output_info *output_info, unsigned char **edid)
     unsigned int i, mwidth, mheight;
     unsigned char *data, *p, c;
     char temp_model[13] = {0};
+
+    if (output_info->output->supports_hdr)
+    {
+        edid_size += 128;
+        extensions++;
+    }
 
     if (!(*edid = calloc(edid_size, sizeof(**edid))))
         return 0;
@@ -246,6 +262,18 @@ static UINT get_edid(struct output_info *output_info, unsigned char **edid)
     data[21] = round(mwidth / 10.0); /* cm */
     data[22] = round(mheight / 10.0); /* cm */
     data[24] = 0x6;
+    data[25] = ((primaries->r_x & 0x3) << 6) | ((primaries->r_y & 0x3) << 4) |
+               ((primaries->g_x & 0x3) << 2) | (primaries->g_y & 0x3);
+    data[26] = ((primaries->b_x & 0x3) << 6) | ((primaries->b_y & 0x3) << 4) |
+               ((primaries->w_x & 0x3) << 2) | (primaries->w_y & 0x3);
+    data[27] = (primaries->r_x & 0x3fc) >> 2;
+    data[28] = (primaries->r_y & 0x3fc) >> 2;
+    data[29] = (primaries->g_x & 0x3fc) >> 2;
+    data[30] = (primaries->g_y & 0x3fc) >> 2;
+    data[31] = (primaries->b_x & 0x3fc) >> 2;
+    data[32] = (primaries->b_y & 0x3fc) >> 2;
+    data[33] = (primaries->w_x & 0x3fc) >> 2;
+    data[34] = (primaries->w_y & 0x3fc) >> 2;
 
     for (i = 0; i < 16; ++i) data[38 + i] = 1;
 
@@ -295,12 +323,45 @@ static UINT get_edid(struct output_info *output_info, unsigned char **edid)
         c += data[i];
     data[127] = 256 - c;
 
+    p = data;
+
+    if (output_info->output->supports_hdr)
+    {
+        p += 128;
+
+        p[0] = 2;
+        p[1] = 3;
+        p[2] = 0xb;
+
+        p += 4;
+
+        p[0] = (0x7 << 5) | 0x6; /* HDR static metadata size */
+        p[1] = 6;
+
+        /* HDR static metadata block */
+
+        p[2] = 0x7; /* ST2084 | SDR | HDR */
+        p[3] = 1;
+        p[4] = encode_max_luminance(output_info->output->max_cll);
+        p[5] = encode_max_luminance(output_info->output->max_fall);
+        p[6] = 0; /* assume undefined, games often don't implement this properly */
+
+        /* reset p to beginning of the CTA block */
+        p = data + 128;
+        c = 0;
+
+        for (i = 0; i < 127; ++i)
+            c += p[i];
+        p[127] = 256 - c;
+    }
+
     return edid_size;
 }
 
 static void wayland_add_device_monitor(const struct gdi_device_manager *device_manager,
                                        void *param, struct output_info *output_info)
 {
+    const char *env;
     struct gdi_monitor monitor = {0};
 
     SetRect(&monitor.rc_monitor, output_info->x, output_info->y,
@@ -310,6 +371,12 @@ static void wayland_add_device_monitor(const struct gdi_device_manager *device_m
     monitor.edid_len = get_edid(output_info, &monitor.edid);
     /* We don't have a direct way to get the work area in Wayland. */
     monitor.rc_work = monitor.rc_monitor;
+    monitor.hdr_enabled = output_info->output->supports_hdr;
+
+    if ((env = getenv("DXVK_HDR")) && atoi(env))
+    {
+        monitor.hdr_enabled = TRUE;
+    }
 
     TRACE("name=%s rc_monitor=rc_work=%s\n",
           output_info->output->name, wine_dbgstr_rect(&monitor.rc_monitor));
