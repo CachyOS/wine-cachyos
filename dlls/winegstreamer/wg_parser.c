@@ -290,7 +290,7 @@ static NTSTATUS wg_parser_stream_enable(void *args)
     }
 
     /* Proton override: if PROTON_GST_VIDEO_ORIENTATION is set then manually set orientation based on value */
-    if (orientation)
+    if (format->major_type == WG_MAJOR_TYPE_VIDEO && orientation)
     {
         GST_INFO("Manual video orientation: %s.", orientation);
         gst_util_set_object_arg(G_OBJECT(stream->flip), "method", orientation);
