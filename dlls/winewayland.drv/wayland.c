@@ -40,7 +40,10 @@ struct wayland process_wayland =
     .text_input.mutex = PTHREAD_MUTEX_INITIALIZER,
     .data_device.mutex = PTHREAD_MUTEX_INITIALIZER,
     .output_list = {&process_wayland.output_list, &process_wayland.output_list},
-    .output_mutex = PTHREAD_MUTEX_INITIALIZER
+    .output_mutex = PTHREAD_MUTEX_INITIALIZER,
+    .supports_extended_volume = FALSE,
+    .supports_pq = FALSE,
+    .supports_scrgb = FALSE
 };
 
 /**********************************************************************
@@ -246,6 +249,13 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
                 wl_registry_bind(registry, id, &zxdg_decoration_manager_v1_interface, 1);
         }
     }
+    else if (strcmp(interface, "wp_color_manager_v1") == 0)
+    {
+        process_wayland.wp_color_manager_v1 =
+            wl_registry_bind(registry, id, &wp_color_manager_v1_interface,
+                             version < 2 ? version : 2);
+        if (process_wayland.wp_color_manager_v1) wayland_color_manager_init();
+    }
 }
 
 static void registry_handle_global_remove(void *data, struct wl_registry *registry,
@@ -331,6 +341,13 @@ BOOL wayland_process_init(void)
      * initial events produced from registering the globals. */
     wl_display_roundtrip_queue(process_wayland.wl_display, process_wayland.wl_event_queue);
     wl_display_roundtrip_queue(process_wayland.wl_display, process_wayland.wl_event_queue);
+
+    /* An additional few roundtrips are needed:
+     * 1. Event handling for zxdg_output and color management output.
+     * 2. Event handling for the created image descriptions. */
+    wl_display_roundtrip_queue(process_wayland.wl_display, process_wayland.wl_event_queue);
+    wl_display_roundtrip_queue(process_wayland.wl_display, process_wayland.wl_event_queue);
+    TRACE("Finished initial roundtrips\n");
 
     /* Check for required protocol globals. */
     if (!process_wayland.wl_compositor)
