@@ -253,8 +253,11 @@ struct wayland_output_state
     struct rb_tree modes;
     struct wayland_output_mode *current_mode;
     char *name;
+    char *make;
+    char *model;
     int logical_x, logical_y;
     int logical_w, logical_h;
+    int physical_w, physical_h;
     int transform;
 };
 
