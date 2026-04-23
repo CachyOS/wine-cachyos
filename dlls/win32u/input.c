@@ -986,10 +986,18 @@ static HKL get_locale_kbd_layout(void)
 HKL WINAPI NtUserGetKeyboardLayout( DWORD thread_id )
 {
     struct user_thread_info *thread = get_user_thread_info();
-    HKL layout = thread->kbd_layout;
+    HKL layout = NULL;
 
     if (thread_id && thread_id != GetCurrentThreadId())
-        FIXME( "couldn't return keyboard layout for thread %04x\n", thread_id );
+    {
+        SERVER_START_REQ(get_thread_layout)
+        {
+            req->tid = thread_id;
+            if (!wine_server_call(req))
+                layout = wine_server_get_ptr(reply->layout);
+        }
+        SERVER_END_REQ;
+    } else layout = thread->kbd_layout;
 
     if (!layout) return get_locale_kbd_layout();
     return layout;
@@ -1356,6 +1364,14 @@ HKL WINAPI NtUserActivateKeyboardLayout( HKL layout, UINT flags )
 
         info->kbd_layout = layout;
         info->kbd_layout_id = 0;
+
+        SERVER_START_REQ(set_thread_layout)
+        {
+            req->tid = GetCurrentThreadId();
+            req->layout = wine_server_client_ptr(layout);
+            wine_server_call(req);
+        }
+        SERVER_END_REQ;
 
         if (ime_hwnd) send_message( ime_hwnd, WM_IME_INTERNAL, IME_INTERNAL_HKL_ACTIVATE, HandleToUlong(layout) );
 
