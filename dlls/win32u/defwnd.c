@@ -3014,6 +3014,14 @@ LRESULT default_window_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, 
             int count = 0;
             info->kbd_layout = (HKL)lparam;
 
+            SERVER_START_REQ(set_thread_layout)
+            {
+                req->tid = GetCurrentThreadId();
+                req->layout = wine_server_client_ptr( info->kbd_layout );
+                wine_server_call(req);
+            }
+            SERVER_END_REQ;
+
             if (!win_array)
                 break;
             while (win_array[count])
