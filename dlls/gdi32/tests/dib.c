@@ -3007,6 +3007,119 @@ static inline COLORREF aa_colorref( COLORREF dst, COLORREF text, BYTE glyph )
 
 static const BYTE masks[8] = {0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01};
 
+static unsigned int draw_runtime_smoothing_text( HDC hdc, const BITMAPINFO *bmi, BYTE *bits,
+                                                 HFONT font, BOOL smoothing )
+{
+    unsigned int mixed = 0, size = bmi->bmiHeader.biWidth * abs( bmi->bmiHeader.biHeight );
+    static const DWORD background = 0x00ff00ff;
+    static const DWORD foreground = 0x00000000;
+    BOOL text_pixels = FALSE;
+    BOOL ret;
+    int i;
+
+    ret = SystemParametersInfoA( SPI_SETFONTSMOOTHING, smoothing, NULL, 0 );
+    ok( ret, "SPI_SETFONTSMOOTHING failed, error %lu\n", GetLastError() );
+    ret = SystemParametersInfoA( SPI_SETFONTSMOOTHINGTYPE, 0, UlongToPtr(FE_FONTSMOOTHINGSTANDARD), 0 );
+    ok( ret, "SPI_SETFONTSMOOTHINGTYPE failed, error %lu\n", GetLastError() );
+
+    SelectObject( hdc, GetStockObject( SYSTEM_FONT ) );
+    SelectObject( hdc, font );
+
+    for (i = 0; i < size; i++)
+        ((DWORD *)bits)[i] = background;
+
+    SetTextColor( hdc, RGB(0, 0, 0) );
+    SetBkMode( hdc, TRANSPARENT );
+    ret = ExtTextOutA( hdc, 8, 48, 0, NULL, "Hello Wine", 10, NULL );
+    ok( ret, "ExtTextOutA failed\n" );
+
+    for (i = 0; i < size; i++)
+    {
+        DWORD pixel = ((DWORD *)bits)[i] & 0x00ffffff;
+
+        if (pixel != background)
+        {
+            text_pixels = TRUE;
+            if (pixel != foreground) mixed++;
+        }
+    }
+
+    ok( text_pixels, "expected some text pixels\n" );
+
+    return mixed;
+}
+
+static void test_runtime_font_smoothing(void)
+{
+    BITMAPINFO bmi = {{ sizeof(BITMAPINFOHEADER), 256, -96, 1, 32, BI_RGB }};
+    HFONT font, cleartype_font, old_font;
+    BOOL old_smoothing, ret;
+    HBITMAP dib, old_dib;
+    unsigned int mixed;
+    LOGFONTA lf = {0};
+    TEXTMETRICA tm;
+    UINT old_type;
+    BYTE *bits;
+    HDC hdc;
+
+    ret = SystemParametersInfoA( SPI_GETFONTSMOOTHING, 0, &old_smoothing, 0 );
+    if (!ret)
+    {
+        win_skip( "SPI_GETFONTSMOOTHING failed, error %lu\n", GetLastError() );
+        return;
+    }
+    ret = SystemParametersInfoA( SPI_GETFONTSMOOTHINGTYPE, 0, &old_type, 0 );
+    ok( ret, "SPI_GETFONTSMOOTHINGTYPE failed, error %lu\n", GetLastError() );
+
+    hdc = CreateCompatibleDC( NULL );
+    ok( hdc != NULL, "CreateCompatibleDC failed\n" );
+
+    dib = CreateDIBSection( hdc, &bmi, DIB_RGB_COLORS, (void **)&bits, NULL, 0 );
+    ok( dib != NULL, "CreateDIBSection failed\n" );
+    old_dib = SelectObject( hdc, dib );
+
+    strcpy( lf.lfFaceName, "Tahoma" );
+    lf.lfHeight = 32;
+    lf.lfQuality = DEFAULT_QUALITY;
+
+    font = CreateFontIndirectA( &lf );
+    ok( font != NULL, "CreateFontIndirectA failed\n" );
+    lf.lfQuality = CLEARTYPE_QUALITY;
+    cleartype_font = CreateFontIndirectA( &lf );
+    ok( cleartype_font != NULL, "CreateFontIndirectA failed\n" );
+
+    old_font = SelectObject( hdc, font );
+    GetTextMetricsA( hdc, &tm );
+    if (!(tm.tmPitchAndFamily & TMPF_VECTOR))
+    {
+        skip( "skipping as a bitmap font has been selected for Tahoma.\n" );
+        goto done;
+    }
+
+    mixed = draw_runtime_smoothing_text( hdc, &bmi, bits, font, TRUE );
+    ok( mixed, "expected some antialiased pixels\n" );
+
+    mixed = draw_runtime_smoothing_text( hdc, &bmi, bits, font, FALSE );
+    todo_wine
+    ok( !mixed, "expected no antialiased pixels, got %u\n", mixed );
+
+    mixed = draw_runtime_smoothing_text( hdc, &bmi, bits, cleartype_font, FALSE );
+    ok( mixed, "expected some antialiased pixels\n" );
+
+done:
+    SelectObject( hdc, old_font );
+    DeleteObject( font );
+    DeleteObject( cleartype_font );
+    SelectObject( hdc, old_dib );
+    DeleteObject( dib );
+    DeleteDC( hdc );
+
+    ret = SystemParametersInfoA( SPI_SETFONTSMOOTHING, old_smoothing, NULL, 0 );
+    ok( ret, "failed to restore SPI_SETFONTSMOOTHING, error %lu\n", GetLastError() );
+    ret = SystemParametersInfoA( SPI_SETFONTSMOOTHINGTYPE, 0, UlongToPtr(old_type), 0 );
+    ok( ret, "failed to restore SPI_SETFONTSMOOTHINGTYPE, error %lu\n", GetLastError() );
+}
+
 static void draw_text_2( HDC hdc, const BITMAPINFO *bmi, BYTE *bits, BOOL aa )
 {
     DWORD dib_size = get_dib_size(bmi), ret;
@@ -3533,6 +3646,7 @@ START_TEST(dib)
 {
     CryptAcquireContextW(&crypt_prov, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT);
 
+    test_runtime_font_smoothing();
     test_simple_graphics();
 
     CryptReleaseContext(crypt_prov, 0);
