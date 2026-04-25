@@ -163,25 +163,53 @@ static BOOL output_info_array_resolve_overlaps(struct wl_array *output_info_arra
 
 static void output_info_array_zero_primary(struct wl_array *output_info_array)
 {
+    const char *env = getenv("WAYLANDDRV_PRIMARY_MONITOR");
     int x_offset = 0, y_offset = 0;
     struct output_info *info;
     UINT64 max_score = 0;
+    int count = 0;
 
-    /* rank monitors by bandwidth */
-    wl_array_for_each(info, output_info_array)
+    if (env)
     {
-        struct wayland_output_mode *mode = info->output->current_mode;
-        UINT64 score = (UINT64)mode->height *
-                       (UINT64)mode->width * ((UINT64)(mode->refresh + 500) / 1000)
-                       - (INT64)(info->output->logical_x / 100)
-                       - (INT64)(info->output->logical_y / 100)
-                       + (UINT64)info->output->max_cll;
-
-        if (score > max_score)
+        wl_array_for_each(info, output_info_array)
         {
-            x_offset = info->x;
-            y_offset = info->y;
-            max_score = score;
+            if (!strcmp(info->output->name, env))
+            {
+                x_offset = info->x;
+                y_offset = info->y;
+                count++;
+            }
+        }
+
+        if (count > 1)
+        {
+            x_offset = 0;
+            y_offset = 0;
+            ERR("More than one output with name %s\n", debugstr_a(env));
+        }
+        else if (count == 0)
+        {
+            ERR("Could not find output %s\n", debugstr_a(env));
+        }
+    }
+    else
+    {
+        /* rank monitors by bandwidth */
+        wl_array_for_each(info, output_info_array)
+        {
+            struct wayland_output_mode *mode = info->output->current_mode;
+            UINT64 score = (UINT64)mode->height *
+                        (UINT64)mode->width * ((UINT64)(mode->refresh + 500) / 1000)
+                        - (INT64)(info->output->logical_x / 100)
+                        - (INT64)(info->output->logical_y / 100)
+                        + (UINT64)info->output->max_cll;
+
+            if (score > max_score)
+            {
+                x_offset = info->x;
+                y_offset = info->y;
+                max_score = score;
+            }
         }
     }
 
