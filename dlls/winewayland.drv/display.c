@@ -161,6 +161,37 @@ static BOOL output_info_array_resolve_overlaps(struct wl_array *output_info_arra
     return found_overlap;
 }
 
+static void output_info_array_zero_primary(struct wl_array *output_info_array)
+{
+    int x_offset = 0, y_offset = 0;
+    struct output_info *info;
+    UINT64 max_score = 0;
+
+    /* rank monitors by bandwidth */
+    wl_array_for_each(info, output_info_array)
+    {
+        struct wayland_output_mode *mode = info->output->current_mode;
+        UINT64 score = (UINT64)mode->height *
+                       (UINT64)mode->width * ((UINT64)(mode->refresh + 500) / 1000)
+                       - (INT64)(info->output->logical_x / 100)
+                       - (INT64)(info->output->logical_y / 100)
+                       + (UINT64)info->output->max_cll;
+
+        if (score > max_score)
+        {
+            x_offset = info->x;
+            y_offset = info->y;
+            max_score = score;
+        }
+    }
+
+    wl_array_for_each(info, output_info_array)
+    {
+        info->x -= x_offset;
+        info->y -= y_offset;
+    }
+}
+
 static void output_info_array_arrange_physical_coords(struct wl_array *output_info_array)
 {
     struct output_info *info;
@@ -179,6 +210,9 @@ static void output_info_array_arrange_physical_coords(struct wl_array *output_in
     while (output_info_array_resolve_overlaps(output_info_array) &&
            ++steps < num_outputs)
         continue;
+
+    /* places the primary output at 0,0 and offsets the other outputs accordingly */
+    output_info_array_zero_primary(output_info_array);
 
     /* Now that we have our physical pixel coordinates, sort from physical left
      * to right, but ensure the primary output is first. */
