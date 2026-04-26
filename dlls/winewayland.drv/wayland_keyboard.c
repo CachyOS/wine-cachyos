@@ -1000,12 +1000,13 @@ static void keyboard_handle_leave(void *private, struct wl_keyboard *wl_keyboard
     }
 }
 
-static void send_right_control(HWND hwnd, uint32_t state)
+static void send_keyboard_input(HWND hwnd, UINT scan, UINT vkey, UINT flags, uint32_t state)
 {
     INPUT input = {0};
     input.type = INPUT_KEYBOARD;
-    input.ki.wScan = 0xe000 | (key2scan(KEY_RIGHTCTRL) & 0xff);
-    input.ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_EXTENDEDKEY;
+    input.ki.wVk = vkey;
+    input.ki.wScan = scan;
+    input.ki.dwFlags = flags;
     if (state == WL_KEYBOARD_KEY_STATE_RELEASED) input.ki.dwFlags |= KEYEVENTF_KEYUP;
     NtUserSendHardwareInput(hwnd, 0, &input, 0);
 }
@@ -1014,8 +1015,8 @@ static void keyboard_handle_key(void *data, struct wl_keyboard *wl_keyboard,
                                 uint32_t serial, uint32_t time, uint32_t key,
                                 uint32_t state)
 {
+    UINT flags = KEYEVENTF_SCANCODE;
     UINT scan = key2scan(key);
-    INPUT input = {0};
     HWND hwnd;
 
     InterlockedExchange(&process_wayland.input_serial, serial);
@@ -1025,15 +1026,28 @@ static void keyboard_handle_key(void *data, struct wl_keyboard *wl_keyboard,
     TRACE_(key)("serial=%u hwnd=%p key=%d scan=%#x state=%#x\n", serial, hwnd, key, scan, state);
 
     /* NOTE: Windows normally sends VK_CONTROL + VK_MENU only if the layout has KLLF_ALTGR */
-    if (key == KEY_RIGHTALT) send_right_control(hwnd, state);
+    if (key == KEY_RIGHTALT)
+    {
+        send_keyboard_input(hwnd, 0xe000 | (key2scan(KEY_RIGHTCTRL) & 0xff), 0,
+                            KEYEVENTF_SCANCODE | KEYEVENTF_EXTENDEDKEY, state);
+    }
+    /* numlock is extended despite not having an extended scancode */
+    else if (key == KEY_NUMLOCK)
+    {
+        send_keyboard_input(hwnd, 0x45, VK_NUMLOCK, KEYEVENTF_EXTENDEDKEY, state);
+        return;
+    }
+    /* windows just behaves weird for right shift, see user32 tests */
+    else if (key == KEY_RIGHTSHIFT)
+    {
+        send_keyboard_input(hwnd, 0x36, VK_RSHIFT, KEYEVENTF_EXTENDEDKEY, state);
+        return;
+    }
 
-    input.type = INPUT_KEYBOARD;
-    input.ki.wScan = (scan & 0x300) ? scan + 0xdf00 : scan;
-    input.ki.dwFlags = KEYEVENTF_SCANCODE;
-    if (scan & ~0xff) input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+    if (scan & ~0xff) flags |= KEYEVENTF_EXTENDEDKEY;
+    if (scan & 0x300) scan += 0xdf00;
 
-    if (state == WL_KEYBOARD_KEY_STATE_RELEASED) input.ki.dwFlags |= KEYEVENTF_KEYUP;
-    NtUserSendHardwareInput(hwnd, 0, &input, 0);
+    send_keyboard_input(hwnd, scan, 0, flags, state);
 }
 
 static void keyboard_handle_modifiers(void *data, struct wl_keyboard *wl_keyboard,
