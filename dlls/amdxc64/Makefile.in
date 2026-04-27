@@ -7,3 +7,4 @@ EXTRADLLFLAGS = -mno-cygwin
 SOURCES = \
 	main.c \
 	amdxc_interfaces.idl \
+	vkd3d_device_vkd3d_ext.idl \
