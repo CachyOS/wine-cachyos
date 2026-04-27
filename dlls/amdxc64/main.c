@@ -34,79 +34,29 @@
 #include "d3d12.h"
 
 #include "amdxc_interfaces.h"
+#include "vkd3d_device_vkd3d_ext.h"
+#include "vkd3d_vk_includes.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(amdxc);
 
 static BOOL check_fsr4_supported(ID3D12Device *device)
 {
-    ID3D12DXVKInteropDevice *interop;
-    VkInstance instance;
-    VkDevice vk_device;
-    VkPhysicalDevice phys_device;
-    VkPhysicalDeviceProperties2 prop = {0};
-    VkPhysicalDeviceDriverProperties driver_prop = {0};
-    const char **extensions = NULL;
-    UINT extension_count = 0;
-    UINT major, minor;
-    BOOL has_float8 = FALSE, has_coopmat2 = FALSE, has_coopmat = FALSE;
-    BOOL rdna3_workaround = FALSE, ret = FALSE;
-    const char *env = getenv("DXIL_SPIRV_CONFIG");
+    BOOL ret = FALSE;
+    ID3D12DeviceExt3 *ext;
 
-    if (FAILED(ID3D12Device_QueryInterface(device, &IID_ID3D12DXVKInteropDevice, (void **)&interop)))
+    if (FAILED(ID3D12Device_QueryInterface(device, &IID_ID3D12DeviceExt3, (void **)&ext)))
         return FALSE;
 
-    if (FAILED(ID3D12DXVKInteropDevice_GetVulkanHandles(interop, &instance, &phys_device, &vk_device)))
-        goto fail;
+    ret = ID3D12DeviceExt3_SupportsAGSExtension(ext, D3D12_AGS_EXTENSION_WMMA_FP8_NATIVE);
 
-    prop.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-    prop.pNext = &driver_prop;
-    driver_prop.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES;
-
-    vkGetPhysicalDeviceProperties2(phys_device, &prop);
-
-    if (prop.properties.vendorID != 0x1002) goto fail;
-    /* only RADV supports FSR4 */
-    if (driver_prop.driverID != VK_DRIVER_ID_MESA_RADV) goto fail;
-
-    major = VK_API_VERSION_MAJOR(prop.properties.driverVersion);
-    minor = VK_API_VERSION_MINOR(prop.properties.driverVersion);
-
-    if (FAILED(ID3D12DXVKInteropDevice_GetDeviceExtensions(interop, &extension_count, NULL)))
-        goto fail;
-
-    extensions = malloc(sizeof(*extensions) * extension_count);
-
-    if (FAILED(ID3D12DXVKInteropDevice_GetDeviceExtensions(interop, &extension_count, extensions)))
-        goto fail;
-
-    for (UINT i = 0; i < extension_count; i++)
+    if (!ret)
     {
-        if (!strcmp("VK_NV_cooperative_matrix2", extensions[i]))
-            has_coopmat2 = TRUE;
-        if (!strcmp("VK_KHR_cooperative_matrix", extensions[i]))
-            has_coopmat = TRUE;
-        if (!strcmp("VK_EXT_shader_float8", extensions[i]))
-            has_float8 = TRUE;
+        const char *env = getenv("DXIL_SPIRV_CONFIG");
+        if (env && !strcmp(env, "wmma_rdna3_workaround"))
+            ret = ID3D12DeviceExt3_SupportsAGSExtension(ext, D3D12_AGS_EXTENSION_WMMA_FP8);
     }
 
-    if (env && strstr(env, "wmma_rdna3_workaround"))
-        rdna3_workaround = TRUE;
-
-    if (major > 25 || (major == 25 && minor >= 2))
-    {
-        /* RDNA 4+ */
-        if (has_coopmat2 && has_float8) ret = TRUE;
-        /*
-         * RDNA3 (or RDNA 2/1 with layer),
-         * ensure the user is doing stuff correctly
-         */
-        if (has_coopmat && rdna3_workaround) ret = TRUE;
-    }
-
-fail:
-    if (extensions) free(extensions);
-    ID3D12DXVKInteropDevice_Release(interop);
-
+    ID3D12DeviceExt3_Release(ext);
     return ret;
 }
 
