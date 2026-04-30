@@ -251,6 +251,7 @@ struct wayland
     LONG input_serial;
     BOOL supports_pq;
     BOOL supports_scrgb;
+    BOOL supports_win_pq;
     BOOL supports_extended_volume;
 };
 
@@ -337,6 +338,7 @@ struct wayland_client_surface
     HWND toplevel;
     struct wl_surface *wl_surface;
     struct wl_subsurface *wl_subsurface;
+    struct wp_color_management_surface_v1 *wp_color_management_surface_v1;
     struct wp_viewport *wp_viewport;
     struct wp_content_type_v1 *wp_content_type_v1;
 };
@@ -435,6 +437,8 @@ RECT map_rect_from_surface(struct wayland_surface *surface, RECT rect);
 POINT map_point_from_surface(struct wayland_surface *surface, POINT point);
 struct wayland_client_surface *wayland_client_surface_create(HWND hwnd);
 void wayland_client_surface_attach(struct wayland_client_surface *client, HWND toplevel);
+void wayland_client_surface_attach_image_description(struct client_surface *client,
+                                                     struct wp_image_description_v1 *image_desc);
 void wayland_surface_set_title(struct wayland_surface *surface, LPCWSTR title);
 void wayland_surface_assign_icon(struct wayland_surface *surface);
 void wayland_surface_set_icon_buffer(struct wayland_surface *surface, UINT type, const ICONINFO *ii);
