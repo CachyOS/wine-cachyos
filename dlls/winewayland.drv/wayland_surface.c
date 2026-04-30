@@ -1322,6 +1322,8 @@ static void wayland_client_surface_destroy(struct client_surface *client)
 
     TRACE("%s\n", debugstr_client_surface(client));
 
+    if (surface->wp_color_management_surface_v1)
+        wp_color_management_surface_v1_destroy(surface->wp_color_management_surface_v1);
     if (surface->wp_content_type_v1)
         wp_content_type_v1_destroy(surface->wp_content_type_v1);
     if (surface->wp_viewport)
@@ -1487,6 +1489,75 @@ void wayland_client_surface_attach(struct wayland_client_surface *client, HWND t
     wayland_surface_reconfigure_client(surface, client, &client_rect);
     /* Commit to apply subsurface positioning. */
     wl_surface_commit(surface->wl_surface);
+}
+
+static void wayland_image_description_v1_failed(void *user_data,
+                    struct wp_image_description_v1 *wp_image_description_v1,
+                    uint32_t cause, const char *msg)
+{
+    struct wayland_client_surface *surface = user_data;
+    ERR("cause=%u msg=%s\n", cause, debugstr_a(msg));
+
+    wp_image_description_v1_destroy(wp_image_description_v1);
+    client_surface_release(&surface->client);
+}
+
+static void wayland_image_description_v1_ready2(void *user_data,
+                    struct wp_image_description_v1 *wp_image_description_v1,
+                    uint32_t identity_hi, uint32_t identity_lo)
+{
+    struct wayland_client_surface *surface = user_data;
+    TRACE("id=%#x%x\n", identity_hi, identity_lo);
+
+    if (!surface->wp_color_management_surface_v1)
+    {
+        surface->wp_color_management_surface_v1 =
+            wp_color_manager_v1_get_surface(process_wayland.wp_color_manager_v1,
+                                            surface->wl_surface);
+        if (!surface->wp_color_management_surface_v1)
+        {
+            ERR("Failed to create color management surface for client surface!\n");
+            return;
+        }
+    }
+    wp_color_management_surface_v1_set_image_description(
+        surface->wp_color_management_surface_v1,
+        wp_image_description_v1,
+        WP_COLOR_MANAGER_V1_RENDER_INTENT_PERCEPTUAL);
+    wp_image_description_v1_destroy(wp_image_description_v1);
+    client_surface_release(&surface->client);
+}
+
+static void wayland_image_description_v1_ready(void *user_data,
+                    struct wp_image_description_v1 *wp_image_description_v1,
+                    uint32_t identity)
+{
+    wayland_image_description_v1_ready2(user_data, wp_image_description_v1, 0, identity);
+}
+
+static const struct wp_image_description_v1_listener image_description_listener = {
+    wayland_image_description_v1_failed,
+    wayland_image_description_v1_ready,
+    wayland_image_description_v1_ready2
+};
+
+void wayland_client_surface_attach_image_description(struct client_surface *client,
+                                                     struct wp_image_description_v1 *image_desc)
+{
+    struct wayland_client_surface *surface = impl_from_client_surface(client);
+    if (!image_desc)
+    {
+        if (surface->wp_color_management_surface_v1)
+        {
+            wp_color_management_surface_v1_destroy(surface->wp_color_management_surface_v1);
+            surface->wp_color_management_surface_v1 = NULL;
+        }
+        return;
+    }
+
+    client_surface_add_ref(&surface->client);
+    wp_image_description_v1_add_listener(image_desc, &image_description_listener, surface);
+    wl_display_flush(process_wayland.wl_display);
 }
 
 static void dummy_buffer_release(void *data, struct wl_buffer *buffer)
