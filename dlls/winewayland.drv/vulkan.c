@@ -140,9 +140,15 @@ static void wayland_map_device_extensions(struct vulkan_device_extensions *exten
     if (extensions->has_VK_KHR_external_fence_fd) extensions->has_VK_KHR_external_fence_win32 = 1;
 }
 
+static VkResult wayland_vulkan_colorspace_configure(VkColorSpaceKHR *colorspace, struct client_surface *client)
+{
+    return VK_SUCCESS;
+}
+
 static const struct vulkan_driver_funcs wayland_vulkan_driver_funcs =
 {
     .p_vulkan_surface_create = wayland_vulkan_surface_create,
+    .p_vulkan_colorspace_configure = wayland_vulkan_colorspace_configure,
     .p_get_physical_device_presentation_support = wayland_get_physical_device_presentation_support,
     .p_map_instance_extensions = wayland_map_instance_extensions,
     .p_map_device_extensions = wayland_map_device_extensions,
