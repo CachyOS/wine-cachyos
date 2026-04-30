@@ -222,6 +222,8 @@ static void wayland_output_done(struct wayland_output *output)
         process_wayland.supports_pq &&
         process_wayland.supports_scrgb)
     {
+        if (!process_wayland.supports_win_pq)
+            ERR("Compositor doesn't supports windows_bt2100, HDR10 ST2084 may look broken\n");
         output->current.supports_hdr = (output->current.max_target_lum > output->current.ref_lum);
     }
 
@@ -747,6 +749,8 @@ static void wayland_color_manager_handle_supported_feature(void *data,
 
     if (feature == WP_COLOR_MANAGER_V1_FEATURE_WINDOWS_SCRGB)
         process_wayland.supports_scrgb = TRUE;
+    else if (feature == WP_COLOR_MANAGER_V1_FEATURE_WINDOWS_BT2100)
+        process_wayland.supports_win_pq = TRUE;
     else if (feature == WP_COLOR_MANAGER_V1_FEATURE_EXTENDED_TARGET_VOLUME)
         process_wayland.supports_extended_volume = TRUE;
 
