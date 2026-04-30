@@ -43,7 +43,8 @@ struct wayland process_wayland =
     .output_mutex = PTHREAD_MUTEX_INITIALIZER,
     .supports_extended_volume = FALSE,
     .supports_pq = FALSE,
-    .supports_scrgb = FALSE
+    .supports_scrgb = FALSE,
+    .supports_win_pq = FALSE
 };
 
 /**********************************************************************
@@ -256,7 +257,7 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
 
         process_wayland.wp_color_manager_v1 =
             wl_registry_bind(registry, id, &wp_color_manager_v1_interface,
-                             version < 2 ? version : 2);
+                             version < 3 ? version : 3);
 
         wayland_color_manager_init();
         /* Add image descriptions to existing outputs. */
