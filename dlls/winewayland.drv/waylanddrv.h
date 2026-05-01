@@ -51,6 +51,7 @@ struct xkb_compose_table;
 #include "color-management-v1-client-protocol.h"
 #include "xdg-activation-v1-client-protocol.h"
 #include "pointer-warp-v1-client-protocol.h"
+#include "keyboard-shortcuts-inhibit-unstable-v1-client-protocol.h"
 
 #include "windef.h"
 #include "winbase.h"
@@ -239,6 +240,7 @@ struct wayland
     struct wp_color_manager_v1 *wp_color_manager_v1;
     struct xdg_activation_v1 *xdg_activation_v1;
     struct wp_pointer_warp_v1 *wp_pointer_warp_v1;
+    struct zwp_keyboard_shortcuts_inhibit_manager_v1* zwp_keyboard_shortcuts_inhibit_manager_v1;
     struct wayland_seat seat;
     struct wayland_keyboard keyboard;
     struct wayland_pointer pointer;
@@ -363,6 +365,7 @@ struct wayland_surface
     struct wl_surface *wl_surface;
     struct wp_viewport *wp_viewport;
     struct wp_fractional_scale_v1 *wp_fractional_scale_v1;
+    struct zwp_keyboard_shortcuts_inhibitor_v1* zwp_keyboard_shortcuts_inhibitor_v1;
     struct wayland_shm_buffer *small_icon_buffer;
     struct wayland_shm_buffer *big_icon_buffer;
 
@@ -437,6 +440,7 @@ void wayland_surface_set_title(struct wayland_surface *surface, LPCWSTR title);
 void wayland_surface_assign_icon(struct wayland_surface *surface);
 void wayland_surface_set_icon_buffer(struct wayland_surface *surface, UINT type, const ICONINFO *ii);
 void wayland_surface_activate(struct wayland_surface *surface);
+void wayland_surface_shortcut_control(struct wayland_surface *surface, BOOL inhibit);
 
 static inline BOOL wayland_surface_is_toplevel(struct wayland_surface *surface)
 {

@@ -318,6 +318,7 @@ static void wayland_surface_update_state_toplevel(struct wayland_surface *surfac
             (surface->current.state & WAYLAND_SURFACE_CONFIG_STATE_FULLSCREEN))
         {
             xdg_toplevel_unset_fullscreen(surface->xdg_toplevel);
+            wayland_surface_shortcut_control(surface, FALSE);
             surface->requested_output = NULL;
         }
 
@@ -347,6 +348,7 @@ static void wayland_surface_update_state_toplevel(struct wayland_surface *surfac
             }
 
             xdg_toplevel_set_fullscreen(surface->xdg_toplevel, output);
+            wayland_surface_shortcut_control(surface, TRUE);
             surface->requested_output = output;
 
             skip_fullscreen:
