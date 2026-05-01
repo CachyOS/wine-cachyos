@@ -13,6 +13,7 @@ SOURCES = \
 	dllmain.c \
 	fractional-scale-v1.xml \
 	ext-data-control-v1.xml \
+	keyboard-shortcuts-inhibit-unstable-v1.xml \
 	opengl.c \
 	pointer-constraints-unstable-v1.xml \
 	pointer-warp-v1.xml \
