@@ -582,6 +582,13 @@ void wayland_surface_clear_role(struct wayland_surface *surface)
             surface->xdg_toplevel_icon = NULL;
         }
 
+        if (surface->zwp_keyboard_shortcuts_inhibitor_v1)
+        {
+            zwp_keyboard_shortcuts_inhibitor_v1_destroy(
+                surface->zwp_keyboard_shortcuts_inhibitor_v1);
+            surface->zwp_keyboard_shortcuts_inhibitor_v1 = NULL;
+        }
+
         if (surface->wp_fractional_scale_v1)
         {
             wp_fractional_scale_v1_destroy(surface->wp_fractional_scale_v1);
@@ -1683,5 +1690,44 @@ void wayland_surface_activate(struct wayland_surface *surface)
         xdg_activation_token_v1_add_listener(token, &xdg_activation_listener, surface->hwnd);
         xdg_activation_token_v1_set_surface(token, surface->wl_surface);
         xdg_activation_token_v1_commit(token);
+    }
+}
+
+static BOOL use_inhibit(void)
+{
+    static int enabled = -1;
+
+    if (enabled == -1)
+    {
+        const char *env = getenv("WAYLANDDRV_SHORTCUT_INHIBIT");
+        enabled = env && atoi(env);
+    }
+
+    return enabled;
+}
+
+void wayland_surface_shortcut_control(struct wayland_surface *surface, BOOL inhibit)
+{
+    BOOL should_inhibit = inhibit && use_inhibit();
+
+    if (!process_wayland.zwp_keyboard_shortcuts_inhibit_manager_v1) return;
+
+    if (should_inhibit)
+    {
+        if (!surface->zwp_keyboard_shortcuts_inhibitor_v1)
+        {
+            surface->zwp_keyboard_shortcuts_inhibitor_v1 =
+                zwp_keyboard_shortcuts_inhibit_manager_v1_inhibit_shortcuts(
+                    process_wayland.zwp_keyboard_shortcuts_inhibit_manager_v1,
+                    surface->wl_surface, process_wayland.seat.wl_seat);
+            /* dont create a listener since we dont care
+             * if the shortcuts are actually inhibited or not */
+        }
+    }
+    else if (surface->zwp_keyboard_shortcuts_inhibitor_v1)
+    {
+        zwp_keyboard_shortcuts_inhibitor_v1_destroy(
+            surface->zwp_keyboard_shortcuts_inhibitor_v1);
+        surface->zwp_keyboard_shortcuts_inhibitor_v1 = NULL;
     }
 }
