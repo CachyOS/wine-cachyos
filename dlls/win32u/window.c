@@ -384,6 +384,9 @@ void add_window_client_surface( HWND hwnd, struct client_surface *surface )
 {
     pthread_mutex_lock( &surfaces_lock );
 
+    /* due to client surface reuse, this element may already be in the list */
+    if (!list_empty( &surface->entry )) list_remove( &surface->entry );
+
     surface->hwnd = hwnd;
     list_add_tail( &client_surfaces, &surface->entry );
     surface->funcs->update( surface );
