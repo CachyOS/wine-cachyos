@@ -583,13 +583,14 @@ static int battleye_launcher_redirect_hack( const WCHAR *app_name, WCHAR *new_na
 
 static const WCHAR *hack_append_command_line( const WCHAR *cmd )
 {
-    static const struct
+    struct option
     {
         const WCHAR *exe_name;
         const WCHAR *append;
         const char *steamgameid;
-    }
-    options[] =
+    };
+
+    static const struct option options[] =
     {
         {L"UniverseGenerator.exe", L" --disable_direct_composition=1"},
         {L"Blaite\\nw.exe", L" --disable_direct_composition=1"},
@@ -618,22 +619,71 @@ static const WCHAR *hack_append_command_line( const WCHAR *cmd )
         {L"UnrealCEFSubProcess.exe", L" --use-gl=swiftshader", "2316580"},
         {L"UnrealCEFSubProcess.exe", L" --use-angle=d3d9", "2684500"},
     };
+
+    /* Generally just workarounds for winewayland not supporting cross process rendering (yet) */
+    static const struct option wayland_options[] = {
+        {L"launcher_epic.exe", L" --in-process-gpu"}, /* ZZZ EGS */
+        {L"Battle.net.exe", L" --in-process-gpu"},
+        {L"RSI Launcher.exe", L" --in-process-gpu"},
+        {L"EADesktop.exe", L" --in-process-gpu"},
+        {L"Launcher.exe", L" --in-process-gpu", "230410"}, /* Warframe steam */
+        {L"idTechLauncher.exe", L" --in-process-gpu"},
+        {L"Paradox Launcher.exe",  L" --use-angle=gl --in-process-gpu"}
+    };
+
+    static const struct option wow64_options[] = {
+        {L"BlackDesertLauncher.exe", L" --disable-gpu --in-single-process"}
+    };
+
     unsigned int i;
-    char sgi[64];
+    char sgi[64] = {0};
+    char wayland_hack_enabled[64] = {0};
 
     if (!cmd) return NULL;
+
+    GetEnvironmentVariableA("SteamGameId", sgi, sizeof(sgi));
+    GetEnvironmentVariableA("WINE_WAYLAND_HACKS",
+        wayland_hack_enabled, sizeof(wayland_hack_enabled));
+
+    if (strcmp(wayland_hack_enabled, "1") == 0)
+    {
+        for (i = 0; i < ARRAY_SIZE(wayland_options); ++i)
+        {
+            if (wcsstr( cmd, wayland_options[i].exe_name ))
+            {
+                if (wayland_options[i].steamgameid && strcmp( sgi, wayland_options[i].steamgameid ))
+                    continue;
+                FIXME( "HACK: appending %s to command line.\n", debugstr_w(wayland_options[i].append) );
+                return wayland_options[i].append;
+            }
+        }
+    }
 
     for (i = 0; i < ARRAY_SIZE(options); ++i)
     {
         if (wcsstr( cmd, options[i].exe_name ))
         {
-            if (options[i].steamgameid && !(GetEnvironmentVariableA( "SteamGameId", sgi, sizeof(sgi) )
-                && !strcmp( sgi, options[i].steamgameid )))
+            if (options[i].steamgameid && strcmp( sgi, options[i].steamgameid ))
                 continue;
             FIXME( "HACK: appending %s to command line.\n", debugstr_w(options[i].append) );
             return options[i].append;
         }
     }
+
+    if ( is_wow64 )
+    {
+        for (i = 0; i < ARRAY_SIZE(wow64_options); ++i)
+        {
+            if (wcsstr( cmd, wow64_options[i].exe_name ))
+            {
+                if (wow64_options[i].steamgameid && strcmp( sgi, wow64_options[i].steamgameid ))
+                    continue;
+                FIXME( "HACK: appending %s to command line.\n", debugstr_w(wow64_options[i].append) );
+                return wow64_options[i].append;
+            }
+        }
+    }
+
     return NULL;
 }
 
