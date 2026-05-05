@@ -3100,7 +3100,6 @@ static void test_runtime_font_smoothing(void)
     ok( mixed, "expected some antialiased pixels\n" );
 
     mixed = draw_runtime_smoothing_text( hdc, &bmi, bits, font, FALSE );
-    todo_wine
     ok( !mixed, "expected no antialiased pixels, got %u\n", mixed );
 
     mixed = draw_runtime_smoothing_text( hdc, &bmi, bits, cleartype_font, FALSE );
