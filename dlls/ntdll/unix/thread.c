@@ -1470,6 +1470,129 @@ done:
 
 
 /***********************************************************************
+ *           start_system_thread
+ *
+ * Startup routine for a thread that runs entirely on the Unix side.
+ */
+static void start_system_thread( TEB *teb )
+{
+    struct ntdll_thread_data *thread_data = (struct ntdll_thread_data *)&teb->GdiTebBatch;
+    BOOL suspend;
+
+    thread_data->syscall_table = KeServiceDescriptorTable;
+    thread_data->syscall_trace = TRACE_ON(syscall);
+    thread_data->pthread_id = pthread_self();
+    thread_data->system_thread = TRUE;
+    pthread_setspecific( teb_key, teb );
+    server_init_thread( NULL, &suspend );
+    pthread_sigmask( SIG_UNBLOCK, &server_block_set, NULL );
+    thread_data->start( thread_data->param );
+    PsTerminateSystemThread( 0 );
+}
+
+
+/***********************************************************************
+ *              PsCreateSystemThread   (ntdll.so)
+ */
+NTSTATUS WINAPI PsCreateSystemThread( HANDLE *handle, ACCESS_MASK access, OBJECT_ATTRIBUTES *attr,
+                                      HANDLE process, CLIENT_ID *id, PRTL_THREAD_START_ROUTINE start, void *param )
+{
+    sigset_t sigset;
+    pthread_t pthread_id;
+    pthread_attr_t pthread_attr;
+    data_size_t len;
+    struct object_attributes *objattr;
+    struct ntdll_thread_data *thread_data;
+    INITIAL_TEB stack;
+    DWORD tid = 0;
+    int request_pipe[2];
+    TEB *teb;
+    unsigned int status;
+
+    if ((status = alloc_object_attributes( attr, &objattr, &len ))) return status;
+
+    if (server_pipe( request_pipe ) == -1)
+    {
+        free( objattr );
+        return STATUS_TOO_MANY_OPENED_FILES;
+    }
+    wine_server_send_fd( request_pipe[0] );
+
+    if (!access) access = THREAD_ALL_ACCESS;
+
+    SERVER_START_REQ( new_thread )
+    {
+        req->process    = wine_server_obj_handle( NtCurrentProcess() );
+        req->access     = access;
+        req->flags      = THREAD_CREATE_FLAGS_BYPASS_PROCESS_FREEZE;
+        req->request_fd = request_pipe[0];
+        wine_server_add_data( req, objattr, len );
+        if (!(status = wine_server_call( req )))
+        {
+            *handle = wine_server_ptr_handle( reply->handle );
+            tid = reply->tid;
+        }
+        close( request_pipe[0] );
+    }
+    SERVER_END_REQ;
+
+    free( objattr );
+    if (status)
+    {
+        close( request_pipe[1] );
+        return status;
+    }
+
+    pthread_sigmask( SIG_BLOCK, &server_block_set, &sigset );
+
+    if ((status = virtual_alloc_teb( &teb ))) goto done;
+
+    /* kernel stack only, system threads never run PE code */
+    if ((status = virtual_alloc_thread_stack( &stack, limit_4g, 0, kernel_stack_size, kernel_stack_size, FALSE )))
+    {
+        virtual_free_teb( teb );
+        goto done;
+    }
+
+    set_thread_id( teb, GetCurrentProcessId(), tid );
+
+    thread_data = (struct ntdll_thread_data *)&teb->GdiTebBatch;
+    thread_data->request_fd   = request_pipe[1];
+    thread_data->kernel_stack = stack.DeallocationStack;
+    thread_data->start = start;
+    thread_data->param = param;
+
+    pthread_attr_init( &pthread_attr );
+    pthread_attr_setstack( &pthread_attr, thread_data->kernel_stack, kernel_stack_size );
+    pthread_attr_setguardsize( &pthread_attr, 0 );
+    pthread_attr_setscope( &pthread_attr, PTHREAD_SCOPE_SYSTEM ); /* force creating a kernel thread */
+    InterlockedIncrement( &nb_threads );
+    if (pthread_create( &pthread_id, &pthread_attr, (void * (*)(void *))start_system_thread, teb ))
+    {
+        InterlockedDecrement( &nb_threads );
+        virtual_free_teb( teb );
+        status = STATUS_NO_MEMORY;
+    }
+    pthread_attr_destroy( &pthread_attr );
+
+done:
+    pthread_sigmask( SIG_SETMASK, &sigset, NULL );
+    if (status)
+    {
+        NtClose( *handle );
+        close( request_pipe[1] );
+        return status;
+    }
+    if (id)
+    {
+        id->UniqueProcess = ULongToHandle( GetCurrentProcessId() );
+        id->UniqueThread  = ULongToHandle( tid );
+    }
+    return status;
+}
+
+
+/***********************************************************************
  *           abort_thread
  */
 void abort_thread( int status )
@@ -1767,6 +1890,15 @@ NTSTATUS WINAPI NtTerminateThread( HANDLE handle, LONG exit_code )
         exit_thread( exit_code );
     }
     return ret;
+}
+
+
+/******************************************************************************
+ *              PsTerminateSystemThread  (ntdll.so)
+ */
+NTSTATUS WINAPI PsTerminateSystemThread( NTSTATUS exit_code )
+{
+    for (;;) exit_thread( exit_code );
 }
 
 

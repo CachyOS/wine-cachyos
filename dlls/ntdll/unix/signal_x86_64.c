@@ -2914,7 +2914,8 @@ static void quit_handler( int signal, siginfo_t *siginfo, void *sigcontext )
 {
     ucontext_t *ucontext = init_handler( sigcontext );
 
-    if (!is_inside_syscall( RSP_sig(ucontext) )) user_mode_abort_thread( 0, get_syscall_frame() );
+    if (!ntdll_get_thread_data()->system_thread && !is_inside_syscall( RSP_sig(ucontext) ))
+        user_mode_abort_thread( 0, get_syscall_frame() );
     abort_thread( 0 );
 }
 
@@ -2928,7 +2929,11 @@ static void usr1_handler( int signal, siginfo_t *siginfo, void *sigcontext )
 {
     ucontext_t *ucontext = init_handler( sigcontext );
 
-    if (is_inside_syscall( RSP_sig(ucontext) ))
+    if (ntdll_get_thread_data()->system_thread)
+    {
+        server_select( NULL, 0, SELECT_INTERRUPTIBLE, 0, NULL, NULL );
+    }
+    else if (is_inside_syscall( RSP_sig(ucontext) ))
     {
         struct syscall_frame *frame = get_syscall_frame();
         ULONG64 saved_compaction = 0;

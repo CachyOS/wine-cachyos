@@ -5414,6 +5414,11 @@ NTSYSAPI LONGLONG  WINAPI RtlLargeIntegerSubtract(LONGLONG,LONGLONG);
 NTSYSAPI NTSTATUS  WINAPI RtlLargeIntegerToChar(const ULONGLONG *,ULONG,ULONG,PCHAR);
 #endif
 
+#ifdef WINE_UNIX_LIB
+NTSYSAPI NTSTATUS  WINAPI PsCreateSystemThread(PHANDLE,ULONG,POBJECT_ATTRIBUTES,HANDLE,PCLIENT_ID,PRTL_THREAD_START_ROUTINE,PVOID);
+NTSYSAPI NTSTATUS  WINAPI PsTerminateSystemThread(NTSTATUS);
+#endif
+
 /* Wine internal functions */
 
 NTSYSAPI NTSTATUS WINAPI __wine_get_unix_env( const char *var, char *val, unsigned int buffer_len );
