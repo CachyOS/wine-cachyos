@@ -8068,10 +8068,11 @@ NTSTATUS WINAPI NtUserDisplayConfigGetDeviceInfo( DISPLAYCONFIG_DEVICE_INFO_HEAD
     }
     case DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO:
     {
+        static int once;
         DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO *color_info = (DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO *)packet;
         struct monitor *monitor;
 
-        FIXME( "DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO semi-stub.\n" );
+        if (!once++) FIXME( "DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO semi-stub.\n" );
 
         if (packet->size < sizeof(*color_info))
             return STATUS_INVALID_PARAMETER;
