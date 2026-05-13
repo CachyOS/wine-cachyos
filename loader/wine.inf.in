@@ -63,7 +63,6 @@ AddReg=\
     Debugger,\
     DirectX,\
     Fonts,\
-    FontSmooth,\
     LicenseInformation,\
     KeyboardLayouts,\
     MCI,\
@@ -566,12 +565,6 @@ HKCU,Software\Wine\Fonts\Replacements,"Palatino Linotype",,"Times New Roman"
 HKCU,Software\Wine\Fonts\Replacements,"Verdana",,"Times New Roman"
 HKCU,Software\Wine\Fonts\Replacements,"Segoe UI Semibold",,"Times New Roman"
 HKCU,Software\Wine\Fonts\Replacements,"Segoe UI",,"Times New Roman"
-
-[FontSmooth]
-HKCU,Control Panel\Desktop,"FontSmoothing",,"2"
-HKCU,Control Panel\Desktop,"FontSmoothingGamma",0x10001,0x00000578
-HKCU,Control Panel\Desktop,"FontSmoothingOrientation",0x10001,0x00000001
-HKCU,Control Panel\Desktop,"FontSmoothingType",0x10001,0x00000002
 
 [MCI]
 HKLM,%Mci32Str%,"AVIVideo",,"mciavi32.dll"
