@@ -2046,6 +2046,21 @@ static HWND set_focus_window( HWND hwnd, BOOL from_active )
     return previous;
 }
 
+static int use_activateapp_lparam_hack(void)
+{
+    static int cached = -1;
+    const char *env;
+
+    if (cached == -1)
+    {
+        cached = (env = getenv( "SteamGameId" )) && (0
+                    || !strcmp( env, "348550" )  /* Guilty Gear XX Accent Core Plus R */
+                 );
+        if (cached) FIXME( "HACK: use_activateapp_lparam_hack.\n" );
+    }
+    return cached;
+}
+
 /*******************************************************************
  *		set_active_window
  */
@@ -2119,10 +2134,13 @@ BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus, DWORD new
             }
             if (new_thread)
             {
+                DWORD activate_thread = (use_activateapp_lparam_hack() && !old_thread && new_thread)
+                                        ? new_thread : old_thread;
+
                 for (phwnd = list; *phwnd; phwnd++)
                 {
                     if (get_window_thread( *phwnd, NULL ) == new_thread)
-                        send_message( *phwnd, WM_ACTIVATEAPP, 1, old_thread );
+                        send_message( *phwnd, WM_ACTIVATEAPP, 1, activate_thread );
                 }
             }
             free( list );
