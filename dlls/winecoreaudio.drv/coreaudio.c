@@ -214,13 +214,6 @@ static NTSTATUS unix_process_attach(void *args)
     return STATUS_SUCCESS;
 }
 
-static NTSTATUS unix_main_loop(void *args)
-{
-    struct main_loop_params *params = args;
-    NtSetEvent(params->event, NULL);
-    return STATUS_SUCCESS;
-}
-
 static NTSTATUS unix_get_endpoint_ids(void *args)
 {
     struct get_endpoint_ids_params *params = args;
@@ -1782,7 +1775,8 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
 {
     unix_process_attach,
     unix_not_implemented,
-    unix_main_loop,
+    unix_not_implemented,
+    unix_not_implemented,
     unix_get_endpoint_ids,
     unix_create_stream,
     unix_release_stream,
@@ -1824,19 +1818,6 @@ C_ASSERT(ARRAYSIZE(__wine_unix_call_funcs) == funcs_count);
 #ifdef _WIN64
 
 typedef UINT PTR32;
-
-static NTSTATUS unix_wow64_main_loop(void *args)
-{
-    struct
-    {
-        PTR32 event;
-    } *params32 = args;
-    struct main_loop_params params =
-    {
-        .event = ULongToHandle(params32->event)
-    };
-    return unix_main_loop(&params);
-}
 
 static NTSTATUS unix_wow64_get_endpoint_ids(void *args)
 {
@@ -2238,7 +2219,8 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
 {
     unix_process_attach,
     unix_not_implemented,
-    unix_wow64_main_loop,
+    unix_not_implemented,
+    unix_not_implemented,
     unix_wow64_get_endpoint_ids,
     unix_wow64_create_stream,
     unix_wow64_release_stream,
