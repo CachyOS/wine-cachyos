@@ -237,13 +237,6 @@ static NTSTATUS oss_process_attach(void *args)
     return STATUS_SUCCESS;
 }
 
-static NTSTATUS oss_main_loop(void *args)
-{
-    struct main_loop_params *params = args;
-    NtSetEvent(params->event, NULL);
-    return STATUS_SUCCESS;
-}
-
 static NTSTATUS oss_get_endpoint_ids(void *args)
 {
     struct get_endpoint_ids_params *params = args;
@@ -1639,7 +1632,8 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
 {
     oss_process_attach,
     oss_not_implemented,
-    oss_main_loop,
+    oss_not_implemented,
+    oss_not_implemented,
     oss_get_endpoint_ids,
     oss_create_stream,
     oss_release_stream,
@@ -1696,19 +1690,6 @@ static NTSTATUS oss_wow64_test_connect(void *args)
     oss_test_connect(&params);
     params32->priority = params.priority;
     return STATUS_SUCCESS;
-}
-
-static NTSTATUS oss_wow64_main_loop(void *args)
-{
-    struct
-    {
-        PTR32 event;
-    } *params32 = args;
-    struct main_loop_params params =
-    {
-        .event = ULongToHandle(params32->event)
-    };
-    return oss_main_loop(&params);
 }
 
 static NTSTATUS oss_wow64_get_endpoint_ids(void *args)
@@ -2135,7 +2116,8 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
 {
     oss_process_attach,
     oss_not_implemented,
-    oss_wow64_main_loop,
+    oss_not_implemented,
+    oss_not_implemented,
     oss_wow64_get_endpoint_ids,
     oss_wow64_create_stream,
     oss_wow64_release_stream,
