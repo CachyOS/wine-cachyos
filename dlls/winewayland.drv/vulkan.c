@@ -171,6 +171,8 @@ static VkResult wayland_vulkan_surface_configure(VkColorSpaceKHR *colorspace,
     TRACE("mapping colorspace %u => %u\n", old, *colorspace);
 
     wayland_client_surface_attach_image_description(client, wp_image_description_v1);
+    /* wayland does not support inherit alpha */
+    wayland_client_surface_set_alpha(client, !(alpha_bits & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR));
 
     return VK_SUCCESS;
 err:

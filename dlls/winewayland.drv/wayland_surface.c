@@ -1561,6 +1561,12 @@ void wayland_client_surface_attach_image_description(struct client_surface *clie
     wl_display_flush(process_wayland.wl_display);
 }
 
+void wayland_client_surface_set_alpha(struct client_surface *client, BOOL alpha)
+{
+    struct wayland_client_surface *surface = impl_from_client_surface(client);
+    surface->has_alpha = alpha;
+}
+
 static void dummy_buffer_release(void *data, struct wl_buffer *buffer)
 {
     struct wayland_shm_buffer *shm_buffer = data;
@@ -1579,7 +1585,8 @@ static const struct wl_buffer_listener dummy_buffer_listener =
  * Ensure that the wayland surface has up-to-date contents, by committing
  * a dummy buffer if necessary.
  */
-void wayland_surface_ensure_contents(struct wayland_surface *surface)
+void wayland_surface_ensure_contents(struct wayland_surface *surface,
+                                     struct wayland_client_surface *client)
 {
     struct wayland_shm_buffer *dummy_shm_buffer;
     HRGN damage = NULL;
@@ -1600,8 +1607,12 @@ void wayland_surface_ensure_contents(struct wayland_surface *surface)
 
     if (wayland_surface_reconfigure(surface))
     {
-        /* Create a transparent dummy buffer. */
-        dummy_shm_buffer = wayland_shm_buffer_create(width, height, WL_SHM_FORMAT_ARGB8888);
+        enum wl_shm_format format = WL_SHM_FORMAT_ARGB8888;
+
+        /* if the client surface is opaque, the toplevel can also be opaque */
+        if (client && !client->has_alpha) format = WL_SHM_FORMAT_XRGB8888;
+
+        dummy_shm_buffer = wayland_shm_buffer_create(width, height, format);
         if (!dummy_shm_buffer)
         {
             ERR("Failed to create dummy buffer\n");
@@ -1615,7 +1626,9 @@ void wayland_surface_ensure_contents(struct wayland_surface *surface)
 
         wayland_surface_attach_shm(surface, dummy_shm_buffer, damage);
         wl_surface_commit(surface->wl_surface);
-        surface->needs_contents = FALSE;
+        /* if we don't have a client yet, defer resetting this flag.
+         * Otherwise, the wrong surface format may be used. */
+        if (client) surface->needs_contents = FALSE;
     }
 
     if (damage) NtGdiDeleteObjectApp(damage);

@@ -1036,7 +1036,7 @@ void ensure_window_surface_contents(HWND hwnd)
 
     if ((wayland_surface = data->wayland_surface))
     {
-        wayland_surface_ensure_contents(wayland_surface);
+        wayland_surface_ensure_contents(wayland_surface, data->client_surface);
 
         /* Handle any processed configure request, to ensure the related
          * surface state is applied by the compositor. */
