@@ -345,6 +345,8 @@ struct wayland_client_surface
     struct wp_color_management_surface_v1 *wp_color_management_surface_v1;
     struct wp_viewport *wp_viewport;
     struct wp_content_type_v1 *wp_content_type_v1;
+    /* if true then the client surface has an alpha channel controlling transparency */
+    BOOL has_alpha;
 };
 
 struct wayland_shm_buffer
@@ -439,7 +441,9 @@ struct wayland_client_surface *wayland_client_surface_create(HWND hwnd);
 void wayland_client_surface_attach(struct wayland_client_surface *client, HWND toplevel);
 void wayland_client_surface_attach_image_description(struct client_surface *client,
                                                      struct wp_image_description_v1 *image_desc);
-void wayland_surface_ensure_contents(struct wayland_surface *surface);
+void wayland_client_surface_set_alpha(struct client_surface *client, BOOL alpha);
+void wayland_surface_ensure_contents(struct wayland_surface *surface,
+                                     struct wayland_client_surface *client);
 void wayland_surface_set_title(struct wayland_surface *surface, LPCWSTR title);
 void wayland_surface_assign_icon(struct wayland_surface *surface);
 void wayland_surface_set_icon_buffer(struct wayland_surface *surface, UINT type, const ICONINFO *ii);
