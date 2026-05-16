@@ -366,7 +366,7 @@ struct client_surface;
 struct vulkan_driver_funcs
 {
     VkResult (*p_vulkan_surface_create)(HWND, BOOL, const struct vulkan_instance *, VkSurfaceKHR *, struct client_surface **);
-    VkResult (*p_vulkan_colorspace_configure)( VkColorSpaceKHR *, struct client_surface * );
+    VkResult (*p_vulkan_surface_configure)( VkColorSpaceKHR *, VkCompositeAlphaFlagBitsKHR, struct client_surface * );
     VkBool32 (*p_get_physical_device_presentation_support)(struct vulkan_physical_device *, uint32_t);
     void (*p_map_instance_extensions)( struct vulkan_instance_extensions *extensions );
     void (*p_map_device_extensions)( struct vulkan_device_extensions *extensions );

@@ -2599,7 +2599,7 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
                    create_info_host.imageFormat );
     }
 
-    if ((res = driver_funcs->p_vulkan_colorspace_configure( &create_info_host.imageColorSpace, surface->client )))
+    if ((res = driver_funcs->p_vulkan_surface_configure( &create_info_host.imageColorSpace, create_info_host.compositeAlpha, surface->client )))
     {
         free( swapchain );
         return res;
@@ -3978,7 +3978,9 @@ static VkResult nulldrv_vulkan_surface_create( HWND hwnd, BOOL raw, const struct
     return res;
 }
 
-static VkResult nulldrv_vulkan_colorspace_configure( VkColorSpaceKHR *colorspace, struct client_surface *client )
+static VkResult nulldrv_vulkan_surface_configure( VkColorSpaceKHR *colorspace,
+                                                  VkCompositeAlphaFlagBitsKHR alpha_bits,
+                                                  struct client_surface *client )
 {
     return VK_SUCCESS;
 }
@@ -4009,7 +4011,7 @@ static void nulldrv_map_device_extensions( struct vulkan_device_extensions *exte
 static const struct vulkan_driver_funcs nulldrv_funcs =
 {
     .p_vulkan_surface_create = nulldrv_vulkan_surface_create,
-    .p_vulkan_colorspace_configure = nulldrv_vulkan_colorspace_configure,
+    .p_vulkan_surface_configure = nulldrv_vulkan_surface_configure,
     .p_get_physical_device_presentation_support = nulldrv_get_physical_device_presentation_support,
     .p_map_instance_extensions = nulldrv_map_instance_extensions,
     .p_map_device_extensions = nulldrv_map_device_extensions,
@@ -4042,10 +4044,12 @@ static VkResult lazydrv_vulkan_surface_create( HWND hwnd, BOOL raw, const struct
     return driver_funcs->p_vulkan_surface_create( hwnd, raw, instance, surface, client );
 }
 
-static VkResult lazydrv_vulkan_colorspace_configure( VkColorSpaceKHR *colorspace, struct client_surface *client )
+static VkResult lazydrv_vulkan_surface_configure( VkColorSpaceKHR *colorspace,
+                                                  VkCompositeAlphaFlagBitsKHR alpha_bits,
+                                                  struct client_surface *client )
 {
     vulkan_driver_load();
-    return driver_funcs->p_vulkan_colorspace_configure( colorspace, client );
+    return driver_funcs->p_vulkan_surface_configure( colorspace, alpha_bits, client );
 }
 
 static VkBool32 lazydrv_get_physical_device_presentation_support( struct vulkan_physical_device *physical_device, uint32_t queue )
@@ -4069,7 +4073,7 @@ static void lazydrv_map_device_extensions( struct vulkan_device_extensions *exte
 static const struct vulkan_driver_funcs lazydrv_funcs =
 {
     .p_vulkan_surface_create = lazydrv_vulkan_surface_create,
-    .p_vulkan_colorspace_configure = lazydrv_vulkan_colorspace_configure,
+    .p_vulkan_surface_configure = lazydrv_vulkan_surface_configure,
     .p_get_physical_device_presentation_support = lazydrv_get_physical_device_presentation_support,
     .p_map_instance_extensions = lazydrv_map_instance_extensions,
     .p_map_device_extensions = lazydrv_map_device_extensions,
