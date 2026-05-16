@@ -995,7 +995,7 @@ BOOL set_window_surface_contents(HWND hwnd, struct wayland_shm_buffer *shm_buffe
         {
             wayland_surface_attach_shm(wayland_surface, shm_buffer, damage_region);
             wl_surface_commit(wayland_surface->wl_surface);
-            committed = TRUE;
+            wayland_surface->needs_contents = committed = TRUE;
         }
         else
         {
