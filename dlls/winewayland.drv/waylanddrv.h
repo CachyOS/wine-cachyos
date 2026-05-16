@@ -390,7 +390,7 @@ struct wayland_surface
     };
 
     struct wayland_surface_config pending, requested, processing, current;
-    BOOL resizing;
+    BOOL resizing, needs_contents;
     struct wayland_window_config window;
     int content_width, content_height;
     HCURSOR hcursor;

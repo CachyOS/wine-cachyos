@@ -645,6 +645,7 @@ void wayland_surface_clear_role(struct wayland_surface *surface)
 
     surface->content_width = 0;
     surface->content_height = 0;
+    surface->needs_contents = FALSE;
 
     wl_display_flush(process_wayland.wl_display);
 }
@@ -1588,13 +1589,14 @@ void wayland_surface_ensure_contents(struct wayland_surface *surface)
     width = surface->window.rect.right - surface->window.rect.left;
     height = surface->window.rect.bottom - surface->window.rect.top;
     needs_contents = surface->window.visible &&
-                     (surface->content_width != width ||
-                      surface->content_height != height);
+                     ((surface->content_width != width ||
+                       surface->content_height != height) ||
+                       surface->needs_contents);
+
+    if (!needs_contents) return;
 
     TRACE("surface=%p hwnd=%p needs_contents=%d\n",
           surface, surface->hwnd, needs_contents);
-
-    if (!needs_contents) return;
 
     if (wayland_surface_reconfigure(surface))
     {
@@ -1613,6 +1615,7 @@ void wayland_surface_ensure_contents(struct wayland_surface *surface)
 
         wayland_surface_attach_shm(surface, dummy_shm_buffer, damage);
         wl_surface_commit(surface->wl_surface);
+        surface->needs_contents = FALSE;
     }
 
     if (damage) NtGdiDeleteObjectApp(damage);
