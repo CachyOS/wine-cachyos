@@ -393,14 +393,16 @@ static UINT get_edid(struct output_info *output_info, unsigned char **edid)
 
         p[0] = 2;
         p[1] = 3;
-        p[2] = 0xa; /* FIXME: is this correct?  */
+        /* Offset to the start of the (empty) DTD list: after the 4-byte CTA
+         * header plus the 7-byte HDR static metadata data block below. */
+        p[2] = 0xb;
 
         p += 4;
 
-        p[0] = (0x7 << 5) | 0x5; /* HDR static metadata size */
-        p[1] = 6;
-
-        /* HDR static metadata block */
+        /* HDR static metadata data block: tag 7 (use extended tag) and a
+         * payload length of 6 (the extended tag byte plus 5 data bytes). */
+        p[0] = (0x7 << 5) | 0x6;
+        p[1] = 6; /* extended tag: HDR static metadata */
 
         p[2] = 0x7; /* ST2084 | SDR | HDR */
         p[3] = 1;
