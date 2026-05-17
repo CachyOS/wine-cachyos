@@ -373,6 +373,7 @@ static void wayland_image_description_info_v1_done(void *data,
                                               struct wp_image_description_info_v1 *info)
 {
     struct wayland_output *output = data;
+    output->color_management_done = TRUE;
     wayland_output_done(output);
 }
 
@@ -793,6 +794,49 @@ static const struct wp_color_manager_v1_listener wp_color_manager_listener = {
  */
 void wayland_color_manager_init(void)
 {
+    struct wayland_output *output;
+
     wp_color_manager_v1_add_listener(process_wayland.wp_color_manager_v1,
                                      &wp_color_manager_listener, NULL);
+
+    /* The color manager global may be advertised after some wl_output
+     * globals, in which case those outputs were created without an image
+     * description. Set one up for them now. */
+    wl_list_for_each(output, &process_wayland.output_list, link)
+    {
+        if (!output->wp_color_management_output_v1)
+            wayland_output_use_image_description(output);
+    }
+}
+
+/**********************************************************************
+ *          wayland_outputs_color_management_done
+ *
+ * Returns whether every output has finished its initial color-management
+ * image-description information exchange. An output is considered done if
+ * it has received an image_description_info 'done' event, or if it has no
+ * in-flight image description object (color management unavailable or the
+ * image description failed). Used at process init to drain the extra
+ * round-trips the color-management handshake needs before the synthetic
+ * EDID (and its HDR static metadata) is generated.
+ */
+BOOL wayland_outputs_color_management_done(void)
+{
+    struct wayland_output *output;
+    BOOL done = TRUE;
+
+    pthread_mutex_lock(&process_wayland.output_mutex);
+
+    wl_list_for_each(output, &process_wayland.output_list, link)
+    {
+        if (output->wp_image_description_v1 && !output->color_management_done)
+        {
+            done = FALSE;
+            break;
+        }
+    }
+
+    pthread_mutex_unlock(&process_wayland.output_mutex);
+
+    return done;
 }

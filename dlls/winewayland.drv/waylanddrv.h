@@ -306,6 +306,7 @@ struct wayland_output
     struct wp_color_management_output_v1 *wp_color_management_output_v1;
     uint32_t global_id;
     unsigned int pending_flags;
+    BOOL color_management_done;
     struct wayland_output_state pending;
     struct wayland_output_state current;
 };
@@ -411,6 +412,7 @@ void wayland_output_destroy(struct wayland_output *output);
 void wayland_output_use_xdg_extension(struct wayland_output *output);
 struct wayland_output *wayland_output_for_rect(const RECT *rect);
 void wayland_color_manager_init(void);
+BOOL wayland_outputs_color_management_done(void);
 
 /**********************************************************************
  *          Wayland surface
