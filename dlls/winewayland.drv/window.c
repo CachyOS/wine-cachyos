@@ -660,7 +660,8 @@ LRESULT WAYLAND_WindowMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         else if (!wp && focused == hwnd)
             NtUserSetForegroundWindowInternal(hwnd);
         else
-            WARN("Ignoring stale %s message\n", wp ? "focus loss" : "focus gain");
+            WARN("focused %p hwnd %p, Ignoring stale %s message\n",
+                 focused, hwnd, wp ? "focus loss" : "focus gain");
         return 0;
     }
     default:
