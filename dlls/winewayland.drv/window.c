@@ -675,7 +675,7 @@ static void wayland_configure_window(HWND hwnd)
 
     wayland_win_data_release(data);
 
-    TRACE("processing=%dx%d,%#x\n", width, height, state);
+    TRACE("hwnd=%p processing=%dx%d,%#x\n", hwnd, width, height, state);
 
     if (needs_enter_size_move) send_message(hwnd, WM_ENTERSIZEMOVE, 0, 0);
     if (needs_exit_size_move) send_message(hwnd, WM_EXITSIZEMOVE, 0, 0);
@@ -725,7 +725,8 @@ LRESULT WAYLAND_WindowMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         else if (!wp && focused == hwnd)
             NtUserSetForegroundWindowInternal(hwnd);
         else
-            WARN("Ignoring stale %s message\n", wp ? "focus loss" : "focus gain");
+            WARN("focused %p hwnd %p, Ignoring stale %s message\n",
+                 focused, hwnd, wp ? "focus loss" : "focus gain");
         return 0;
     }
     default:
