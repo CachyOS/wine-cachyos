@@ -2081,7 +2081,7 @@ static BOOL use_gst_byte_stream_handler(void)
     BOOL result;
     DWORD size = sizeof(result);
     const char *orientation = getenv("PROTON_GST_VIDEO_ORIENTATION");
-    const char *media_use_gst = getenv("PROTON_MEDIA_USE_GST");
+    const char *media_use_gst = getenv("PROTON_MEDIA_FORCE_GST");
 
     /* Proton override: if PROTON_VIDEO_ORIENTATION is set then manually set orientation based on value */
     if (orientation || (media_use_gst && !strcmp(media_use_gst, "1")))
