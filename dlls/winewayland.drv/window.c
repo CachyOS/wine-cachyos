@@ -212,7 +212,7 @@ static BOOL wayland_win_data_create_wayland_surface(struct wayland_win_data *dat
     DWORD style = NtUserGetWindowLongW(data->hwnd, GWL_STYLE);
     struct wl_region *input_region;
 
-    TRACE("hwnd=%p\n", data->hwnd);
+    TRACE("hwnd=%p style=%x exstyle=%x\n", data->hwnd, style, exstyle);
 
     visible = ((style & WS_VISIBLE) == WS_VISIBLE) &&
                (!(exstyle & WS_EX_LAYERED) || data->layered_attribs_set);
@@ -510,21 +510,35 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UIN
                               const struct window_rects *new_rects, struct window_surface *surface)
 {
     HWND toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
-    struct wayland_surface *toplevel_surface;
+    struct wayland_surface *toplevel_surface = NULL;
     struct wayland_client_surface *client;
     struct wayland_win_data *data, *toplevel_data;
     BOOL managed, fullscreen = swp_flags & WINE_SWP_FULLSCREEN;
-
-    TRACE("hwnd %p new_rects %s after %p flags %08x\n", hwnd, debugstr_window_rects(new_rects), insert_after, swp_flags);
 
     /* Get the managed state with win_data unlocked, as is_window_managed
      * may need to query win_data information about other HWNDs and thus
      * acquire the lock itself internally. */
     if (!(managed = is_window_managed(hwnd, swp_flags, fullscreen)) && surface) toplevel = owner_hint;
 
+    TRACE("hwnd %p toplevel %p new_rects %s after %p flags %08x\n", hwnd, toplevel, debugstr_window_rects(new_rects),
+                                                                    insert_after, swp_flags);
+
     if (!(data = wayland_win_data_get(hwnd))) return;
     toplevel_data = toplevel && toplevel != hwnd ? wayland_win_data_get_nolock(toplevel) : NULL;
-    toplevel_surface = toplevel_data ? toplevel_data->wayland_surface : NULL;
+    if (toplevel_data && (toplevel_surface = toplevel_data->wayland_surface))
+    {
+        /* There are cases where we can have a circular parent relation with unmanaged windows.
+         * There are also cases where the toplevel is not yet mapped.
+         * So, we need to check if there is a circular relationship here,
+         * if there is then continue treating this hwnd as a toplevel */
+        if (toplevel_surface->role == WAYLAND_SURFACE_ROLE_SUBSURFACE &&
+            toplevel_surface->toplevel_hwnd == hwnd)
+        {
+            WARN("toplevel %p is not a toplevel!\n", toplevel);
+            toplevel_surface = NULL;
+            toplevel_data = NULL;
+        }
+    }
 
     data->rects = *new_rects;
     data->is_fullscreen = fullscreen;
