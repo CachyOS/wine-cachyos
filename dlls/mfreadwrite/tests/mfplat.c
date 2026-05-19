@@ -1164,6 +1164,13 @@ static void test_source_reader_from_media_source(void)
         ATTR_UINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 32),
         {0},
     };
+    static const struct attribute_desc audio_stream_type_16bit_desc[] =
+    {
+        ATTR_GUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio),
+        ATTR_GUID(MF_MT_SUBTYPE, MFAudioFormat_PCM),
+        ATTR_UINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16),
+        {0},
+    };
 
     IMFStreamDescriptor *audio_streams[3];
     struct async_callback *callback;
@@ -1176,6 +1183,10 @@ static void test_source_reader_from_media_source(void)
     IMFSample *sample;
     LONGLONG timestamp;
     IMFAttributes *attributes;
+    IMFMediaType *media_types[2];
+    IMFMediaTypeHandler *handler;
+    IMFStreamDescriptor *current_type_stream;
+    UINT32 bits_per_sample;
     ULONG refcount;
     int i;
     PROPVARIANT pos;
@@ -1339,6 +1350,37 @@ static void test_source_reader_from_media_source(void)
 
     IMFSourceReader_Release(reader);
     IMFMediaSource_Release(source);
+
+    hr = MFCreateMediaType(&media_types[0]);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    init_media_type(media_types[0], audio_stream_type_desc, -1);
+    hr = MFCreateMediaType(&media_types[1]);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    init_media_type(media_types[1], audio_stream_type_16bit_desc, -1);
+    hr = MFCreateStreamDescriptor(0, ARRAY_SIZE(media_types), media_types, &current_type_stream);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFStreamDescriptor_GetMediaTypeHandler(current_type_stream, &handler);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFMediaTypeHandler_SetCurrentMediaType(handler, media_types[1]);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    IMFMediaTypeHandler_Release(handler);
+    IMFMediaType_Release(media_types[0]);
+    IMFMediaType_Release(media_types[1]);
+
+    source = create_test_source(&current_type_stream, 1);
+    ok(!!source, "Failed to create test source.\n");
+    hr = MFCreateSourceReaderFromMediaSource(source, NULL, &reader);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFSourceReader_GetCurrentMediaType(reader, 0, &media_type);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    bits_per_sample = 0;
+    hr = IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_BITS_PER_SAMPLE, &bits_per_sample);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    ok(bits_per_sample == 16, "Unexpected bits per sample %u.\n", bits_per_sample);
+    IMFMediaType_Release(media_type);
+    IMFSourceReader_Release(reader);
+    IMFMediaSource_Release(source);
+    IMFStreamDescriptor_Release(current_type_stream);
 
     /* Request a non-native bit depth. */
     source = create_test_source(audio_streams, 1);
@@ -3972,6 +4014,64 @@ static void test_source_reader_wma_audio_alignment(void)
     IMFSourceReader_Release(reader);
 }
 
+static void test_source_reader_wma_compressed_stream(void)
+{
+    IMFSourceReader *reader;
+    IMFByteStream *stream;
+    IMFMediaType *media_type;
+    IMFTransform *transform;
+    GUID subtype;
+    HRESULT hr;
+
+    if (!pMFCreateMFByteStreamOnStream)
+    {
+        win_skip("MFCreateMFByteStreamOnStream() not found\n");
+        return;
+    }
+
+    stream = get_resource_stream("test.wma");
+    hr = MFCreateSourceReaderFromByteStream(stream, NULL, &reader);
+    IMFByteStream_Release(stream);
+    if (FAILED(hr))
+    {
+        skip("MFCreateSourceReaderFromByteStream() failed, is GStreamer missing?\n");
+        return;
+    }
+
+    /* the native type must be the compressed WMA format, not decoded PCM. */
+    hr = IMFSourceReader_GetNativeMediaType(reader, MF_SOURCE_READER_FIRST_AUDIO_STREAM, 0, &media_type);
+    ok(hr == S_OK, "GetNativeMediaType returned %#lx.\n", hr);
+    hr = IMFMediaType_GetGUID(media_type, &MF_MT_SUBTYPE, &subtype);
+    ok(hr == S_OK, "GetGUID returned %#lx.\n", hr);
+    ok(IsEqualGUID(&subtype, &MFAudioFormat_WMAudioV8), "Expected WMAudioV8 subtype, got %s.\n",
+            debugstr_guid(&subtype));
+    IMFMediaType_Release(media_type);
+
+    /* requesting decoded PCM output should insert the WMA decoder transform. */
+    hr = MFCreateMediaType(&media_type);
+    ok(hr == S_OK, "MFCreateMediaType returned %#lx.\n", hr);
+    hr = IMFMediaType_SetGUID(media_type, &MF_MT_MAJOR_TYPE, &MFMediaType_Audio);
+    ok(hr == S_OK, "SetGUID returned %#lx.\n", hr);
+    hr = IMFMediaType_SetGUID(media_type, &MF_MT_SUBTYPE, &MFAudioFormat_PCM);
+    ok(hr == S_OK, "SetGUID returned %#lx.\n", hr);
+    hr = IMFSourceReader_SetCurrentMediaType(reader, MF_SOURCE_READER_FIRST_AUDIO_STREAM, NULL, media_type);
+    IMFMediaType_Release(media_type);
+    if (FAILED(hr))
+    {
+        skip("Failed to set PCM output type, hr %#lx.\n", hr);
+        IMFSourceReader_Release(reader);
+        return;
+    }
+
+    hr = IMFSourceReader_GetServiceForStream(reader, MF_SOURCE_READER_FIRST_AUDIO_STREAM,
+            &GUID_NULL, &IID_IMFTransform, (void **)&transform);
+    ok(hr == S_OK, "GetServiceForStream returned %#lx.\n", hr);
+    if (hr == S_OK)
+        IMFTransform_Release(transform);
+
+    IMFSourceReader_Release(reader);
+}
+
 START_TEST(mfplat)
 {
     HRESULT hr;
@@ -3993,6 +4093,7 @@ START_TEST(mfplat)
     test_source_reader_transforms_d3d9();
     test_source_reader_transforms_d3d11();
     test_source_reader_wma_audio_alignment();
+    test_source_reader_wma_compressed_stream();
     test_reader_d3d9();
     test_sink_writer_create();
     test_sink_writer_get_object();

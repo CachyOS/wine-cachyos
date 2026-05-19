@@ -2799,7 +2799,9 @@ static HRESULT create_source_reader_from_source(IMFMediaSource *source, IMFAttri
         if (FAILED(hr))
             break;
 
-        hr = IMFMediaTypeHandler_GetMediaTypeByIndex(handler, 0, &src_type);
+        hr = IMFMediaTypeHandler_GetCurrentMediaType(handler, &src_type);
+        if (FAILED(hr))
+            hr = IMFMediaTypeHandler_GetMediaTypeByIndex(handler, 0, &src_type);
         IMFMediaTypeHandler_Release(handler);
         if (FAILED(hr))
             break;
