@@ -952,6 +952,20 @@ static void keyboard_handle_enter(void *private, struct wl_keyboard *wl_keyboard
     wayland_win_data_release(data);
 }
 
+static BOOL wayland_disable_focus_loss(void)
+{
+    static int disabled = -1;
+
+    if (disabled == -1)
+    {
+        const char *env = getenv("WAYLANDDRV_FOCUS_LOSS");
+        if ((disabled = env && !atoi(env)))
+            FIXME("Focus loss explicitly disabled!\n");
+    }
+
+    return disabled;
+}
+
 static void keyboard_handle_leave(void *private, struct wl_keyboard *wl_keyboard,
                                   uint32_t serial, struct wl_surface *wl_surface)
 {
@@ -992,7 +1006,8 @@ static void keyboard_handle_leave(void *private, struct wl_keyboard *wl_keyboard
              * foreground window when both the old and new foreground windows
              * are in the same non-current thread. */
             if (surface->window.managed &&
-                (surface->current.caps & WAYLAND_SURFACE_WM_CAPS_MINIMIZE))
+                (surface->current.caps & WAYLAND_SURFACE_WM_CAPS_MINIMIZE) &&
+                 !wayland_disable_focus_loss())
                 NtUserPostMessage(hwnd, WM_WAYLAND_SET_FOREGROUND, 1, 0);
         }
 
