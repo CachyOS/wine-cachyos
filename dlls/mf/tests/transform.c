@@ -3459,6 +3459,8 @@ static void test_wma_decoder(void)
         ATTR_UINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, 22050, .required = TRUE),
         ATTR_UINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, 2 * (16 / 8), .required = TRUE),
         ATTR_UINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 2 * (16 / 8) * 22050, .required = TRUE),
+        ATTR_UINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, 0),
+        ATTR_UINT32(MF_MT_AUDIO_PREFER_WAVEFORMATEX, 0),
         {0},
     };
     const struct attribute_desc expect_input_type_desc[] =

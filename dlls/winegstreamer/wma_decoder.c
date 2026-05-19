@@ -155,6 +155,38 @@ done:
     return S_OK;
 }
 
+static HRESULT validate_output_type(IMFMediaType *requested, IMFMediaType *canonical)
+{
+    static const GUID *const uint_attrs[] =
+    {
+        &MF_MT_AUDIO_BITS_PER_SAMPLE,
+        &MF_MT_AUDIO_NUM_CHANNELS,
+        &MF_MT_AUDIO_SAMPLES_PER_SECOND,
+        &MF_MT_AUDIO_BLOCK_ALIGNMENT,
+        &MF_MT_AUDIO_AVG_BYTES_PER_SECOND,
+    };
+    UINT32 requested_value, canonical_value;
+    size_t i;
+    HRESULT hr;
+
+    for (i = 0; i < ARRAY_SIZE(uint_attrs); ++i)
+    {
+        if (FAILED(hr = IMFMediaType_GetUINT32(requested, uint_attrs[i], &requested_value)))
+            return MF_E_INVALIDMEDIATYPE;
+        if (FAILED(hr = IMFMediaType_GetUINT32(canonical, uint_attrs[i], &canonical_value)))
+            return hr;
+        if (requested_value != canonical_value)
+            return MF_E_INVALIDMEDIATYPE;
+    }
+
+    if (SUCCEEDED(IMFMediaType_GetUINT32(requested, &MF_MT_AUDIO_CHANNEL_MASK, &requested_value))
+            && SUCCEEDED(IMFMediaType_GetUINT32(canonical, &MF_MT_AUDIO_CHANNEL_MASK, &canonical_value))
+            && requested_value != canonical_value)
+        return MF_E_INVALIDMEDIATYPE;
+
+    return S_OK;
+}
+
 static inline struct wma_decoder *impl_from_IUnknown(IUnknown *iface)
 {
     return CONTAINING_RECORD(iface, struct wma_decoder, IUnknown_inner);
@@ -436,9 +468,10 @@ static HRESULT WINAPI transform_SetInputType(IMFTransform *iface, DWORD id, IMFM
 static HRESULT WINAPI transform_SetOutputType(IMFTransform *iface, DWORD id, IMFMediaType *type, DWORD flags)
 {
     struct wma_decoder *decoder = impl_from_IMFTransform(iface);
+    IMFMediaType *canonical = NULL;
     UINT32 channel_count, block_alignment;
     MF_ATTRIBUTE_TYPE item_type;
-    ULONG i, sample_size;
+    ULONG i;
     GUID major, subtype;
     HRESULT hr;
 
@@ -460,51 +493,49 @@ static HRESULT WINAPI transform_SetOutputType(IMFTransform *iface, DWORD id, IMF
     if (i == ARRAY_SIZE(wma_decoder_output_types))
         return MF_E_INVALIDMEDIATYPE;
 
-    if (IsEqualGUID(&subtype, &MFAudioFormat_Float))
-        sample_size = 32;
-    else if (IsEqualGUID(&subtype, &MFAudioFormat_PCM))
-        sample_size = 16;
-    else
-    {
-        FIXME("Subtype %s not implemented!\n", debugstr_guid(&subtype));
-        hr = E_NOTIMPL;
-        return hr;
-    }
-
     if (FAILED(IMFMediaType_GetItemType(type, &MF_MT_AUDIO_AVG_BYTES_PER_SECOND, &item_type)) ||
         item_type != MF_ATTRIBUTE_UINT32)
         return MF_E_INVALIDMEDIATYPE;
     if (FAILED(IMFMediaType_GetItemType(type, &MF_MT_AUDIO_BITS_PER_SAMPLE, &item_type)) ||
         item_type != MF_ATTRIBUTE_UINT32)
         return MF_E_INVALIDMEDIATYPE;
-    if (FAILED(IMFMediaType_GetUINT32(type, &MF_MT_AUDIO_NUM_CHANNELS, &channel_count)))
-        return MF_E_INVALIDMEDIATYPE;
     if (FAILED(IMFMediaType_GetItemType(type, &MF_MT_AUDIO_SAMPLES_PER_SECOND, &item_type)) ||
         item_type != MF_ATTRIBUTE_UINT32)
         return MF_E_INVALIDMEDIATYPE;
-    if (FAILED(IMFMediaType_GetUINT32(type, &MF_MT_AUDIO_BLOCK_ALIGNMENT, &block_alignment)))
-        return MF_E_INVALIDMEDIATYPE;
+    if (FAILED(hr = create_output_media_type(decoder, &subtype, &canonical)))
+        return hr;
+    if (FAILED(hr = validate_output_type(type, canonical)))
+        goto done;
     if (flags & MFT_SET_TYPE_TEST_ONLY)
-        return S_OK;
+        goto done;
+
+    if (FAILED(hr = IMFMediaType_GetUINT32(canonical, &MF_MT_AUDIO_NUM_CHANNELS, &channel_count)))
+        goto done;
+    if (FAILED(hr = IMFMediaType_GetUINT32(canonical, &MF_MT_AUDIO_BLOCK_ALIGNMENT, &block_alignment)))
+        goto done;
 
     MoFreeMediaType(&decoder->output_type);
     memset(&decoder->output_type, 0, sizeof(decoder->output_type));
+    decoder->output_buf_size = 0;
 
-    if (SUCCEEDED(hr = MFInitAMMediaTypeFromMFMediaType(type, GUID_NULL, &decoder->output_type)))
-    {
-        WAVEFORMATEX *wfx = (WAVEFORMATEX *)decoder->input_type.pbFormat;
-        wfx->wBitsPerSample = sample_size;
-        decoder->output_buf_size = 1024 * block_alignment * channel_count;
-    }
+    if (FAILED(hr = MFInitAMMediaTypeFromMFMediaType(canonical, GUID_NULL, &decoder->output_type)))
+        goto failed;
+    decoder->output_buf_size = 1024 * block_alignment * channel_count;
 
     if (FAILED(hr = try_create_wg_transform(decoder)))
         goto failed;
 
-    return S_OK;
+    hr = S_OK;
+    goto done;
 
 failed:
     MoFreeMediaType(&decoder->output_type);
     memset(&decoder->output_type, 0, sizeof(decoder->output_type));
+    decoder->output_buf_size = 0;
+
+done:
+    if (canonical)
+        IMFMediaType_Release(canonical);
     return hr;
 }
 
@@ -819,6 +850,8 @@ static HRESULT WINAPI media_object_SetOutputType(IMediaObject *iface, DWORD inde
         const DMO_MEDIA_TYPE *type, DWORD flags)
 {
     struct wma_decoder *decoder = impl_from_IMediaObject(iface);
+    IMFMediaType *requested = NULL, *canonical = NULL;
+    DMO_MEDIA_TYPE canonical_dmo = {0};
     struct wg_transform_attrs attrs = {0};
     wg_transform_t new_transform = 0;
     unsigned int i;
@@ -835,6 +868,7 @@ static HRESULT WINAPI media_object_SetOutputType(IMediaObject *iface, DWORD inde
             return E_INVALIDARG;
         MoFreeMediaType(&decoder->output_type);
         memset(&decoder->output_type, 0, sizeof(decoder->output_type));
+        decoder->output_buf_size = 0;
         if (decoder->wg_transform)
         {
             wg_transform_destroy(decoder->wg_transform);
@@ -861,29 +895,45 @@ static HRESULT WINAPI media_object_SetOutputType(IMediaObject *iface, DWORD inde
 
     if (!IsEqualGUID(&type->formattype, &FORMAT_WaveFormatEx))
         return DMO_E_TYPE_NOT_ACCEPTED;
-
-    if (((WAVEFORMATEX *)decoder->input_type.pbFormat)->nChannels !=
-            ((WAVEFORMATEX *)type->pbFormat)->nChannels)
+    if (FAILED(hr = MFCreateMediaTypeFromRepresentation(AM_MEDIA_TYPE_REPRESENTATION, (void *)type, &requested)))
         return DMO_E_TYPE_NOT_ACCEPTED;
-
-    if (FAILED(hr = wg_transform_create_quartz(&decoder->input_type, type, &attrs, &new_transform)))
-        return hr;
+    if (FAILED(hr = create_output_media_type(decoder, wma_decoder_output_types[i], &canonical)))
+        goto done;
+    if (FAILED(hr = validate_output_type(requested, canonical)))
+    {
+        hr = DMO_E_TYPE_NOT_ACCEPTED;
+        goto done;
+    }
+    if (FAILED(hr = MFInitAMMediaTypeFromMFMediaType(canonical, GUID_NULL, &canonical_dmo)))
+        goto done;
+    if (FAILED(hr = wg_transform_create_quartz(&decoder->input_type, &canonical_dmo, &attrs, &new_transform)))
+        goto done;
 
     if (flags & DMO_SET_TYPEF_TEST_ONLY)
     {
         wg_transform_destroy(new_transform);
-        return S_OK;
+        hr = S_OK;
+        goto done;
     }
 
     MoFreeMediaType(&decoder->output_type);
     memset(&decoder->output_type, 0, sizeof(decoder->output_type));
-    MoCopyMediaType(&decoder->output_type, type);
+    decoder->output_buf_size = 0;
+    MoCopyMediaType(&decoder->output_type, &canonical_dmo);
 
     /* Set up wg_transform. */
     if (decoder->wg_transform) wg_transform_destroy(decoder->wg_transform);
     decoder->wg_transform = new_transform;
 
-    return S_OK;
+    hr = S_OK;
+
+done:
+    MoFreeMediaType(&canonical_dmo);
+    if (canonical)
+        IMFMediaType_Release(canonical);
+    if (requested)
+        IMFMediaType_Release(requested);
+    return hr;
 }
 
 static HRESULT WINAPI media_object_GetInputCurrentType(IMediaObject *iface, DWORD index, DMO_MEDIA_TYPE *type)
