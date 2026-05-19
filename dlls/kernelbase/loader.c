@@ -551,26 +551,6 @@ HMODULE WINAPI DECLSPEC_HOTPATCH LoadLibraryExA( LPCSTR name, HANDLE file, DWORD
 
 
 /*
- * LoadLibraryExW optiscaler hack
- */
-BOOL loaddll_optiscaler_hack(LPCWSTR name, LPWSTR override, DWORD size)
-{
-    WCHAR dllW[64] = {0};
-    UINT ret;
-
-    ret = GetEnvironmentVariableW( L"WINE_OPTISCALER_NAME", dllW, sizeof(dllW));
-    if ( !ret || ret >= ARRAY_SIZE(dllW) ) return FALSE;
-
-    if ( !wcscmp( name, dllW ) )
-    {
-        swprintf( override, size, L"c:\\windows\\system32\\umu\\%s", dllW );
-        return TRUE;
-    }
-
-    return FALSE;
-}
-
-/*
  * LoadLibraryExW upscaler hack
  */
 BOOL loaddll_upscaler_hack(LPCWSTR name, LPWSTR override)
@@ -637,11 +617,8 @@ HMODULE WINAPI DECLSPEC_HOTPATCH LoadLibraryExW( LPCWSTR name, HANDLE file, DWOR
         flags = 0;
     }
 
-    if ( loaddll_optiscaler_hack(name, overrideW, ARRAY_SIZE(overrideW))
-        || loaddll_upscaler_hack(name, overrideW) )
-    {
+    if ( loaddll_upscaler_hack(name, overrideW) )
         FIXME( "HACK: redirecting %s to %s\n", debugstr_w(name), debugstr_w(overrideW));
-    }
 
     RtlInitUnicodeString( &str, overrideW[0] ? overrideW : name );
     if (str.Length && str.Buffer[str.Length/sizeof(WCHAR) - 1] != ' ') return load_library( &str, flags );
