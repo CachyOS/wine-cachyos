@@ -4016,6 +4016,7 @@ static void test_source_reader_wma_audio_alignment(void)
 
 static void test_source_reader_wma_compressed_stream(void)
 {
+    UINT32 bits_per_sample;
     IMFSourceReader *reader;
     IMFByteStream *stream;
     IMFMediaType *media_type;
@@ -4045,6 +4046,10 @@ static void test_source_reader_wma_compressed_stream(void)
     ok(hr == S_OK, "GetGUID returned %#lx.\n", hr);
     ok(IsEqualGUID(&subtype, &MFAudioFormat_WMAudioV8), "Expected WMAudioV8 subtype, got %s.\n",
             debugstr_guid(&subtype));
+    bits_per_sample = 0;
+    hr = IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_BITS_PER_SAMPLE, &bits_per_sample);
+    ok(hr == S_OK, "GetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE) returned %#lx.\n", hr);
+    ok(bits_per_sample == 16, "Expected 16 bits per sample, got %u.\n", bits_per_sample);
     IMFMediaType_Release(media_type);
 
     /* requesting decoded PCM output should insert the WMA decoder transform. */
