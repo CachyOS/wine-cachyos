@@ -35,6 +35,8 @@ WINE_DEFAULT_DEBUG_CHANNEL(wmadec);
 
 extern const GUID MFAudioFormat_XMAudio2;
 
+#define WMA_DECODER_OUTPUT_FRAMES 2048
+
 static const GUID *const wma_decoder_input_types[] =
 {
     &MEDIASUBTYPE_MSAUDIO1,
@@ -469,7 +471,7 @@ static HRESULT WINAPI transform_SetOutputType(IMFTransform *iface, DWORD id, IMF
 {
     struct wma_decoder *decoder = impl_from_IMFTransform(iface);
     IMFMediaType *canonical = NULL;
-    UINT32 channel_count, block_alignment;
+    UINT32 block_alignment;
     MF_ATTRIBUTE_TYPE item_type;
     ULONG i;
     GUID major, subtype;
@@ -509,8 +511,6 @@ static HRESULT WINAPI transform_SetOutputType(IMFTransform *iface, DWORD id, IMF
     if (flags & MFT_SET_TYPE_TEST_ONLY)
         goto done;
 
-    if (FAILED(hr = IMFMediaType_GetUINT32(canonical, &MF_MT_AUDIO_NUM_CHANNELS, &channel_count)))
-        goto done;
     if (FAILED(hr = IMFMediaType_GetUINT32(canonical, &MF_MT_AUDIO_BLOCK_ALIGNMENT, &block_alignment)))
         goto done;
 
@@ -520,7 +520,7 @@ static HRESULT WINAPI transform_SetOutputType(IMFTransform *iface, DWORD id, IMF
 
     if (FAILED(hr = MFInitAMMediaTypeFromMFMediaType(canonical, GUID_NULL, &decoder->output_type)))
         goto failed;
-    decoder->output_buf_size = 1024 * block_alignment * channel_count;
+    decoder->output_buf_size = WMA_DECODER_OUTPUT_FRAMES * block_alignment;
 
     if (FAILED(hr = try_create_wg_transform(decoder)))
         goto failed;
@@ -854,6 +854,7 @@ static HRESULT WINAPI media_object_SetOutputType(IMediaObject *iface, DWORD inde
     DMO_MEDIA_TYPE canonical_dmo = {0};
     struct wg_transform_attrs attrs = {0};
     wg_transform_t new_transform = 0;
+    UINT32 block_alignment;
     unsigned int i;
     HRESULT hr;
 
@@ -904,6 +905,8 @@ static HRESULT WINAPI media_object_SetOutputType(IMediaObject *iface, DWORD inde
         hr = DMO_E_TYPE_NOT_ACCEPTED;
         goto done;
     }
+    if (FAILED(hr = IMFMediaType_GetUINT32(canonical, &MF_MT_AUDIO_BLOCK_ALIGNMENT, &block_alignment)))
+        goto done;
     if (FAILED(hr = MFInitAMMediaTypeFromMFMediaType(canonical, GUID_NULL, &canonical_dmo)))
         goto done;
     if (FAILED(hr = wg_transform_create_quartz(&decoder->input_type, &canonical_dmo, &attrs, &new_transform)))
@@ -920,6 +923,7 @@ static HRESULT WINAPI media_object_SetOutputType(IMediaObject *iface, DWORD inde
     memset(&decoder->output_type, 0, sizeof(decoder->output_type));
     decoder->output_buf_size = 0;
     MoCopyMediaType(&decoder->output_type, &canonical_dmo);
+    decoder->output_buf_size = WMA_DECODER_OUTPUT_FRAMES * block_alignment;
 
     /* Set up wg_transform. */
     if (decoder->wg_transform) wg_transform_destroy(decoder->wg_transform);
@@ -987,7 +991,7 @@ static HRESULT WINAPI media_object_GetOutputSizeInfo(IMediaObject *iface, DWORD 
     if (IsEqualGUID(&decoder->output_type.majortype, &GUID_NULL))
         return DMO_E_TYPE_NOT_SET;
 
-    *size = 8192;
+    *size = decoder->output_buf_size;
     *alignment = 1;
 
     return S_OK;
