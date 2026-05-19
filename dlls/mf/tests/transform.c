@@ -3547,6 +3547,7 @@ static void test_wma_decoder(void)
     const BYTE *wmaenc_data;
     ULONG wmaenc_data_len;
     ULONG i, ret, ref;
+    UINT32 channel_mask;
     HRESULT hr;
 
     hr = CoInitialize(NULL);
@@ -3611,6 +3612,9 @@ static void test_wma_decoder(void)
         winetest_push_context("out %lu", i);
         ok(hr == S_OK, "GetOutputAvailableType returned %#lx\n", hr);
         check_media_type(media_type, expect_available_outputs[i], -1);
+        channel_mask = 0xdeadbeef;
+        hr = IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_CHANNEL_MASK, &channel_mask);
+        ok(hr == MF_E_ATTRIBUTENOTFOUND, "GetUINT32 returned %#lx, channel mask %#x.\n", hr, channel_mask);
         ret = IMFMediaType_Release(media_type);
         ok(ret == 0, "Release returned %lu\n", ret);
         winetest_pop_context();
