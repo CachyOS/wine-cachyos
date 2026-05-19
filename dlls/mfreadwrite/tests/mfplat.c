@@ -3882,6 +3882,96 @@ skip_tests:
     expect_dxgi_manager = NULL;
 }
 
+static void test_source_reader_wma_audio_alignment(void)
+{
+    UINT32 block_align, avg_bytes, bits_per_sample, channels, sample_rate;
+    IMFSourceReader *reader;
+    IMFByteStream *stream;
+    IMFMediaType *media_type;
+    HRESULT hr;
+
+    if (!pMFCreateMFByteStreamOnStream)
+    {
+        win_skip("MFCreateMFByteStreamOnStream() not found\n");
+        return;
+    }
+
+    stream = get_resource_stream("test.wma");
+    hr = MFCreateSourceReaderFromByteStream(stream, NULL, &reader);
+    IMFByteStream_Release(stream);
+    if (FAILED(hr))
+    {
+        skip("MFCreateSourceReaderFromByteStream() failed, is GStreamer missing?\n");
+        return;
+    }
+
+    hr = MFCreateMediaType(&media_type);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFMediaType_SetGUID(media_type, &MF_MT_MAJOR_TYPE, &MFMediaType_Audio);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFMediaType_SetGUID(media_type, &MF_MT_SUBTYPE, &MFAudioFormat_PCM);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFSourceReader_SetCurrentMediaType(reader, MF_SOURCE_READER_FIRST_AUDIO_STREAM, NULL, media_type);
+    IMFMediaType_Release(media_type);
+    if (FAILED(hr))
+    {
+        skip("Failed to set PCM output type, hr %#lx.\n", hr);
+        IMFSourceReader_Release(reader);
+        return;
+    }
+
+    hr = IMFSourceReader_GetCurrentMediaType(reader, MF_SOURCE_READER_FIRST_AUDIO_STREAM, &media_type);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
+    hr = IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_BITS_PER_SAMPLE, &bits_per_sample);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_NUM_CHANNELS, &channels);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_SAMPLES_PER_SECOND, &sample_rate);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_BLOCK_ALIGNMENT, &block_align);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    ok(block_align == bits_per_sample * channels / 8,
+            "Expected block_align %u, got %u.\n", bits_per_sample * channels / 8, block_align);
+    hr = IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_AVG_BYTES_PER_SECOND, &avg_bytes);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    ok(avg_bytes == sample_rate * block_align,
+            "Expected avg_bytes_per_sec %u, got %u.\n", sample_rate * block_align, avg_bytes);
+    IMFMediaType_Release(media_type);
+
+    hr = MFCreateMediaType(&media_type);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFMediaType_SetGUID(media_type, &MF_MT_MAJOR_TYPE, &MFMediaType_Audio);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFMediaType_SetGUID(media_type, &MF_MT_SUBTYPE, &MFAudioFormat_Float);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFSourceReader_SetCurrentMediaType(reader, MF_SOURCE_READER_FIRST_AUDIO_STREAM, NULL, media_type);
+    IMFMediaType_Release(media_type);
+    if (SUCCEEDED(hr))
+    {
+        hr = IMFSourceReader_GetCurrentMediaType(reader, MF_SOURCE_READER_FIRST_AUDIO_STREAM, &media_type);
+        ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
+        hr = IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_BITS_PER_SAMPLE, &bits_per_sample);
+        ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+        hr = IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_NUM_CHANNELS, &channels);
+        ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+        hr = IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_SAMPLES_PER_SECOND, &sample_rate);
+        ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+        hr = IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_BLOCK_ALIGNMENT, &block_align);
+        ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+        ok(block_align == bits_per_sample * channels / 8,
+                "Expected block_align %u, got %u.\n", bits_per_sample * channels / 8, block_align);
+        hr = IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_AVG_BYTES_PER_SECOND, &avg_bytes);
+        ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+        ok(avg_bytes == sample_rate * block_align,
+                "Expected avg_bytes_per_sec %u, got %u.\n", sample_rate * block_align, avg_bytes);
+        IMFMediaType_Release(media_type);
+    }
+
+    IMFSourceReader_Release(reader);
+}
+
 START_TEST(mfplat)
 {
     HRESULT hr;
@@ -3902,6 +3992,7 @@ START_TEST(mfplat)
     test_source_reader_transform_stream_change();
     test_source_reader_transforms_d3d9();
     test_source_reader_transforms_d3d11();
+    test_source_reader_wma_audio_alignment();
     test_reader_d3d9();
     test_sink_writer_create();
     test_sink_writer_get_object();
