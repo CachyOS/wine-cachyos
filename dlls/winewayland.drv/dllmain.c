@@ -95,7 +95,9 @@ static DWORD WINAPI clipboard_thread(void *arg)
 
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, void *reserved)
 {
-    DWORD tid;
+    HANDLE handle;
+    NTSTATUS status;
+    OBJECT_ATTRIBUTES attr;
 
     if (reason != DLL_PROCESS_ATTACH) return TRUE;
 
@@ -105,11 +107,27 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, void *reserved)
     if (WAYLANDDRV_UNIX_CALL(init, NULL))
         return FALSE;
 
+    InitializeObjectAttributes(&attr, NULL, 0, NULL, NULL);
+
     /* Read wayland events from a dedicated thread. */
-    CloseHandle(CreateThread(NULL, 0, wayland_read_events_thread, NULL, 0, &tid));
+    status = NtCreateThreadEx(&handle, THREAD_ALL_ACCESS, &attr, GetCurrentProcess(),
+                              (void *)wayland_read_events_thread, NULL,
+                              THREAD_CREATE_FLAGS_HIDE_FROM_DEBUGGER | THREAD_CREATE_FLAGS_SKIP_LOADER_INIT |
+                              THREAD_CREATE_FLAGS_SKIP_THREAD_ATTACH | THREAD_CREATE_FLAGS_BYPASS_PROCESS_FREEZE,
+                              0, 0, 0, NULL);
+    if (NT_ERROR(status)) ERR("Failed to create event dispatcher thread!\n");
+    else NtClose(handle);
     /* Handle clipboard events in a dedicated thread, if needed. */
     if (!WAYLANDDRV_UNIX_CALL(init_clipboard, NULL))
-        CloseHandle(CreateThread(NULL, 0, clipboard_thread, NULL, 0, &tid));
+    {
+        status = NtCreateThreadEx(&handle, THREAD_ALL_ACCESS, &attr, GetCurrentProcess(),
+                                  (void *)clipboard_thread, NULL,
+                                  THREAD_CREATE_FLAGS_HIDE_FROM_DEBUGGER | THREAD_CREATE_FLAGS_SKIP_LOADER_INIT |
+                                  THREAD_CREATE_FLAGS_SKIP_THREAD_ATTACH | THREAD_CREATE_FLAGS_BYPASS_PROCESS_FREEZE,
+                                  0, 0, 0, NULL);
+        if (NT_ERROR(status)) ERR("Failed to create clipboard thread!\n");
+        else NtClose(handle);
+    }
 
     return TRUE;
 }
