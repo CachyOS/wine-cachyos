@@ -247,8 +247,7 @@ error:
 uint32_t FAudio_WMADEC_init(FAudioSourceVoice *voice, uint32_t type)
 {
 	static const uint8_t fake_codec_data[16] = {0, 0, 0, 0, 31, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-	uint8_t fake_codec_data_wma3[18] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 224, 0, 0, 0};
-	const FAudioWaveFormatExtensible *wfx = (FAudioWaveFormatExtensible *)voice->src.format;
+	const FAudioWaveFormatEx *wfx = voice->src.format;
 	struct FAudioWMADEC *impl;
 	MFT_OUTPUT_STREAM_INFO info = {0};
 	IMFMediaBuffer *media_buffer;
@@ -257,6 +256,8 @@ uint32_t FAudio_WMADEC_init(FAudioSourceVoice *voice, uint32_t type)
 	HRESULT hr;
 	UINT32 i, value;
 	GUID guid;
+	const UINT8 *codec_data = (const UINT8 *)(wfx + 1);
+	UINT32 codec_data_size = wfx->cbSize;
 
 	LOG_FUNC_ENTER(voice->audio)
 
@@ -288,11 +289,16 @@ uint32_t FAudio_WMADEC_init(FAudioSourceVoice *voice, uint32_t type)
 	switch (type)
 	{
 	case FAUDIO_FORMAT_WMAUDIO2:
+		if (!codec_data_size)
+		{
+			codec_data = fake_codec_data;
+			codec_data_size = sizeof(fake_codec_data);
+		}
 		hr = IMFMediaType_SetBlob(
 			media_type,
 			&MF_MT_USER_DATA,
-			(void *)fake_codec_data,
-			sizeof(fake_codec_data)
+			codec_data,
+			codec_data_size
 		);
 		FAudio_assert(!FAILED(hr) && "Failed set codec private data!");
 		hr = IMFMediaType_SetGUID(
@@ -304,22 +310,17 @@ uint32_t FAudio_WMADEC_init(FAudioSourceVoice *voice, uint32_t type)
 		hr = IMFMediaType_SetUINT32(
 			media_type,
 			&MF_MT_AUDIO_BLOCK_ALIGNMENT,
-			wfx->Format.nBlockAlign
+			wfx->nBlockAlign
 		);
 		FAudio_assert(!FAILED(hr) && "Failed set input block align!");
 		break;
 	case FAUDIO_FORMAT_WMAUDIO3:
-                *(uint16_t *)fake_codec_data_wma3  = voice->src.format->wBitsPerSample;
-                for (i = 0; i < voice->src.format->nChannels; i++)
-                {
-                    fake_codec_data_wma3[2] <<= 1;
-                    fake_codec_data_wma3[2] |= 1;
-                }
+		FAudio_assert(codec_data_size && "Missing WMAudio3 codec private data!");
 		hr = IMFMediaType_SetBlob(
 			media_type,
 			&MF_MT_USER_DATA,
-			(void *)fake_codec_data_wma3,
-			sizeof(fake_codec_data_wma3)
+			codec_data,
+			codec_data_size
 		);
 		FAudio_assert(!FAILED(hr) && "Failed set codec private data!");
 		hr = IMFMediaType_SetGUID(
@@ -331,7 +332,7 @@ uint32_t FAudio_WMADEC_init(FAudioSourceVoice *voice, uint32_t type)
 		hr = IMFMediaType_SetUINT32(
 			media_type,
 			&MF_MT_AUDIO_BLOCK_ALIGNMENT,
-			wfx->Format.nBlockAlign
+			wfx->nBlockAlign
 		);
 		FAudio_assert(!FAILED(hr) && "Failed set input block align!");
 		break;
@@ -339,8 +340,8 @@ uint32_t FAudio_WMADEC_init(FAudioSourceVoice *voice, uint32_t type)
 		hr = IMFMediaType_SetBlob(
 			media_type,
 			&MF_MT_USER_DATA,
-			(void *)&wfx->Samples,
-			wfx->Format.cbSize
+			codec_data,
+			codec_data_size
 		);
 		FAudio_assert(!FAILED(hr) && "Failed set codec private data!");
 		hr = IMFMediaType_SetGUID(
@@ -352,18 +353,18 @@ uint32_t FAudio_WMADEC_init(FAudioSourceVoice *voice, uint32_t type)
 		hr = IMFMediaType_SetUINT32(
 			media_type,
 			&MF_MT_AUDIO_BLOCK_ALIGNMENT,
-			wfx->Format.nBlockAlign
+			wfx->nBlockAlign
 		);
 		FAudio_assert(!FAILED(hr) && "Failed set input block align!");
 		break;
 	case FAUDIO_FORMAT_XMAUDIO2:
 	{
-		const FAudioXMA2WaveFormat *xwf = (const FAudioXMA2WaveFormat *)wfx;
+		const FAudioXMA2WaveFormat *xwf = (const FAudioXMA2WaveFormat *)voice->src.format;
 		hr = IMFMediaType_SetBlob(
 			media_type,
 			&MF_MT_USER_DATA,
-			(void *)&wfx->Samples,
-			wfx->Format.cbSize
+			(const UINT8 *)(&xwf->wfx + 1),
+			xwf->wfx.cbSize
 		);
 		FAudio_assert(!FAILED(hr) && "Failed set codec private data!");
 		hr = IMFMediaType_SetGUID(
@@ -388,25 +389,25 @@ uint32_t FAudio_WMADEC_init(FAudioSourceVoice *voice, uint32_t type)
 	hr = IMFMediaType_SetUINT32(
 		media_type,
 		&MF_MT_AUDIO_BITS_PER_SAMPLE,
-		wfx->Format.wBitsPerSample
+		wfx->wBitsPerSample
 	);
 	FAudio_assert(!FAILED(hr) && "Failed set input bits per sample!");
 	hr = IMFMediaType_SetUINT32(
 		media_type,
 		&MF_MT_AUDIO_AVG_BYTES_PER_SECOND,
-		wfx->Format.nAvgBytesPerSec
+		wfx->nAvgBytesPerSec
 	);
 	FAudio_assert(!FAILED(hr) && "Failed set input bytes per sample!");
 	hr = IMFMediaType_SetUINT32(
 		media_type,
 		&MF_MT_AUDIO_NUM_CHANNELS,
-		wfx->Format.nChannels
+		wfx->nChannels
 	);
 	FAudio_assert(!FAILED(hr) && "Failed set input channel count!");
 	hr = IMFMediaType_SetUINT32(
 		media_type,
 		&MF_MT_AUDIO_SAMPLES_PER_SECOND,
-		wfx->Format.nSamplesPerSec
+		wfx->nSamplesPerSec
 	);
 	FAudio_assert(!FAILED(hr) && "Failed set input sample rate!");
 
@@ -470,7 +471,7 @@ uint32_t FAudio_WMADEC_init(FAudioSourceVoice *voice, uint32_t type)
 		);
 		if (FAILED(hr))
 		{
-			value = wfx->Format.nChannels;
+			value = wfx->nChannels;
 			hr = IMFMediaType_SetUINT32(
 				media_type,
 				&MF_MT_AUDIO_NUM_CHANNELS,
@@ -478,7 +479,7 @@ uint32_t FAudio_WMADEC_init(FAudioSourceVoice *voice, uint32_t type)
 			);
 		}
 		FAudio_assert(!FAILED(hr) && "Failed get channel count!");
-		if (value != wfx->Format.nChannels) goto next;
+		if (value != wfx->nChannels) goto next;
 
 		hr = IMFMediaType_GetUINT32(
 			media_type,
@@ -487,7 +488,7 @@ uint32_t FAudio_WMADEC_init(FAudioSourceVoice *voice, uint32_t type)
 		);
 		if (FAILED(hr))
 		{
-			value = wfx->Format.nSamplesPerSec;
+			value = wfx->nSamplesPerSec;
 			hr = IMFMediaType_SetUINT32(
 				media_type,
 				&MF_MT_AUDIO_SAMPLES_PER_SECOND,
@@ -495,7 +496,7 @@ uint32_t FAudio_WMADEC_init(FAudioSourceVoice *voice, uint32_t type)
 			);
 		}
 		FAudio_assert(!FAILED(hr) && "Failed get sample rate!");
-		if (value != wfx->Format.nSamplesPerSec) goto next;
+		if (value != wfx->nSamplesPerSec) goto next;
 
 		hr = IMFMediaType_GetUINT32(
 			media_type,
@@ -504,7 +505,7 @@ uint32_t FAudio_WMADEC_init(FAudioSourceVoice *voice, uint32_t type)
 		);
 		if (FAILED(hr))
 		{
-			value = wfx->Format.nChannels * sizeof(float);
+			value = wfx->nChannels * sizeof(float);
 			hr = IMFMediaType_SetUINT32(
 				media_type,
 				&MF_MT_AUDIO_BLOCK_ALIGNMENT,
@@ -512,7 +513,7 @@ uint32_t FAudio_WMADEC_init(FAudioSourceVoice *voice, uint32_t type)
 			);
 		}
 		FAudio_assert(!FAILED(hr) && "Failed get block align!");
-		if (value == wfx->Format.nChannels * sizeof(float)) break;
+		if (value == wfx->nChannels * sizeof(float)) break;
 
 next:
 		IMFMediaType_Release(media_type);

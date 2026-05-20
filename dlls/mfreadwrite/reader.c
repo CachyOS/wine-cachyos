@@ -686,6 +686,42 @@ static void media_type_try_copy_attr(IMFMediaType *dst, IMFMediaType *src, const
     PropVariantClear(&value);
 }
 
+static HRESULT media_type_update_audio_attrs_from_upstream(IMFMediaType *media_type, IMFMediaType *upstream_type)
+{
+    UINT32 bits_per_sample, channel_count, sample_rate;
+    GUID subtype = GUID_NULL;
+    HRESULT hr = S_OK;
+
+    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_NUM_CHANNELS, &hr);
+    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_BITS_PER_SAMPLE, &hr);
+    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_SAMPLES_PER_SECOND, &hr);
+    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_CHANNEL_MASK, &hr);
+    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_VALID_BITS_PER_SAMPLE, &hr);
+
+    if (FAILED(hr))
+        return hr;
+
+    IMFMediaType_GetGUID(media_type, &MF_MT_SUBTYPE, &subtype);
+    if ((IsEqualGUID(&subtype, &MFAudioFormat_PCM) || IsEqualGUID(&subtype, &MFAudioFormat_Float))
+            && SUCCEEDED(IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_BITS_PER_SAMPLE, &bits_per_sample))
+            && SUCCEEDED(IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_NUM_CHANNELS, &channel_count))
+            && SUCCEEDED(IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_SAMPLES_PER_SECOND, &sample_rate)))
+    {
+        UINT32 block_alignment = bits_per_sample * channel_count / 8;
+
+        if (FAILED(hr = IMFMediaType_SetUINT32(media_type, &MF_MT_AUDIO_BLOCK_ALIGNMENT, block_alignment)))
+            return hr;
+
+        return IMFMediaType_SetUINT32(media_type, &MF_MT_AUDIO_AVG_BYTES_PER_SECOND, sample_rate * block_alignment);
+    }
+
+    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_BLOCK_ALIGNMENT, &hr);
+    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_AVG_BYTES_PER_SECOND, &hr);
+    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_SAMPLES_PER_BLOCK, &hr);
+
+    return hr;
+}
+
 /* update a media type with additional attributes reported by upstream element */
 /* also present in mf/topology_loader.c pipeline */
 static HRESULT update_media_type_from_upstream(IMFMediaType *media_type, IMFMediaType *upstream_type, BOOL advanced)
@@ -712,15 +748,8 @@ static HRESULT update_media_type_from_upstream(IMFMediaType *media_type, IMFMedi
     if (!advanced)
         media_type_try_copy_attr(media_type, upstream_type, &MF_MT_DEFAULT_STRIDE, &hr);
 
-    /* propagate common audio attributes */
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_NUM_CHANNELS, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_BLOCK_ALIGNMENT, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_BITS_PER_SAMPLE, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_SAMPLES_PER_SECOND, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_AVG_BYTES_PER_SECOND, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_CHANNEL_MASK, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_SAMPLES_PER_BLOCK, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_VALID_BITS_PER_SAMPLE, &hr);
+    if (SUCCEEDED(hr))
+        hr = media_type_update_audio_attrs_from_upstream(media_type, upstream_type);
 
     return hr;
 }
@@ -2770,7 +2799,9 @@ static HRESULT create_source_reader_from_source(IMFMediaSource *source, IMFAttri
         if (FAILED(hr))
             break;
 
-        hr = IMFMediaTypeHandler_GetMediaTypeByIndex(handler, 0, &src_type);
+        hr = IMFMediaTypeHandler_GetCurrentMediaType(handler, &src_type);
+        if (FAILED(hr))
+            hr = IMFMediaTypeHandler_GetMediaTypeByIndex(handler, 0, &src_type);
         IMFMediaTypeHandler_Release(handler);
         if (FAILED(hr))
             break;

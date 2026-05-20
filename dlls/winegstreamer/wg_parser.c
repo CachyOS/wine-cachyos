@@ -155,6 +155,28 @@ static bool caps_is_compressed(GstCaps *caps)
             && format.major_type != WG_MAJOR_TYPE_AUDIO;
 }
 
+static bool caps_is_supported_compressed_output(GstCaps *caps)
+{
+    struct wg_format format;
+
+    if (!caps)
+        return false;
+    wg_format_from_caps(&format, caps);
+
+    switch (format.major_type)
+    {
+        case WG_MAJOR_TYPE_AUDIO_MPEG1:
+        case WG_MAJOR_TYPE_AUDIO_MPEG4:
+        case WG_MAJOR_TYPE_AUDIO_WMA:
+        case WG_MAJOR_TYPE_VIDEO_H264:
+        case WG_MAJOR_TYPE_VIDEO_WMV:
+            return true;
+
+        default:
+            return false;
+    }
+}
+
 static NTSTATUS wg_parser_get_stream_count(void *args)
 {
     struct wg_parser_get_stream_count_params *params = args;
@@ -255,7 +277,7 @@ static NTSTATUS wg_parser_stream_get_codec_format(void *args)
     struct wg_parser_stream_get_codec_format_params *params = args;
     struct wg_parser_stream *stream = get_stream(params->stream);
 
-    if (caps_is_compressed(stream->codec_caps))
+    if (caps_is_supported_compressed_output(stream->codec_caps))
         wg_format_from_caps(params->format, stream->codec_caps);
     else if (stream->current_caps)
         wg_format_from_caps(params->format, stream->current_caps);
@@ -1271,7 +1293,8 @@ static void pad_added_cb(GstElement *element, GstPad *pad, gpointer user)
     stream->codec_caps = gst_pad_query_caps(pad, NULL);
 
     /* For compressed stream, create an extra decodebin to decode it. */
-    if (!parser->output_compressed && caps_is_compressed(stream->codec_caps))
+    if ((!parser->output_compressed || !caps_is_supported_compressed_output(stream->codec_caps))
+            && caps_is_compressed(stream->codec_caps))
     {
         if (!stream_decodebin_create(stream))
         {

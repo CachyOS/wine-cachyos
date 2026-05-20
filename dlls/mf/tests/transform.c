@@ -3459,6 +3459,8 @@ static void test_wma_decoder(void)
         ATTR_UINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, 22050, .required = TRUE),
         ATTR_UINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, 2 * (16 / 8), .required = TRUE),
         ATTR_UINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 2 * (16 / 8) * 22050, .required = TRUE),
+        ATTR_UINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, 0),
+        ATTR_UINT32(MF_MT_AUDIO_PREFER_WAVEFORMATEX, 0),
         {0},
     };
     const struct attribute_desc expect_input_type_desc[] =
@@ -3547,6 +3549,7 @@ static void test_wma_decoder(void)
     const BYTE *wmaenc_data;
     ULONG wmaenc_data_len;
     ULONG i, ret, ref;
+    UINT32 channel_mask;
     HRESULT hr;
 
     hr = CoInitialize(NULL);
@@ -3594,11 +3597,11 @@ static void test_wma_decoder(void)
 
     /* setting output media type first doesn't work */
     check_mft_set_output_type(transform, output_type_desc, MF_E_TRANSFORM_TYPE_NOT_SET);
-    check_mft_get_output_current_type_(__LINE__, transform, NULL, TRUE, FALSE);
+    check_mft_get_output_current_type_(__LINE__, transform, NULL, FALSE, FALSE);
 
     check_mft_set_input_type_required(transform, input_type_desc);
     check_mft_set_input_type(transform, input_type_desc, S_OK);
-    check_mft_get_input_current_type_(__LINE__, transform, expect_input_type_desc, TRUE, FALSE);
+    check_mft_get_input_current_type_(__LINE__, transform, expect_input_type_desc, FALSE, FALSE);
 
     check_mft_get_input_stream_info(transform, MF_E_TRANSFORM_TYPE_NOT_SET, NULL);
     check_mft_get_output_stream_info(transform, MF_E_TRANSFORM_TYPE_NOT_SET, NULL);
@@ -3611,6 +3614,9 @@ static void test_wma_decoder(void)
         winetest_push_context("out %lu", i);
         ok(hr == S_OK, "GetOutputAvailableType returned %#lx\n", hr);
         check_media_type(media_type, expect_available_outputs[i], -1);
+        channel_mask = 0xdeadbeef;
+        hr = IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_CHANNEL_MASK, &channel_mask);
+        ok(hr == MF_E_ATTRIBUTENOTFOUND, "GetUINT32 returned %#lx, channel mask %#x.\n", hr, channel_mask);
         ret = IMFMediaType_Release(media_type);
         ok(ret == 0, "Release returned %lu\n", ret);
         winetest_pop_context();
@@ -3620,7 +3626,7 @@ static void test_wma_decoder(void)
 
     check_mft_set_output_type_required(transform, output_type_desc);
     check_mft_set_output_type(transform, output_type_desc, S_OK);
-    check_mft_get_output_current_type_(__LINE__, transform, expect_output_type_desc, TRUE, FALSE);
+    check_mft_get_output_current_type_(__LINE__, transform, expect_output_type_desc, FALSE, FALSE);
 
     check_mft_get_input_stream_info(transform, S_OK, &input_info);
     check_mft_get_output_stream_info(transform, S_OK, &output_info);
@@ -4113,6 +4119,16 @@ static void test_wma_decoder_dmo_output_type(void)
     ok(hr == S_OK, "GetOutputSizeInfo returned %#lx.\n", hr);
     ok(size == 8192, "Unexpected size %lu.\n", size);
     ok(alignment == 1, "Unexpected alignment %lu.\n", alignment);
+    init_dmo_media_type_audio(good_output_type, &MEDIASUBTYPE_IEEE_FLOAT, channel_count, rate, 32);
+    hr = IMediaObject_SetOutputType(dmo, 0, good_output_type, 0);
+    ok(hr == S_OK, "SetOutputType returned %#lx.\n", hr);
+    hr = IMediaObject_GetOutputSizeInfo(dmo, 0, &size, &alignment);
+    ok(hr == S_OK, "GetOutputSizeInfo returned %#lx.\n", hr);
+    ok(size == 16384, "Unexpected size %lu.\n", size);
+    ok(alignment == 1, "Unexpected alignment %lu.\n", alignment);
+    init_dmo_media_type_audio(good_output_type, &MEDIASUBTYPE_PCM, channel_count, rate, bits_per_sample);
+    hr = IMediaObject_SetOutputType(dmo, 0, good_output_type, 0);
+    ok(hr == S_OK, "SetOutputType returned %#lx.\n", hr);
 
     hr = IMediaObject_GetInputCurrentType(dmo, 0, input_type);
     ok(hr == S_OK, "GetInputCurrentType returned %#lx.\n", hr);
