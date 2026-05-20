@@ -170,7 +170,6 @@ static void wayland_win_data_get_config(struct wayland_win_data *data,
 
     conf->resizeable = data->resizeable;
     conf->state = window_state;
-    conf->visible = (style & WS_VISIBLE) == WS_VISIBLE;
     conf->managed = data->managed;
 }
 
@@ -186,22 +185,27 @@ static BOOL wayland_win_data_create_wayland_surface(struct wayland_win_data *dat
 {
     struct wayland_surface *surface;
     enum wayland_surface_role role;
-    BOOL visible, server_decor = FALSE;
+    BOOL visible, layer_set, server_decor = FALSE;
     DWORD exstyle = NtUserGetWindowLongW(data->hwnd, GWL_EXSTYLE);
     DWORD style = NtUserGetWindowLongW(data->hwnd, GWL_STYLE);
     struct wl_region *input_region;
 
     TRACE("hwnd=%p\n", data->hwnd);
 
-    visible = ((style & WS_VISIBLE) == WS_VISIBLE) &&
-               (!(exstyle & WS_EX_LAYERED) || data->layered_attribs_set);
+    layer_set = !(exstyle & WS_EX_LAYERED) || data->layered_attribs_set;
+    visible = ((style & WS_VISIBLE) == WS_VISIBLE);
+
+    /* if a window is layered and visible but doesn't have attributes set,
+     * that only delays when it gets mapped: it doesn't cause the window to get unmapped. */
+    if (!(surface = data->wayland_surface) || !surface->window.visible)
+        visible = visible && layer_set;
 
     if (!visible) role = WAYLAND_SURFACE_ROLE_NONE;
     else if (owner_surface) role = WAYLAND_SURFACE_ROLE_POPUP;
     else role = WAYLAND_SURFACE_ROLE_TOPLEVEL;
 
     /* we can temporarily clear the role of a surface but cannot assign a different one after it's set */
-    if ((surface = data->wayland_surface) && role && surface->role && surface->role != role)
+    if (surface && role && surface->role && surface->role != role)
     {
         /* Make sure any attached client surface is detached before we destroy the surface.
          * They will be reattached when win32u updates them again after WindowPosChanged.
@@ -229,6 +233,7 @@ static BOOL wayland_win_data_create_wayland_surface(struct wayland_win_data *dat
         server_decor = TRUE;
     }
 
+    surface->window.visible = visible;
     wayland_win_data_get_config(data, &surface->window);
 
     /* If the window is a visible toplevel make it a wayland
