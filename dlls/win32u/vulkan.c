@@ -144,6 +144,7 @@ struct surface
 {
     struct vulkan_surface obj;
     struct client_surface *client;
+    struct swapchain *swapchain;
     HWND hwnd;
 };
 
@@ -2598,14 +2599,24 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
                    create_info_host.imageFormat );
     }
 
+    if ((res = driver_funcs->p_vulkan_surface_configure( &create_info_host.imageColorSpace, create_info_host.compositeAlpha, surface->client )))
+    {
+        free( swapchain );
+        return res;
+    }
+
+    InterlockedIncrement( &surface->client->busy_ref );
+
     if ((res = device->p_vkCreateSwapchainKHR( device->host.device, &create_info_host, NULL, &host_swapchain )))
     {
+        InterlockedDecrement( &surface->client->busy_ref );
         free( swapchain );
         return res;
     }
 
     vulkan_object_init( &swapchain->obj.obj, host_swapchain );
     swapchain->surface = surface;
+    surface->swapchain = swapchain;
     swapchain->extents = create_info->imageExtent;
     instance->p_insert_object( instance, &swapchain->obj.obj );
 
@@ -2641,6 +2652,7 @@ void win32u_vkDestroySwapchainKHR( VkDevice client_device, VkSwapchainKHR client
     struct vulkan_device *device = vulkan_device_from_handle( client_device );
     struct vulkan_instance *instance = device->physical_device->instance;
     struct swapchain *swapchain = swapchain_from_handle( client_swapchain );
+    struct surface *surface;
 
     if (allocator) FIXME( "Support for allocation callbacks not implemented yet\n" );
     if (!swapchain) return;
@@ -2668,6 +2680,11 @@ void win32u_vkDestroySwapchainKHR( VkDevice client_device, VkSwapchainKHR client
     }
 
     device->p_vkDestroySwapchainKHR( device->host.device, swapchain->obj.host.swapchain, NULL );
+    if ((surface = swapchain->surface))
+    {
+        surface->swapchain = NULL;
+        InterlockedDecrement( &surface->client->busy_ref );
+    }
     instance->p_remove_object( instance, &swapchain->obj.obj );
 
     free( swapchain );
@@ -3961,6 +3978,13 @@ static VkResult nulldrv_vulkan_surface_create( HWND hwnd, BOOL raw, const struct
     return res;
 }
 
+static VkResult nulldrv_vulkan_surface_configure( VkColorSpaceKHR *colorspace,
+                                                  VkCompositeAlphaFlagBitsKHR alpha_bits,
+                                                  struct client_surface *client )
+{
+    return VK_SUCCESS;
+}
+
 static VkBool32 nulldrv_get_physical_device_presentation_support( struct vulkan_physical_device *physical_device, uint32_t queue )
 {
     return VK_TRUE;
@@ -3987,6 +4011,7 @@ static void nulldrv_map_device_extensions( struct vulkan_device_extensions *exte
 static const struct vulkan_driver_funcs nulldrv_funcs =
 {
     .p_vulkan_surface_create = nulldrv_vulkan_surface_create,
+    .p_vulkan_surface_configure = nulldrv_vulkan_surface_configure,
     .p_get_physical_device_presentation_support = nulldrv_get_physical_device_presentation_support,
     .p_map_instance_extensions = nulldrv_map_instance_extensions,
     .p_map_device_extensions = nulldrv_map_device_extensions,
@@ -4019,6 +4044,14 @@ static VkResult lazydrv_vulkan_surface_create( HWND hwnd, BOOL raw, const struct
     return driver_funcs->p_vulkan_surface_create( hwnd, raw, instance, surface, client );
 }
 
+static VkResult lazydrv_vulkan_surface_configure( VkColorSpaceKHR *colorspace,
+                                                  VkCompositeAlphaFlagBitsKHR alpha_bits,
+                                                  struct client_surface *client )
+{
+    vulkan_driver_load();
+    return driver_funcs->p_vulkan_surface_configure( colorspace, alpha_bits, client );
+}
+
 static VkBool32 lazydrv_get_physical_device_presentation_support( struct vulkan_physical_device *physical_device, uint32_t queue )
 {
     vulkan_driver_load();
@@ -4040,6 +4073,7 @@ static void lazydrv_map_device_extensions( struct vulkan_device_extensions *exte
 static const struct vulkan_driver_funcs lazydrv_funcs =
 {
     .p_vulkan_surface_create = lazydrv_vulkan_surface_create,
+    .p_vulkan_surface_configure = lazydrv_vulkan_surface_configure,
     .p_get_physical_device_presentation_support = lazydrv_get_physical_device_presentation_support,
     .p_map_instance_extensions = lazydrv_map_instance_extensions,
     .p_map_device_extensions = lazydrv_map_device_extensions,

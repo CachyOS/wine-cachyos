@@ -30,6 +30,7 @@
 #undef SW_MAX /* Also defined in winuser.rh */
 #include <sys/mman.h>
 #include <unistd.h>
+#include <locale.h>
 
 #include "waylanddrv.h"
 #include "wine/debug.h"
@@ -55,12 +56,15 @@ struct layout
     VSC_LPWSTR key_names_ext[0x200];
     WCHAR *key_names_str;
 
+    DEADKEY *deadkeys;
+    WCHAR **deadkey_names;
+
     USHORT vsc2vk[0x100];
     VSC_VK vsc2vk_e0[0x100];
     VSC_VK vsc2vk_e1[0x100];
 
     VK_TO_WCHAR_TABLE vk_to_wchar_table[2];
-    VK_TO_WCHARS8 vk_to_wchars8[0x100 * 2 /* SGCAPS */];
+    VK_TO_WCHARS8 vk_to_wchars8[0x100 * 4 /* any SGCAPS + WCH_DEAD combination */];
     VK_TO_BIT vk2bit[4];
     union
     {
@@ -233,6 +237,64 @@ static WORD key2scan(UINT key)
     return 0x200 | (key & 0x7f);
 }
 
+static WCHAR get_xkb_dead_key_char(xkb_keysym_t keysym)
+{
+    WCHAR wch;
+
+    if ((wch = xkb_keysym_to_utf32(keysym))) return wch;
+
+    switch (keysym)
+    {
+        case XKB_KEY_dead_tilde: return 0x0303;
+        case XKB_KEY_dead_grave: return 0x0300;
+        case XKB_KEY_dead_acute: return 0x0301;
+        case XKB_KEY_dead_circumflex: return 0x0302;
+        case XKB_KEY_dead_macron: return 0x0304;
+        case XKB_KEY_dead_breve: return 0x0306;
+        case XKB_KEY_dead_abovedot: return 0x0307;
+        case XKB_KEY_dead_diaeresis: return 0x0308;
+        case XKB_KEY_dead_abovering: return 0x030a;
+        case XKB_KEY_dead_doubleacute: return 0x030b;
+        case XKB_KEY_dead_caron: return 0x030c;
+        case XKB_KEY_dead_cedilla: return 0x0327;
+        case XKB_KEY_dead_ogonek: return 0x0328;
+        case XKB_KEY_dead_iota: return 0x0345;
+        case XKB_KEY_dead_voiced_sound: return 0x309b;
+        case XKB_KEY_dead_semivoiced_sound: return 0x309c;
+        case XKB_KEY_dead_belowdot: return 0x0323;
+        case XKB_KEY_dead_hook: return 0x0309;
+        case XKB_KEY_dead_horn: return 0x031b;
+        case XKB_KEY_dead_stroke: return 0x0335;
+        case XKB_KEY_dead_abovecomma: return 0x0313;
+        case XKB_KEY_dead_abovereversedcomma: return 0x0314;
+        case XKB_KEY_dead_doublegrave: return 0x030f;
+        case XKB_KEY_dead_belowring: return 0x0325;
+        case XKB_KEY_dead_belowmacron: return 0x0331;
+        case XKB_KEY_dead_belowcircumflex: return 0x032d;
+        case XKB_KEY_dead_belowtilde: return 0x0330;
+        case XKB_KEY_dead_belowbreve: return 0x032e;
+        case XKB_KEY_dead_belowdiaeresis: return 0x0324;
+        case XKB_KEY_dead_invertedbreve: return 0x0311;
+        case XKB_KEY_dead_belowcomma: return 0x0326;
+        case XKB_KEY_dead_currency: return 0x00a4;
+        case XKB_KEY_dead_a: return 'a';
+        case XKB_KEY_dead_A: return 'A';
+        case XKB_KEY_dead_e: return 'e';
+        case XKB_KEY_dead_E: return 'E';
+        case XKB_KEY_dead_i: return 'i';
+        case XKB_KEY_dead_I: return 'I';
+        case XKB_KEY_dead_o: return 'o';
+        case XKB_KEY_dead_O: return 'O';
+        case XKB_KEY_dead_u: return 'u';
+        case XKB_KEY_dead_U: return 'U';
+        case XKB_KEY_dead_schwa: return 0x0259;
+        case XKB_KEY_dead_SCHWA: return 0x018f;
+        case XKB_KEY_dead_greek: return 0xff7e;
+        case XKB_KEY_dead_hamza: return 0x0621;
+        default: return WCH_NONE;
+    }
+}
+
 static inline LANGID langid_from_xkb_layout(const char *layout, size_t layout_len)
 {
 #define MAKEINDEX(c0, c1) (MAKEWORD(c0, c1) - MAKEWORD('a', 'a'))
@@ -351,20 +413,20 @@ static HKL get_layout_hkl(struct layout *layout, LCID locale)
     else return (HKL)(UINT_PTR)MAKELONG(locale, 0xf000 | layout->layout_id);
 }
 
-static void add_xkb_layout(const char *xkb_layout, struct xkb_keymap *xkb_keymap,
+static void add_xkb_layout(const char *xkb_layout, struct xkb_keymap *xkb_keymap, struct xkb_compose_table *xkb_compose,
                             xkb_layout_index_t xkb_group, LANGID lang)
 {
     static WORD next_layout_id = 1;
 
-    unsigned int mod, keyc, len, names_len, min_keycode, max_keycode;
+    unsigned int mod, keyc, len, names_len, min_keycode, max_keycode, deadkeys_len, deadkey_names_len;
     struct xkb_state *xkb_state = xkb_state_new(xkb_keymap);
     xkb_mod_mask_t shift_mask, control_mask, altgr_mask, capslock_mask, numlock_mask;
     VSC_LPWSTR *names_entry, *names_ext_entry;
     VSC_VK *vsc2vk_e0_entry, *vsc2vk_e1_entry;
+    WCHAR *names_str;
     VK_TO_WCHARS8 *vk2wchars_entry;
     struct layout *layout;
     const USHORT *scan2vk;
-    WCHAR *names_str;
     WORD index = 0;
     char *ptr;
 
@@ -383,9 +445,35 @@ static void add_xkb_layout(const char *xkb_layout, struct xkb_keymap *xkb_keymap
         names_len += xkb_keysym_get_name(*keysym, NULL, 0) + 1;
     }
 
+    /* both tables are zero-terminated */
+    deadkeys_len = sizeof(DEADKEY);
+    deadkey_names_len = 2 * sizeof(WCHAR*);
+
+#ifdef HAVE_XKBCOMMON_XKBCOMMON_COMPOSE_H
+    if (xkb_compose)
+    {
+        struct xkb_compose_table_iterator *compose_iter = xkb_compose_table_iterator_new(xkb_compose);
+        struct xkb_compose_table_entry *compose_entry;
+        while ((compose_entry = xkb_compose_table_iterator_next(compose_iter)))
+        {
+            size_t sequence_len;
+
+            xkb_compose_table_entry_sequence(compose_entry, &sequence_len);
+            if (sequence_len != 2) continue;
+
+            names_len += strlen(xkb_compose_table_entry_utf8(compose_entry)) + 1;
+            names_len += xkb_keysym_get_name(xkb_compose_table_entry_keysym(compose_entry), NULL, 0) + 1;
+
+            deadkey_names_len += 2 * sizeof(WCHAR*);
+            deadkeys_len += sizeof(DEADKEY);
+        }
+        xkb_compose_table_iterator_free(compose_iter);
+    }
+#endif /* HAVE_XKBCOMMON_XKBCOMMON_COMPOSE_H */
+
     names_len *= sizeof(WCHAR);
     len = strlen(xkb_layout) + 1;
-    if (!(layout = calloc(1, sizeof(*layout) + names_len + len)))
+    if (!(layout = calloc(1, sizeof(*layout) + deadkeys_len + deadkey_names_len + names_len + len)))
     {
         ERR("Failed to allocate memory for Xkb layout entry\n");
         return;
@@ -395,6 +483,11 @@ static void add_xkb_layout(const char *xkb_layout, struct xkb_keymap *xkb_keymap
     ptr = (char *)(layout + 1);
     layout->xkb_layout = strcpy(ptr, xkb_layout);
     ptr += len;
+
+    layout->deadkeys = (void *)ptr;
+    ptr += deadkeys_len;
+    layout->deadkey_names = (void *)ptr;
+    ptr += deadkey_names_len;
 
     layout->xkb_group = xkb_group;
     layout->lang = lang;
@@ -419,6 +512,8 @@ static void add_xkb_layout(const char *xkb_layout, struct xkb_keymap *xkb_keymap
     layout->tables.pVSCtoVK_E1 = layout->vsc2vk_e1;
     layout->tables.pCharModifiers = &layout->modifiers;
     layout->tables.pVkToWcharTable = layout->vk_to_wchar_table;
+    layout->tables.pDeadKey = layout->deadkeys;
+    layout->tables.pKeyNamesDead = layout->deadkey_names;
     layout->tables.fLocaleFlags = MAKELONG(KLLF_ALTGR, KBD_VERSION);
 
     layout->vk_to_wchar_table[0].pVkToWchars = (VK_TO_WCHARS1 *)layout->vk_to_wchars8;
@@ -499,7 +594,8 @@ static void add_xkb_layout(const char *xkb_layout, struct xkb_keymap *xkb_keymap
     {
         WORD scan = key2scan(keyc - 8), vkey = scan2vk[scan];
         VK_TO_WCHARS8 vkey2wch = {.VirtualKey = vkey}, caps_vkey2wch = vkey2wch;
-        BOOL found = FALSE, caps_found = FALSE;
+        VK_TO_WCHARS8 dead_vkey2wch = vkey2wch, dead_caps_vkey2wch = vkey2wch;
+        BOOL found = FALSE, caps_found = FALSE, dead_found = FALSE, dead_caps_found = FALSE;
         uint32_t caps_ret, shift_ret;
         unsigned int mod;
 
@@ -519,6 +615,7 @@ static void add_xkb_layout(const char *xkb_layout, struct xkb_keymap *xkb_keymap
         for (mod = 0; mod < 8; ++mod)
         {
             xkb_mod_mask_t mod_mask = 0;
+            xkb_keysym_t keysym;
             uint32_t ret;
 
             if (mod & (1 << 0)) mod_mask |= shift_mask;
@@ -534,6 +631,14 @@ static void add_xkb_layout(const char *xkb_layout, struct xkb_keymap *xkb_keymap
 
             if (vkey2wch.wch[mod] != WCH_NONE) found = TRUE;
 
+            keysym = xkb_state_key_get_one_sym(xkb_state, keyc);
+            if (xkb_compose && keysym >= XKB_KEY_dead_grave && keysym <= XKB_KEY_dead_currency)
+            {
+                vkey2wch.wch[mod] = WCH_DEAD;
+                dead_vkey2wch.wch[mod] = get_xkb_dead_key_char(keysym);
+                dead_found = found = TRUE;
+            }
+
             xkb_state_update_mask(xkb_state, 0, 0, mod_mask | capslock_mask, 0, 0, xkb_group);
 
             if (mod_mask & control_mask) caps_vkey2wch.wch[mod] = WCH_NONE; /* on Windows CTRL+key behave specifically */
@@ -542,6 +647,14 @@ static void add_xkb_layout(const char *xkb_layout, struct xkb_keymap *xkb_keymap
             else caps_vkey2wch.wch[mod] = ret;
 
             if (caps_vkey2wch.wch[mod] != WCH_NONE) caps_found = TRUE;
+
+            keysym = xkb_state_key_get_one_sym(xkb_state, keyc);
+            if (xkb_compose && keysym >= XKB_KEY_dead_grave && keysym <= XKB_KEY_dead_currency)
+            {
+                caps_vkey2wch.wch[mod] = WCH_DEAD;
+                dead_caps_vkey2wch.wch[mod] = get_xkb_dead_key_char(keysym);
+                dead_caps_found = caps_found = TRUE;
+            }
         }
 
         if (!found) continue;
@@ -551,6 +664,12 @@ static void add_xkb_layout(const char *xkb_layout, struct xkb_keymap *xkb_keymap
             TRACE("vkey %#06x + CAPS -> %s\n", caps_vkey2wch.VirtualKey, debugstr_wn(caps_vkey2wch.wch, 8));
             caps_vkey2wch.Attributes = SGCAPS;
             *vk2wchars_entry++ = caps_vkey2wch;
+            if (dead_caps_found)
+            {
+                TRACE("dead vkey %#06x + CAPS -> %s\n", dead_caps_vkey2wch.VirtualKey, debugstr_wn(dead_caps_vkey2wch.wch, 8));
+                dead_caps_vkey2wch.Attributes = SGCAPS;
+                *vk2wchars_entry++ = dead_caps_vkey2wch;
+            }
         }
         else
         {
@@ -563,7 +682,50 @@ static void add_xkb_layout(const char *xkb_layout, struct xkb_keymap *xkb_keymap
 
         TRACE("vkey %#06x -> %s\n", vkey2wch.VirtualKey, debugstr_wn(vkey2wch.wch, 8));
         *vk2wchars_entry++ = vkey2wch;
+        if (dead_found)
+        {
+            TRACE("dead vkey %#06x -> %s\n", dead_vkey2wch.VirtualKey, debugstr_wn(dead_vkey2wch.wch, 8));
+            *vk2wchars_entry++ = dead_vkey2wch;
+        }
     }
+
+#ifdef HAVE_XKBCOMMON_XKBCOMMON_COMPOSE_H
+    if (xkb_compose)
+    {
+        DEADKEY *deadkey = layout->deadkeys;
+        WCHAR **deadkey_name = layout->deadkey_names;
+        struct xkb_compose_table_iterator *compose_iter = xkb_compose_table_iterator_new(xkb_compose);
+        struct xkb_compose_table_entry *compose_entry;
+        while ((compose_entry = xkb_compose_table_iterator_next(compose_iter)))
+        {
+            const xkb_keysym_t *sequence;
+            size_t sequence_len;
+            const char *str;
+            char name[256];
+
+            sequence = xkb_compose_table_entry_sequence(compose_entry, &sequence_len);
+            if (sequence_len != 2) continue;
+
+            str = xkb_compose_table_entry_utf8(compose_entry);
+            len = strlen(str);
+
+            deadkey_name[0] = names_str;
+            names_str += ntdll_umbstowcs(str, len + 1, deadkey_name[0], len + 1);
+            deadkey->wchComposed = *deadkey_name[0];
+            deadkey->dwBoth = MAKELONG(xkb_keysym_to_utf32(sequence[1]), get_xkb_dead_key_char(sequence[0]));
+
+            deadkey_name[1] = names_str;
+            len = xkb_keysym_get_name(xkb_compose_table_entry_keysym(compose_entry), name, sizeof(name));
+            names_str += ntdll_umbstowcs(name, len + 1, deadkey_name[1], len + 1);
+
+            TRACE("deadkey %s (%s) -> %s\n", debugstr_wn((WCHAR *)&deadkey->dwBoth, 2), debugstr_w(deadkey_name[0]), debugstr_w(deadkey_name[1]));
+
+            deadkey_name += 2;
+            deadkey++;
+        }
+        xkb_compose_table_iterator_free(compose_iter);
+    }
+#endif /* HAVE_XKBCOMMON_XKBCOMMON_COMPOSE_H */
 
     xkb_state_unref(xkb_state);
 
@@ -667,6 +829,7 @@ static void keyboard_handle_keymap(void *data, struct wl_keyboard *wl_keyboard,
 {
     struct wayland_keyboard *keyboard = &process_wayland.keyboard;
     struct xkb_keymap *xkb_keymap = NULL;
+    struct xkb_compose_table *xkb_compose = NULL;
     xkb_layout_index_t xkb_group;
     struct xkb_state *xkb_state;
     struct layout *entry, *next;
@@ -680,6 +843,12 @@ static void keyboard_handle_keymap(void *data, struct wl_keyboard *wl_keyboard,
             FIXME("Unsupported keymap format %#x\n", format);
         else
         {
+#ifdef HAVE_XKBCOMMON_XKBCOMMON_COMPOSE_H
+            const char *locale = setlocale( LC_CTYPE, NULL );
+            xkb_compose = xkb_compose_table_new_from_locale(keyboard->xkb_context, locale, XKB_COMPOSE_COMPILE_NO_FLAGS);
+#else
+            xkb_compose = NULL;
+#endif
             xkb_keymap = xkb_keymap_new_from_string(keyboard->xkb_context, keymap_str,
                                                     XKB_KEYMAP_FORMAT_TEXT_V1, 0);
         }
@@ -694,6 +863,7 @@ static void keyboard_handle_keymap(void *data, struct wl_keyboard *wl_keyboard,
         ERR("Failed to load Xkb keymap\n");
         return;
     }
+    if (!xkb_compose) ERR("Failed to load Xkb compose table, deadkeys won't be supported\n");
 
     pthread_mutex_lock(&xkb_layouts_mutex);
 
@@ -719,7 +889,7 @@ static void keyboard_handle_keymap(void *data, struct wl_keyboard *wl_keyboard,
 
         lang = langid_from_xkb_layout(layout, layout_len);
         snprintf(buffer, ARRAY_SIZE(buffer), "%.*s:%.*s", layout_len, layout, variant_len, variant);
-        add_xkb_layout(buffer, xkb_keymap, xkb_group, lang);
+        add_xkb_layout(buffer, xkb_keymap, xkb_compose, xkb_group, lang);
     }
 
     pthread_mutex_unlock(&xkb_layouts_mutex);
@@ -735,6 +905,9 @@ static void keyboard_handle_keymap(void *data, struct wl_keyboard *wl_keyboard,
     }
 
     xkb_keymap_unref(xkb_keymap);
+#ifdef HAVE_XKBCOMMON_XKBCOMMON_COMPOSE_H
+    if (xkb_compose) xkb_compose_table_unref(xkb_compose);
+#endif
 }
 
 static void keyboard_handle_enter(void *private, struct wl_keyboard *wl_keyboard,
@@ -770,16 +943,34 @@ static void keyboard_handle_enter(void *private, struct wl_keyboard *wl_keyboard
          * directly once it's updated to not explicitly deactivate the old
          * foreground window when both the old and new foreground windows
          * are in the same non-current thread. */
-        if (surface->window.managed)
+        if (surface->window.minimized)
+            NtUserPostMessage(hwnd, WM_SYSCOMMAND, SC_RESTORE, 0);
+        else if (surface->window.managed)
             NtUserPostMessage(hwnd, WM_WAYLAND_SET_FOREGROUND, 0, 0);
     }
 
     wayland_win_data_release(data);
 }
 
-static void keyboard_handle_leave(void *data, struct wl_keyboard *wl_keyboard,
+static BOOL wayland_disable_focus_loss(void)
+{
+    static int disabled = -1;
+
+    if (disabled == -1)
+    {
+        const char *env = getenv("WAYLANDDRV_FOCUS_LOSS");
+        if ((disabled = env && !atoi(env)))
+            FIXME("Focus loss explicitly disabled!\n");
+    }
+
+    return disabled;
+}
+
+static void keyboard_handle_leave(void *private, struct wl_keyboard *wl_keyboard,
                                   uint32_t serial, struct wl_surface *wl_surface)
 {
+    struct wayland_win_data *data;
+    struct wayland_surface *surface;
     struct wayland_keyboard *keyboard = &process_wayland.keyboard;
     HWND hwnd;
 
@@ -801,25 +992,104 @@ static void keyboard_handle_leave(void *data, struct wl_keyboard *wl_keyboard,
      * and for any key repetition to stop. */
     release_all_keys(hwnd);
 
-    /* FIXME: update foreground window as well */
+    if (hwnd == NtUserGetForegroundWindow())
+    {
+        if (!(NtUserGetWindowLongW(hwnd, GWL_STYLE) & WS_MINIMIZE))
+            send_message(hwnd, WM_CANCELMODE, 0, 0);
+
+        if (!(data = wayland_win_data_get(hwnd))) return;
+
+        if ((surface = data->wayland_surface))
+        {
+            /* TODO: Drop the internal message and call NtUserSetForegroundWindow
+             * directly once it's updated to not explicitly deactivate the old
+             * foreground window when both the old and new foreground windows
+             * are in the same non-current thread. */
+            if (surface->window.managed &&
+                (surface->current.caps & WAYLAND_SURFACE_WM_CAPS_MINIMIZE) &&
+                 !wayland_disable_focus_loss())
+                NtUserPostMessage(hwnd, WM_WAYLAND_SET_FOREGROUND, 1, 0);
+        }
+
+        wayland_win_data_release(data);
+    }
 }
 
-static void send_right_control(HWND hwnd, uint32_t state)
+static void send_keyboard_input(HWND hwnd, UINT scan, UINT vkey, UINT flags, uint32_t state)
 {
     INPUT input = {0};
     input.type = INPUT_KEYBOARD;
-    input.ki.wScan = 0xe000 | (key2scan(KEY_RIGHTCTRL) & 0xff);
-    input.ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_EXTENDEDKEY;
+    input.ki.wVk = vkey;
+    input.ki.wScan = scan;
+    input.ki.dwFlags = flags;
     if (state == WL_KEYBOARD_KEY_STATE_RELEASED) input.ki.dwFlags |= KEYEVENTF_KEYUP;
     NtUserSendHardwareInput(hwnd, 0, &input, 0);
+}
+
+static void set_async_key_state(const BYTE state[256])
+{
+    SERVER_START_REQ(set_key_state)
+    {
+        req->async = 1;
+        wine_server_add_data(req, state, 256);
+        wine_server_call(req);
+    }
+    SERVER_END_REQ;
+}
+
+static void update_mod_state(HWND hwnd)
+{
+    struct wayland_keyboard *keyboard = &process_wayland.keyboard;
+    BOOL numlock, capslock, scrolllock, changed = FALSE;
+    BYTE state[256];
+
+    TRACE("hwnd=%p\n", hwnd);
+
+    pthread_mutex_lock(&keyboard->mutex);
+    numlock = xkb_state_mod_name_is_active(keyboard->xkb_state,
+                                           XKB_MOD_NAME_NUM,
+                                           XKB_STATE_MODS_LOCKED) > 0;
+    capslock = xkb_state_mod_name_is_active(keyboard->xkb_state,
+                                            XKB_MOD_NAME_CAPS,
+                                            XKB_STATE_MODS_LOCKED) > 0;
+    scrolllock = xkb_state_mod_name_is_active(keyboard->xkb_state,
+                                              XKB_VMOD_NAME_SCROLL,
+                                              XKB_STATE_MODS_LOCKED) > 0;
+    pthread_mutex_unlock(&keyboard->mutex);
+
+    if (!NtUserGetAsyncKeyboardState(state)) return;
+
+    if ((state[VK_NUMLOCK] & 0x1) != numlock)
+    {
+        state[VK_NUMLOCK] &= ~0x1;
+        state[VK_NUMLOCK] |= numlock;
+        changed = TRUE;
+    }
+
+    if ((state[VK_CAPITAL] & 0x1) != capslock)
+    {
+        state[VK_CAPITAL] &= ~0x1;
+        state[VK_CAPITAL] |= capslock;
+        changed = TRUE;
+    }
+
+    if ((state[VK_SCROLL] & 0x1) != scrolllock)
+    {
+        state[VK_SCROLL] &= ~0x1;
+        state[VK_SCROLL] |= scrolllock;
+        changed = TRUE;
+    }
+
+    /* avoid a costly wineserver call if nothing changed */
+    if (changed) set_async_key_state(state);
 }
 
 static void keyboard_handle_key(void *data, struct wl_keyboard *wl_keyboard,
                                 uint32_t serial, uint32_t time, uint32_t key,
                                 uint32_t state)
 {
+    UINT flags = KEYEVENTF_SCANCODE;
     UINT scan = key2scan(key);
-    INPUT input = {0};
     HWND hwnd;
 
     InterlockedExchange(&process_wayland.input_serial, serial);
@@ -829,15 +1099,30 @@ static void keyboard_handle_key(void *data, struct wl_keyboard *wl_keyboard,
     TRACE_(key)("serial=%u hwnd=%p key=%d scan=%#x state=%#x\n", serial, hwnd, key, scan, state);
 
     /* NOTE: Windows normally sends VK_CONTROL + VK_MENU only if the layout has KLLF_ALTGR */
-    if (key == KEY_RIGHTALT) send_right_control(hwnd, state);
+    if (key == KEY_RIGHTALT)
+    {
+        send_keyboard_input(hwnd, 0xe000 | (key2scan(KEY_RIGHTCTRL) & 0xff), 0,
+                            KEYEVENTF_SCANCODE | KEYEVENTF_EXTENDEDKEY, state);
+    }
+    /* numlock is extended despite not having an extended scancode */
+    else if (key == KEY_NUMLOCK)
+    {
+        send_keyboard_input(hwnd, 0x45, VK_NUMLOCK, KEYEVENTF_EXTENDEDKEY, state);
+        return;
+    }
+    /* windows just behaves weird for right shift, see user32 tests */
+    else if (key == KEY_RIGHTSHIFT)
+    {
+        send_keyboard_input(hwnd, 0x36, VK_RSHIFT, KEYEVENTF_EXTENDEDKEY, state);
+        return;
+    }
 
-    input.type = INPUT_KEYBOARD;
-    input.ki.wScan = (scan & 0x300) ? scan + 0xdf00 : scan;
-    input.ki.dwFlags = KEYEVENTF_SCANCODE;
-    if (scan & ~0xff) input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+    if (key != KEY_CAPSLOCK && key != KEY_SCROLLLOCK) update_mod_state(hwnd);
 
-    if (state == WL_KEYBOARD_KEY_STATE_RELEASED) input.ki.dwFlags |= KEYEVENTF_KEYUP;
-    NtUserSendHardwareInput(hwnd, 0, &input, 0);
+    if (scan & ~0xff) flags |= KEYEVENTF_EXTENDEDKEY;
+    if (scan & 0x300) scan += 0xdf00;
+
+    send_keyboard_input(hwnd, scan, 0, flags, state);
 }
 
 static void keyboard_handle_modifiers(void *data, struct wl_keyboard *wl_keyboard,
@@ -851,7 +1136,7 @@ static void keyboard_handle_modifiers(void *data, struct wl_keyboard *wl_keyboar
 
     if (!wayland_keyboard_get_focused_hwnd()) return;
 
-    TRACE("serial=%u mods_depressed=%#x mods_latched=%#x mods_locked=%#x xkb_group=%d stub!\n",
+    TRACE("serial=%u mods_depressed=%#x mods_latched=%#x mods_locked=%#x xkb_group=%d\n",
           serial, mods_depressed, mods_latched, mods_locked, xkb_group);
 
     pthread_mutex_lock(&keyboard->mutex);
@@ -860,8 +1145,6 @@ static void keyboard_handle_modifiers(void *data, struct wl_keyboard *wl_keyboar
     pthread_mutex_unlock(&keyboard->mutex);
 
     set_current_xkb_group(xkb_group);
-
-    /* FIXME: Sync wine modifier state with XKB modifier state. */
 }
 
 static void keyboard_handle_repeat_info(void *data, struct wl_keyboard *wl_keyboard,

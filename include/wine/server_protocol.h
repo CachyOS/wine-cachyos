@@ -977,6 +977,12 @@ struct obj_locator
 #define WH_WINEVENT      (WH_MAXHOOK + 1)
 #define NB_HOOKS         (WH_WINEVENT - WH_MINHOOK + 1)
 
+struct directory_file_entry
+{
+    data_size_t name_len;
+
+};
+
 struct shared_cursor
 {
     int                  x;
@@ -1148,6 +1154,13 @@ struct get_startup_info_reply
 };
 
 
+struct cpu_topology_override
+{
+    unsigned int cpu_count;
+    unsigned char host_cpu_id[64];
+};
+
+
 
 struct init_process_done_request
 {
@@ -1155,6 +1168,7 @@ struct init_process_done_request
     char __pad_12[4];
     client_ptr_t teb;
     client_ptr_t peb;
+    client_ptr_t ldt_copy;
 };
 struct init_process_done_reply
 {
@@ -1173,6 +1187,7 @@ struct init_first_thread_request
     int          debug_level;
     int          reply_fd;
     int          wait_fd;
+    /* VARARG(cpu_override,cpu_topology_override); */
 };
 struct init_first_thread_reply
 {
@@ -1417,12 +1432,14 @@ struct suspend_thread_request
 {
     struct request_header __header;
     obj_handle_t handle;
+    obj_handle_t waited_handle;
+    char __pad_20[4];
 };
 struct suspend_thread_reply
 {
     struct reply_header __header;
     int          count;
-    char __pad_12[4];
+    obj_handle_t wait_handle;
 };
 
 
@@ -2607,6 +2624,25 @@ struct flush_key_request
 struct flush_key_reply
 {
     struct reply_header __header;
+    abstime_t   timestamp_counter;
+    data_size_t total;
+    int         branch_count;
+    /* VARARG(data,bytes); */
+};
+
+
+
+struct flush_key_done_request
+{
+    struct request_header __header;
+    char __pad_12[4];
+    abstime_t    timestamp_counter;
+    int          branch;
+    char __pad_28[4];
+};
+struct flush_key_done_reply
+{
+    struct reply_header __header;
 };
 
 
@@ -2733,12 +2769,19 @@ struct save_registry_request
 {
     struct request_header __header;
     obj_handle_t hkey;
-    obj_handle_t file;
-    char __pad_20[4];
 };
 struct save_registry_reply
 {
     struct reply_header __header;
+    data_size_t  total;
+    /* VARARG(data,bytes); */
+    char __pad_12[4];
+};
+enum prefix_type
+{
+    PREFIX_UNKNOWN,
+    PREFIX_32BIT,
+    PREFIX_64BIT,
 };
 
 
@@ -3124,7 +3167,22 @@ struct send_hardware_message_reply
     int             new_y;
     char __pad_28[4];
 };
-#define SEND_HWMSG_INJECTED    0x01
+
+
+
+struct track_mouse_from_pointer_request
+{
+    struct request_header __header;
+    user_handle_t   win;
+    unsigned int    msg;
+    unsigned int    pointer_id;
+};
+struct track_mouse_from_pointer_reply
+{
+    struct reply_header __header;
+    int             cursor_pos_updated;
+    char __pad_12[4];
+};
 
 
 
@@ -4147,6 +4205,29 @@ struct get_thread_desktop_reply
 };
 
 
+struct get_thread_layout_request
+{
+    struct request_header __header;
+    thread_id_t tid;
+};
+struct get_thread_layout_reply
+{
+    struct reply_header __header;
+    client_ptr_t layout;
+};
+
+
+struct set_thread_layout_request
+{
+    struct request_header __header;
+    thread_id_t tid;
+    client_ptr_t layout;
+};
+struct set_thread_layout_reply
+{
+    struct reply_header __header;
+};
+
 
 struct set_thread_desktop_request
 {
@@ -4167,6 +4248,7 @@ struct set_user_object_info_request
     obj_handle_t handle;
     unsigned int flags;
     unsigned int obj_flags;
+    timeout_t    close_timeout;
 };
 struct set_user_object_info_reply
 {
@@ -4177,6 +4259,7 @@ struct set_user_object_info_reply
 };
 #define SET_USER_OBJECT_SET_FLAGS       1
 #define SET_USER_OBJECT_GET_FULL_NAME   2
+#define SET_USER_OBJECT_SET_CLOSE_TIMEOUT 4
 
 
 
@@ -4243,12 +4326,12 @@ struct get_thread_input_reply
 
 
 
-struct get_last_input_time_request
+struct set_user_input_time_request
 {
     struct request_header __header;
-    char __pad_12[4];
+    int          set;
 };
-struct get_last_input_time_reply
+struct set_user_input_time_reply
 {
     struct reply_header __header;
     unsigned int time;
@@ -4993,11 +5076,13 @@ struct get_security_object_reply
 
 struct handle_info
 {
+    client_ptr_t object;
     process_id_t owner;
     obj_handle_t handle;
     unsigned int access;
     unsigned int attributes;
     unsigned int type;
+    unsigned int __pad;
 };
 
 
@@ -5132,6 +5217,20 @@ struct get_directory_entries_reply
     /* VARARG(entries,directory_entries); */
 };
 
+struct query_directory_file_request
+{
+    struct request_header __header;
+    obj_handle_t   handle;
+    unsigned int   restart_scan;
+    char __pad_20[4];
+};
+struct query_directory_file_reply
+{
+    struct reply_header __header;
+    data_size_t    total_len;
+    /* VARARG(entries,directory_file_entries); */
+    char __pad_12[4];
+};
 
 
 struct create_symlink_request
@@ -5403,6 +5502,7 @@ struct make_process_system_request
 {
     struct request_header __header;
     obj_handle_t handle;
+    timeout_t    desktop_close_timeout;
 };
 struct make_process_system_reply
 {
@@ -5999,6 +6099,8 @@ struct get_inproc_sync_fd_reply
     struct reply_header __header;
     int           type;
     unsigned int access;
+    unsigned int fsync_shm_idx;
+    char __pad_20[4];
 };
 
 
@@ -6012,7 +6114,7 @@ struct get_inproc_alert_fd_reply
 {
     struct reply_header __header;
     obj_handle_t handle;
-    char __pad_12[4];
+    unsigned int fsync_shm_idx;
 };
 
 
@@ -6159,6 +6261,31 @@ struct d3dkmt_mutex_release_reply
 };
 
 
+#define FSYNC_SHM_PAGE_SIZE 0x10000
+#define FSYNC_USED_BY_SERVER 0x7eadfeef
+
+enum fsync_type
+{
+    FSYNC_SEMAPHORE = 1,
+    FSYNC_AUTO_EVENT,
+    FSYNC_MANUAL_EVENT,
+    FSYNC_MUTEX,
+    FSYNC_AUTO_SERVER,
+    FSYNC_MANUAL_SERVER,
+    FSYNC_QUEUE,
+};
+
+struct fsync_free_shm_idx_request
+{
+    struct request_header __header;
+    unsigned int shm_idx;
+};
+struct fsync_free_shm_idx_reply
+{
+    struct reply_header __header;
+};
+
+
 enum request
 {
     REQ_new_process,
@@ -6251,6 +6378,7 @@ enum request
     REQ_open_key,
     REQ_delete_key,
     REQ_flush_key,
+    REQ_flush_key_done,
     REQ_enum_key,
     REQ_set_key_value,
     REQ_get_key_value,
@@ -6283,6 +6411,7 @@ enum request
     REQ_send_message,
     REQ_post_quit_message,
     REQ_send_hardware_message,
+    REQ_track_mouse_from_pointer,
     REQ_get_message,
     REQ_reply_message,
     REQ_accept_hardware_message,
@@ -6344,13 +6473,15 @@ enum request
     REQ_set_input_desktop,
     REQ_close_desktop,
     REQ_get_thread_desktop,
+    REQ_get_thread_layout,
+    REQ_set_thread_layout,
     REQ_set_thread_desktop,
     REQ_set_user_object_info,
     REQ_register_hotkey,
     REQ_unregister_hotkey,
     REQ_attach_thread_input,
     REQ_get_thread_input,
-    REQ_get_last_input_time,
+    REQ_set_user_input_time,
     REQ_get_key_state,
     REQ_set_key_state,
     REQ_set_foreground_window,
@@ -6403,6 +6534,7 @@ enum request
     REQ_create_directory,
     REQ_open_directory,
     REQ_get_directory_entries,
+    REQ_query_directory_file,
     REQ_create_symlink,
     REQ_open_symlink,
     REQ_query_symlink,
@@ -6467,6 +6599,7 @@ enum request
     REQ_d3dkmt_object_open_name,
     REQ_d3dkmt_mutex_acquire,
     REQ_d3dkmt_mutex_release,
+    REQ_fsync_free_shm_idx,
     REQ_NB_REQUESTS
 };
 
@@ -6564,6 +6697,7 @@ union generic_request
     struct open_key_request open_key_request;
     struct delete_key_request delete_key_request;
     struct flush_key_request flush_key_request;
+    struct flush_key_done_request flush_key_done_request;
     struct enum_key_request enum_key_request;
     struct set_key_value_request set_key_value_request;
     struct get_key_value_request get_key_value_request;
@@ -6596,6 +6730,7 @@ union generic_request
     struct send_message_request send_message_request;
     struct post_quit_message_request post_quit_message_request;
     struct send_hardware_message_request send_hardware_message_request;
+    struct track_mouse_from_pointer_request track_mouse_from_pointer_request;
     struct get_message_request get_message_request;
     struct reply_message_request reply_message_request;
     struct accept_hardware_message_request accept_hardware_message_request;
@@ -6657,13 +6792,15 @@ union generic_request
     struct set_input_desktop_request set_input_desktop_request;
     struct close_desktop_request close_desktop_request;
     struct get_thread_desktop_request get_thread_desktop_request;
+    struct get_thread_layout_request get_thread_layout_request;
+    struct set_thread_layout_request set_thread_layout_request;
     struct set_thread_desktop_request set_thread_desktop_request;
     struct set_user_object_info_request set_user_object_info_request;
     struct register_hotkey_request register_hotkey_request;
     struct unregister_hotkey_request unregister_hotkey_request;
     struct attach_thread_input_request attach_thread_input_request;
     struct get_thread_input_request get_thread_input_request;
-    struct get_last_input_time_request get_last_input_time_request;
+    struct set_user_input_time_request set_user_input_time_request;
     struct get_key_state_request get_key_state_request;
     struct set_key_state_request set_key_state_request;
     struct set_foreground_window_request set_foreground_window_request;
@@ -6716,6 +6853,7 @@ union generic_request
     struct create_directory_request create_directory_request;
     struct open_directory_request open_directory_request;
     struct get_directory_entries_request get_directory_entries_request;
+    struct query_directory_file_request query_directory_file_request;
     struct create_symlink_request create_symlink_request;
     struct open_symlink_request open_symlink_request;
     struct query_symlink_request query_symlink_request;
@@ -6780,6 +6918,7 @@ union generic_request
     struct d3dkmt_object_open_name_request d3dkmt_object_open_name_request;
     struct d3dkmt_mutex_acquire_request d3dkmt_mutex_acquire_request;
     struct d3dkmt_mutex_release_request d3dkmt_mutex_release_request;
+    struct fsync_free_shm_idx_request fsync_free_shm_idx_request;
 };
 union generic_reply
 {
@@ -6875,6 +7014,7 @@ union generic_reply
     struct open_key_reply open_key_reply;
     struct delete_key_reply delete_key_reply;
     struct flush_key_reply flush_key_reply;
+    struct flush_key_done_reply flush_key_done_reply;
     struct enum_key_reply enum_key_reply;
     struct set_key_value_reply set_key_value_reply;
     struct get_key_value_reply get_key_value_reply;
@@ -6907,6 +7047,7 @@ union generic_reply
     struct send_message_reply send_message_reply;
     struct post_quit_message_reply post_quit_message_reply;
     struct send_hardware_message_reply send_hardware_message_reply;
+    struct track_mouse_from_pointer_reply track_mouse_from_pointer_reply;
     struct get_message_reply get_message_reply;
     struct reply_message_reply reply_message_reply;
     struct accept_hardware_message_reply accept_hardware_message_reply;
@@ -6968,13 +7109,15 @@ union generic_reply
     struct set_input_desktop_reply set_input_desktop_reply;
     struct close_desktop_reply close_desktop_reply;
     struct get_thread_desktop_reply get_thread_desktop_reply;
+    struct get_thread_layout_reply get_thread_layout_reply;
+    struct set_thread_layout_reply set_thread_layout_reply;
     struct set_thread_desktop_reply set_thread_desktop_reply;
     struct set_user_object_info_reply set_user_object_info_reply;
     struct register_hotkey_reply register_hotkey_reply;
     struct unregister_hotkey_reply unregister_hotkey_reply;
     struct attach_thread_input_reply attach_thread_input_reply;
     struct get_thread_input_reply get_thread_input_reply;
-    struct get_last_input_time_reply get_last_input_time_reply;
+    struct set_user_input_time_reply set_user_input_time_reply;
     struct get_key_state_reply get_key_state_reply;
     struct set_key_state_reply set_key_state_reply;
     struct set_foreground_window_reply set_foreground_window_reply;
@@ -7027,6 +7170,7 @@ union generic_reply
     struct create_directory_reply create_directory_reply;
     struct open_directory_reply open_directory_reply;
     struct get_directory_entries_reply get_directory_entries_reply;
+    struct query_directory_file_reply query_directory_file_reply;
     struct create_symlink_reply create_symlink_reply;
     struct open_symlink_reply open_symlink_reply;
     struct query_symlink_reply query_symlink_reply;
@@ -7091,8 +7235,9 @@ union generic_reply
     struct d3dkmt_object_open_name_reply d3dkmt_object_open_name_reply;
     struct d3dkmt_mutex_acquire_reply d3dkmt_mutex_acquire_reply;
     struct d3dkmt_mutex_release_reply d3dkmt_mutex_release_reply;
+    struct fsync_free_shm_idx_reply fsync_free_shm_idx_reply;
 };
 
-#define SERVER_PROTOCOL_VERSION 930
+#define SERVER_PROTOCOL_VERSION 931
 
 #endif /* __WINE_WINE_SERVER_PROTOCOL_H */

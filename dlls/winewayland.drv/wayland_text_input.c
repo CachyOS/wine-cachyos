@@ -77,10 +77,40 @@ static void wayland_text_input_reset_all_state(struct wayland_text_input *text_i
     wayland_text_input_reset_pending_state(text_input);
 }
 
+static void wayland_text_input_ime_enable(struct wayland_text_input *text_input)
+{
+    TRACE("text_input->enabled %u\n", text_input->enabled);
+
+    if (!text_input->enabled)
+    {
+        zwp_text_input_v3_enable(text_input->zwp_text_input_v3);
+        zwp_text_input_v3_set_content_type(text_input->zwp_text_input_v3,
+                ZWP_TEXT_INPUT_V3_CONTENT_HINT_NONE,
+                ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_NORMAL);
+        zwp_text_input_v3_set_cursor_rectangle(text_input->zwp_text_input_v3, 0, 0, 0, 0);
+        zwp_text_input_v3_commit(text_input->zwp_text_input_v3);
+        text_input->enabled = TRUE;
+    }
+}
+
+static void wayland_text_input_ime_disable(struct wayland_text_input *text_input)
+{
+    TRACE("text_input->enabled %u\n", text_input->enabled);
+
+    if (text_input->enabled)
+    {
+        zwp_text_input_v3_disable(text_input->zwp_text_input_v3);
+        zwp_text_input_v3_commit(text_input->zwp_text_input_v3);
+        wayland_text_input_reset_all_state(text_input);
+        text_input->enabled = FALSE;
+    }
+}
+
 static void text_input_enter(void *data, struct zwp_text_input_v3 *zwp_text_input_v3,
         struct wl_surface *surface)
 {
     struct wayland_text_input *text_input = data;
+    struct wayland_win_data *win;
     HWND hwnd;
 
     if (!surface) return;
@@ -88,15 +118,14 @@ static void text_input_enter(void *data, struct zwp_text_input_v3 *zwp_text_inpu
     hwnd = wl_surface_get_user_data(surface);
     TRACE("data %p, text_input %p, hwnd %p.\n", data, zwp_text_input_v3, hwnd);
 
+    if (!(win = wayland_win_data_get(hwnd))) return;
+
     pthread_mutex_lock(&text_input->mutex);
     text_input->focused_hwnd = hwnd;
-    zwp_text_input_v3_enable(text_input->zwp_text_input_v3);
-    zwp_text_input_v3_set_content_type(text_input->zwp_text_input_v3,
-            ZWP_TEXT_INPUT_V3_CONTENT_HINT_NONE,
-            ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_NORMAL);
-    zwp_text_input_v3_set_cursor_rectangle(text_input->zwp_text_input_v3, 0, 0, 0, 0);
-    zwp_text_input_v3_commit(text_input->zwp_text_input_v3);
+    if (win->num_ime_children) wayland_text_input_ime_enable(text_input);
     pthread_mutex_unlock(&text_input->mutex);
+
+    wayland_win_data_release(win);
 }
 
 static void text_input_leave(void *data, struct zwp_text_input_v3 *zwp_text_input_v3,
@@ -106,14 +135,12 @@ static void text_input_leave(void *data, struct zwp_text_input_v3 *zwp_text_inpu
     TRACE("data %p, text_input %p.\n", data, zwp_text_input_v3);
 
     pthread_mutex_lock(&text_input->mutex);
-    zwp_text_input_v3_disable(text_input->zwp_text_input_v3);
-    zwp_text_input_v3_commit(text_input->zwp_text_input_v3);
+    wayland_text_input_ime_disable(text_input);
     if (text_input->focused_hwnd)
     {
         post_ime_update(text_input->focused_hwnd, 0, NULL, NULL);
         text_input->focused_hwnd = NULL;
     }
-    wayland_text_input_reset_all_state(text_input);
     pthread_mutex_unlock(&text_input->mutex);
 }
 
@@ -203,6 +230,7 @@ void wayland_text_input_init(void)
     text_input->zwp_text_input_v3 = zwp_text_input_manager_v3_get_text_input(
             process_wayland.zwp_text_input_manager_v3, process_wayland.seat.wl_seat);
     zwp_text_input_v3_add_listener(text_input->zwp_text_input_v3, &text_input_listener, text_input);
+    text_input->enabled = FALSE;
     pthread_mutex_unlock(&text_input->mutex);
 };
 
@@ -214,6 +242,7 @@ void wayland_text_input_deinit(void)
     zwp_text_input_v3_destroy(text_input->zwp_text_input_v3);
     text_input->zwp_text_input_v3 = NULL;
     text_input->focused_hwnd = NULL;
+    text_input->enabled = FALSE;
     wayland_text_input_reset_all_state(text_input);
     pthread_mutex_unlock(&text_input->mutex);
 };
@@ -231,13 +260,13 @@ BOOL WAYLAND_SetIMECompositionRect(HWND hwnd, RECT rect)
 
     pthread_mutex_lock(&text_input->mutex);
 
-    if (!text_input->zwp_text_input_v3 || hwnd != text_input->focused_hwnd)
+    if (!text_input->zwp_text_input_v3 || !text_input->enabled || hwnd != text_input->focused_hwnd)
         goto err;
 
     if (!(data = wayland_win_data_get(hwnd)))
         goto err;
 
-    if (!(surface = data->wayland_surface))
+    if (!(surface = data->wayland_surface) || !data->num_ime_children)
     {
         wayland_win_data_release(data);
         goto err;
@@ -257,6 +286,48 @@ BOOL WAYLAND_SetIMECompositionRect(HWND hwnd, RECT rect)
             cursor_x, cursor_y, cursor_width, cursor_height);
     zwp_text_input_v3_commit(text_input->zwp_text_input_v3);
 
+    pthread_mutex_unlock(&text_input->mutex);
+    return TRUE;
+
+err:
+    pthread_mutex_unlock(&text_input->mutex);
+    return FALSE;
+}
+
+BOOL WAYLAND_SetIMEEnabled(HWND hwnd, BOOL enabled)
+{
+    struct wayland_text_input *text_input = &process_wayland.text_input;
+    struct wayland_win_data *hwnd_data, *toplevel_data;
+    HWND toplevel;
+
+    toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
+    TRACE("hwnd %p, toplevel hwnd %p, enabled %u.\n", hwnd, toplevel, enabled);
+
+    pthread_mutex_lock(&text_input->mutex);
+
+    if (!text_input->zwp_text_input_v3)
+        goto err;
+
+    if (!(hwnd_data = wayland_win_data_get(hwnd)))
+        goto err;
+
+    if (!(toplevel_data = wayland_win_data_get_nolock(toplevel)))
+    {
+        wayland_win_data_release(hwnd_data);
+        goto err;
+    }
+
+    if (!hwnd_data->ime_enabled && enabled) toplevel_data->num_ime_children++;
+    else if (hwnd_data->ime_enabled && !enabled) toplevel_data->num_ime_children--;
+    hwnd_data->ime_enabled = enabled;
+
+    if (text_input->focused_hwnd == toplevel)
+    {
+        if (toplevel_data->num_ime_children) wayland_text_input_ime_enable(text_input);
+        else wayland_text_input_ime_disable(text_input);
+    }
+
+    wayland_win_data_release(hwnd_data);
     pthread_mutex_unlock(&text_input->mutex);
     return TRUE;
 

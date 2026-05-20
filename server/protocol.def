@@ -3079,6 +3079,18 @@ enum coords_relative
     obj_handle_t   handle;        /* handle to the desktop */
 @END
 
+/* Get the thread current keyboard layout */
+@REQ(get_thread_layout)
+    thread_id_t tid;              /* thread id */
+@REPLY
+    client_ptr_t layout;          /* keyboard layout HKL */
+@END
+
+/* Set the thread current keyboard layout */
+@REQ(set_thread_layout)
+    thread_id_t tid;              /* thread id */
+    client_ptr_t layout;          /* keyboard layout HKL */
+@END
 
 /* Set the thread current desktop */
 @REQ(set_thread_desktop)
