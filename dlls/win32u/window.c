@@ -2631,6 +2631,30 @@ BOOL WINAPI NtUserGetLayeredWindowAttributes( HWND hwnd, COLORREF *key, BYTE *al
     return ret;
 }
 
+static void fixup_chrome_webview_style( HWND hwnd, HWND toplevel, const UNICODE_STRING *class_name )
+{
+    static const WCHAR CefBrowserWindowW[] = u"CefBrowserWindow";
+    static int cached = -1;
+    static int once;
+
+    if (cached == -1)
+    {
+        const char *sgi = getenv( "SteamGameId" );
+        cached = sgi && !strcmp( sgi, "3513350" );
+    }
+
+    if (!cached || !toplevel || toplevel == hwnd || !class_name || IS_INTRESOURCE( class_name->Buffer ))
+        return;
+
+    if (class_name->Length != wcslen( CefBrowserWindowW ) * sizeof(WCHAR)
+        || memcmp( class_name->Buffer, CefBrowserWindowW, class_name->Length ))
+        return;
+
+    if (!once++)
+        FIXME( "HACK: forcing opaque chrome webview layered alpha.\n" );
+    NtUserSetLayeredWindowAttributes( toplevel, RGB(255, 255, 255), 255, LWA_ALPHA );
+}
+
 /*****************************************************************************
  *           NtUserSetLayeredWindowAttributes (win32u.@)
  */
@@ -6121,6 +6145,7 @@ HWND WINAPI NtUserCreateWindowEx( DWORD ex_style, UNICODE_STRING *class_name,
     set_thread_dpi_awareness_context( context );
 
     toplevel = NtUserGetAncestor( hwnd, GA_ROOT );
+    fixup_chrome_webview_style( hwnd, toplevel, class_name );
     if (toplevel && toplevel != hwnd) update_window_state( toplevel );
 
     return hwnd;

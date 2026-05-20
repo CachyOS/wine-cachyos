@@ -2121,6 +2121,125 @@ static void add_monitor( const struct gdi_monitor *gdi_monitor, void *param )
     }
 }
 
+/* Return whether fsr should be used */
+BOOL fs_hack_is_fsr(BOOL *lite, float *sharpness)
+{
+    static int is_fsr = -1;
+    static int is_fsr_lite = 0;
+    static int strength = 2;
+    if (is_fsr < 0)
+    {
+        const char *e = getenv("WINE_FULLSCREEN_FSR");
+        const char *v = getenv("WINE_FULLSCREEN_FSR_STRENGTH");
+
+        is_fsr = e && strcmp(e, "0");
+        is_fsr_lite = e && !strcmp(e, "lite");
+        if (v) {
+            strength = atoi(v);
+        }
+    }
+    if (lite) {
+        *lite = is_fsr_lite;
+    }
+    if (sharpness) {
+        *sharpness = (float) strength / 10.0f;
+    }
+
+    TRACE("is_fsr: %s, is_lite = %s, sharpness: %2.4f\n",
+        is_fsr ? "TRUE" : "FALSE", *lite ? "TRUE" : "FALSE", sharpness ? *sharpness : 0.0f);
+    return is_fsr;
+}
+
+static BOOL get_fsr_single_mode( UINT *mode )
+{
+    static int cached = -1;
+    const char *e;
+    if ( cached != -1 )
+    {
+        *mode = cached;
+        return TRUE;
+    }
+
+    if ( (e = getenv("WINE_FULLSCREEN_FSR_MODE")) )
+    {
+        /* If empty or zero don't apply a mode */
+        if (*e == '\0' || *e == '0')
+            return FALSE;
+        /* The 'mode' values should be in sync with the order in 'fsr_ratios' */
+        if ( !strcmp(e, "Ultra") || !strcmp(e, "ultra") )                   cached = 3;
+        else if ( !strcmp(e, "Quality") || !strcmp(e, "quality") )          cached = 2;
+        else if ( !strcmp(e, "Balanced") || !strcmp(e, "balanced") )        cached = 1;
+        else if ( !strcmp(e, "Performance") || !strcmp(e, "performance") )  cached = 0;
+        /* If the user mistyped the mode, return 'balanced' */
+        else cached = 1;
+        *mode = cached;
+        TRACE("found single mode: %d\n", cached);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static BOOL get_fsr_custom_mode( SIZE *size )
+{
+    static LONG width = 0, height = 0;
+    const char *e;
+    if ( width && height )
+    {
+        size->cx = width;
+        size->cy = height;
+        return TRUE;
+    }
+    if ( (e = getenv("WINE_FULLSCREEN_FSR_CUSTOM_MODE")) )
+    {
+        const int n = sscanf(e, "%ux%u", &width, &height);
+        if ( n == 2 )
+        {
+            size->cx = width;
+            size->cy = height;
+            TRACE("found custom size: %dx%d\n", size->cx, size->cy);
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+static float get_fsr_h_ratio(SIZE devmode)
+{
+    float h_ratio = 0.0f;
+    if (devmode.cx / 16.0f == devmode.cy / 9.0f)        h_ratio = 9.0f;                     /* 16:9 resolutions */
+    else if ((DWORD)(devmode.cx / 210.0f) == (DWORD)(devmode.cy / 90.0f)) h_ratio = 9.0f;   /* 21:9 ultra-wide resolutions */
+    else if (devmode.cx / 32.0f == devmode.cy / 9.0f)   h_ratio = 9.0f;                     /* 32:9 "duper-ultra-wide" resolutions */
+    else if (devmode.cx / 8.0f == devmode.cy / 5.0f)    h_ratio = 10.0f;                    /* 16:10 resolutions */
+    else if (devmode.cx / 12.0f == devmode.cy / 5.0f)   h_ratio = 10.0f;                    /* 24:10 resolutions */
+    else h_ratio = 1.0f;    /* In case of unknown ratio, naively create FSR resolutions */
+    return h_ratio;
+}
+
+static SIZE get_fsr_size(SIZE devmode, float factor)
+{
+    float h_ratio, real_w_ratio;
+    SIZE fsr_size;
+
+    h_ratio = get_fsr_h_ratio(devmode);
+    real_w_ratio = devmode.cx / (devmode.cy / h_ratio);
+    if (h_ratio == 1.0f)
+    {
+        /* Naive generation (matches AMD mode documentation but not sample code) */
+        /* AMD's sample rounds down, which doesn't match their published list of resolutions */
+        fsr_size.cy = (LONG)(devmode.cy / factor + 0.5f);
+        fsr_size.cx = (LONG)(fsr_size.cy * ((float)devmode.cx / (float)devmode.cy) + 0.5f);
+    }
+    else
+    {
+        /* Round to nearest integer (our way) */
+        float h_factor = (LONG) ((devmode.cy / h_ratio) / factor + 0.5f);
+        fsr_size.cx = (LONG)(real_w_ratio * h_factor + 0.5f);
+        fsr_size.cy = (LONG)(h_ratio * h_factor + 0.5f);
+    }
+    TRACE("calculated size: %ux%u, ratio: %1.1f\n", fsr_size.cx, fsr_size.cy, factor);
+    return fsr_size;
+}
+
 static UINT add_screen_size( SIZE *sizes, UINT count, SIZE size )
 {
     UINT i = 0;
@@ -2169,6 +2288,7 @@ static SIZE *get_screen_sizes( const DEVMODEW *maximum, const DEVMODEW *modes, U
         {2880, 1620},
         {3200, 1800},
         /* 16:10 */
+        {1280,  800},
         {1440,  900},
         {1680, 1050},
         {1920, 1200},
@@ -2191,14 +2311,40 @@ static SIZE *get_screen_sizes( const DEVMODEW *maximum, const DEVMODEW *modes, U
     UINT i, count;
 
     const char *env;
+    BOOL lite;
+    float sharpness;
+
+    static SIZE fsr_sizes[4] = {0};
+    SIZE fsr_custom_size = {0, 0};
+    UINT fsr_single_mode = 1;
+    const BOOL is_fsr = fs_hack_is_fsr(&lite, &sharpness);
+    const BOOL is_custom_mode = get_fsr_custom_mode( &fsr_custom_size );
+    const BOOL is_single_mode = get_fsr_single_mode( &fsr_single_mode );
 
     count = 1 + ARRAY_SIZE(default_sizes) + ARRAY_SIZE(lowres_sizes) + modes_count;
+    count += ARRAY_SIZE(fsr_sizes);
     if (!(sizes = malloc( count * sizeof(*sizes) ))) return NULL;
 
     count = add_screen_size( sizes, 0, max_size );
+
+    if ( is_fsr )
+    {
+        if ( !fsr_sizes[0].cx || !fsr_sizes[0].cy )
+        {
+            fsr_sizes[0] = get_fsr_size(max_size, 2.0f);   /* FSR Performance */
+            fsr_sizes[1] = get_fsr_size(max_size, 1.7f);   /* FSR Balanced */
+            fsr_sizes[2] = get_fsr_size(max_size, 1.5f);   /* FSR Quality */
+            fsr_sizes[3] = get_fsr_size(max_size, 1.3f);   /* FSR Ultra Quality */
+        }
+        if ( !is_custom_mode && is_single_mode ) fsr_custom_size = fsr_sizes[fsr_single_mode];
+    }
+
     for (i = 0; i < ARRAY_SIZE(default_sizes); i++)
     {
         if (default_sizes[i].cx > max_size.cx || default_sizes[i].cy > max_size.cy) continue;
+        /* Don't report modes larger than the requested FSR single mode or custom size */
+        if (fsr_custom_size.cx && default_sizes[i].cx > fsr_custom_size.cx) continue;
+        if (fsr_custom_size.cy && default_sizes[i].cy > fsr_custom_size.cy) continue;
         count += add_screen_size( sizes, count, default_sizes[i] );
     }
 
@@ -2209,12 +2355,33 @@ static SIZE *get_screen_sizes( const DEVMODEW *maximum, const DEVMODEW *modes, U
         count += ARRAY_SIZE(lowres_sizes);
     }
 
+    if ( is_fsr )
+    {
+        if ( is_custom_mode || is_single_mode )
+        {
+            if ( enable_lowres || (fsr_custom_size.cx > 800 && fsr_custom_size.cy > 600) )
+                count += add_screen_size( sizes, count, fsr_custom_size );
+        }
+        else
+        {
+            for (i = 0; i < ARRAY_SIZE(fsr_sizes); i++)
+            {
+                if ( fsr_sizes[i].cx < 800 && !enable_lowres ) continue;;
+                if ( fsr_sizes[i].cy < 600 && !enable_lowres ) continue;;
+                count += add_screen_size( sizes, count, fsr_sizes[i] );
+            }
+        }
+    }
+
     for (mode = modes; mode && modes_count; mode = NEXT_DEVMODEW(mode), modes_count--)
     {
         UINT width = devmode_get( mode, DM_PELSWIDTH ), height = devmode_get( mode, DM_PELSHEIGHT );
         SIZE size = {.cx = max( width, height ), .cy = min( width, height )};
         if (!size.cx || (size.cx < 800 && !enable_lowres) || size.cx > max_size.cx) continue;
         if (!size.cy || (size.cy < 600 && !enable_lowres) || size.cy > max_size.cy) continue;
+        /* Don't report modes larger than the requested FSR single mode or custom size */
+        if (fsr_custom_size.cx && default_sizes[i].cx > fsr_custom_size.cx) continue;
+        if (fsr_custom_size.cy && default_sizes[i].cy > fsr_custom_size.cy) continue;
         count += add_screen_size( sizes, count, size );
     }
 
@@ -6202,6 +6369,13 @@ void sysparams_init(void)
         emulate_modelist = !IS_OPTION_TRUE( buffer[0] );
     if (!get_config_key( hkey, appkey, "EmulateModeset", buffer, sizeof(buffer) ))
         emulate_modeset = !IS_OPTION_TRUE( buffer[0] );
+
+    {
+        const char *decorate = NULL;
+
+        decorate = getenv( "WINE_NO_WM_DECORATION" );
+        if (decorate && decorate[0] == '1') decorated_mode = FALSE;
+    }
 
     {
         const char *s;

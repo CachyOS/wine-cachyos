@@ -4781,6 +4781,19 @@ NTSTATUS WINAPI NtPowerInformation( POWER_INFORMATION_LEVEL level, void *input, 
         return STATUS_SUCCESS;
     }
 
+    case SystemPowerInformation:
+    {
+        static int once;
+        SYSTEM_POWER_INFORMATION *info = output;
+
+        if (!once++) FIXME("semi-stub: SystemPowerInformation\n");
+        if (out_size < sizeof(SYSTEM_POWER_INFORMATION)) return STATUS_BUFFER_TOO_SMALL;
+        memset(info, 0, sizeof(SYSTEM_POWER_INFORMATION));
+        info->MaxIdlenessAllowed = 100;
+        info->TimeRemaining = 600;
+        return STATUS_SUCCESS;
+    }
+
     case SystemBatteryState:
     {
         if (out_size < sizeof(SYSTEM_BATTERY_STATE)) return STATUS_BUFFER_TOO_SMALL;

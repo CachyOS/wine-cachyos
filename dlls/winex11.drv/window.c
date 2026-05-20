@@ -4167,6 +4167,7 @@ void net_supporting_wm_check_init( struct x11drv_thread_data *data )
         char const *sgi = getenv( "SteamGameId" );
 
         if (!strcmp( data->window_manager, "GNOME Shell" )) strcpy( data->window_manager, "Mutter" );
+        if (!strcmp( data->window_manager, "Mutter (Muffin)" )) strcpy( data->window_manager, "Mutter" );
         TRACE( "Detected window manager: %s\n", debugstr_a(data->window_manager) );
 
         /* Street Fighter V expects a certain sequence of window resizes

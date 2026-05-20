@@ -2951,6 +2951,24 @@ BOOL WINAPI DECLSPEC_HOTPATCH SetCurrentDirectoryW( LPCWSTR dir )
 {
     UNICODE_STRING dirW;
 
+    wchar_t sgi[MAX_PATH];
+    DWORD size;
+    static INT isVGSOH = -1;
+
+    if (isVGSOH == -1) {
+        size = GetEnvironmentVariableW(L"SteamGameId", sgi, MAX_PATH);
+        isVGSOH = (size > 0 && !wcscmp(sgi, L"218210"));
+    }
+
+    if (isVGSOH) {
+        SIZE_T len = wcslen(dir);
+        if (len > 0 && dir[len - 1] == '.') {
+            WCHAR *p = (WCHAR *)dir + len - 1;
+            *p = '\0';
+            FIXME("%s . fixed\n", debugstr_w(dir));
+        }
+    }
+
     RtlInitUnicodeString( &dirW, dir );
     return set_ntstatus( RtlSetCurrentDirectory_U( &dirW ));
 }
