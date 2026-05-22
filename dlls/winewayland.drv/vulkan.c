@@ -49,8 +49,11 @@ static struct wayland_client_surface *stash_client_surface(HWND hwnd,
 
     if (surface)
     {
-        if ((ret = data->stashed_client) == surface) return ret;
-        if (ret) client_surface_release(&ret->client);
+        if ((ret = data->stashed_client) == surface)
+        {
+            wayland_win_data_release(data);
+            return ret;
+        }
         client_surface_add_ref(&surface->client);
         data->stashed_client = surface;
     }
@@ -65,8 +68,12 @@ static struct wayland_client_surface *stash_client_surface(HWND hwnd,
             data->client_surface = NULL;
         }
     }
+    else ret = NULL;
 
     wayland_win_data_release(data);
+
+    if (ret && surface) client_surface_release(&ret->client);
+
     return ret;
 }
 
