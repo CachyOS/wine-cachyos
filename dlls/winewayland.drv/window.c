@@ -1027,6 +1027,12 @@ BOOL set_window_surface_contents(HWND hwnd, struct wayland_shm_buffer *shm_buffe
         }
     }
 
+    if (committed && data->client_surface)
+    {
+        wayland_client_surface_attach(data->client_surface, NULL);
+        data->client_surface = NULL;
+    }
+
     /* Update the latest window buffer for the wayland surface. Note that we
      * only care whether the buffer contains the latest window contents,
      * it's irrelevant if it was actually committed or not. */
