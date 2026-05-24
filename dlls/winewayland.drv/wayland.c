@@ -319,6 +319,7 @@ static const struct wl_registry_listener registry_listener = {
  */
 BOOL wayland_process_init(void)
 {
+    int i = 0, ret;
     struct wl_display *wl_display_wrapper;
 
     process_wayland.wl_display = wl_display_connect(NULL);
@@ -353,21 +354,25 @@ BOOL wayland_process_init(void)
     /* Populate registry */
     wl_registry_add_listener(process_wayland.wl_registry, &registry_listener, NULL);
 
-    /* We need two roundtrips. One to get and bind globals, one to handle all
-     * initial events produced from registering the globals. */
-    wl_display_roundtrip_queue(process_wayland.wl_display, process_wayland.wl_event_queue);
-    wl_display_roundtrip_queue(process_wayland.wl_display, process_wayland.wl_event_queue);
+    /* We need at least four roundtrips:
+     * 1. Get and bind globals
+     * 2. Handle initial events
+     * 3. Event handling for zxdg_output and image description
+     * 4. Event handling for the created image description infos.
+     * However, not all compositors can dispatch the above events within 4 roundtrips,
+     * so we do roundtrips until no more events are dispatched with a hard cap at 10 roundtrips. */
+    while (i < 10 && ++i)
+    {
+        ret = wl_display_roundtrip_queue(process_wayland.wl_display,
+                                         process_wayland.wl_event_queue);
+        if (ret < 0) return FALSE;
+        /* There are always two events dispatched when "nothing" happens:
+         * 1. wl_display.sync which creates a callback object
+         * 2. wl_callback.done */
+        if (ret <= 2) break;
+    }
 
-    /* An additional few roundtrips are needed:
-     * 1. Event handling for zxdg_output and image description.
-     * 2. Event handling for the created image description infos. */
-    wl_display_roundtrip_queue(process_wayland.wl_display, process_wayland.wl_event_queue);
-    wl_display_roundtrip_queue(process_wayland.wl_display, process_wayland.wl_event_queue);
-
-    /* Some compositors may need additional roundtrips to send all needed information before process start */
-    for (int i = 0; i < 5; i++) wl_display_roundtrip_queue(process_wayland.wl_display, process_wayland.wl_event_queue);
-
-    TRACE("Finished initial roundtrips\n");
+    TRACE("Finished initial roundtrips in %d iterations\n", i);
 
     /* Check for required protocol globals. */
     if (!process_wayland.wl_compositor)
