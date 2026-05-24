@@ -1358,8 +1358,20 @@ static BOOL source_reader_get_read_result(struct source_reader *reader, struct m
 static HRESULT source_reader_get_next_selected_stream(struct source_reader *reader, DWORD *stream_index)
 {
     unsigned int i, first_selected = ~0u;
+    struct stream_response *response;
     BOOL selected, stream_drained;
     LONGLONG min_ts = MAXLONGLONG;
+
+    /* Return the oldest queued response of a selected stream first. */
+    LIST_FOR_EACH_ENTRY(response, &reader->responses, struct stream_response, entry)
+    {
+        if (response->stream_index < reader->stream_count
+                && SUCCEEDED(source_reader_get_stream_selection(reader, response->stream_index, &selected)) && selected)
+        {
+            *stream_index = response->stream_index;
+            return S_OK;
+        }
+    }
 
     for (i = 0; i < reader->stream_count; ++i)
     {
