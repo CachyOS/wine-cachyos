@@ -34,6 +34,8 @@
 #include "win32u_private.h"
 #include "ntuser_private.h"
 
+#include "fsr_spv.h"
+
 WINE_DEFAULT_DEBUG_CHANNEL(vulkan);
 
 static PFN_vkGetDeviceProcAddr p_vkGetDeviceProcAddr;
@@ -154,6 +156,22 @@ static struct surface *surface_from_handle( VkSurfaceKHR handle )
     return CONTAINING_RECORD( obj, struct surface, obj );
 }
 
+struct fs_hack_upscaler
+{
+    BOOL is_blit, is_fsr, is_nis;
+    union {
+        struct {
+        } blit;
+        struct {
+            BOOL fp16;
+            BOOL lite;
+            float sharpness;
+        } fsr;
+        struct {
+        } nis;
+    };
+};
+
 /* Return whether integer scaling is on */
 static BOOL fs_hack_is_integer(void)
 {
@@ -172,10 +190,18 @@ struct fs_hack_image
     uint32_t cmd_queue_idx;
     VkCommandBuffer cmd;
     VkImage swapchain_image;
+    VkImage fsr_image;
     VkImage user_image;
     VkSemaphore blit_finished;
-    VkImageView user_view, blit_view;
-    VkDescriptorSet descriptor_set;
+    VkImageView user_view, swapchain_view, fsr_view;
+    VkDescriptorSet descriptor_set, fsr_set;
+};
+
+struct fs_comp_pipeline
+{
+    VkPipelineLayout pipeline_layout;
+    VkPipeline pipeline;
+    uint32_t push_size;
 };
 
 static const char *debugstr_vkextent2d( const VkExtent2D *ext )
@@ -194,14 +220,18 @@ struct swapchain
     UINT fshack_dpi;
     VkExtent2D host_extents;
     VkCommandPool *cmd_pools; /* VkCommandPool[device->queue_count] */
-    VkDeviceMemory user_image_memory;
+    VkDeviceMemory user_image_memory, fsr_image_memory;
     uint32_t n_images;
     struct fs_hack_image *fs_hack_images; /* struct fs_hack_image[n_images] */
     VkSampler sampler;
     VkDescriptorPool descriptor_pool;
     VkDescriptorSetLayout descriptor_set_layout;
-    VkPipelineLayout pipeline_layout;
-    VkPipeline pipeline;
+    VkFormat format;
+    struct fs_hack_upscaler upscaler;
+
+    struct fs_comp_pipeline blit_pipeline;
+    struct fs_comp_pipeline fsr_easu_pipeline;
+    struct fs_comp_pipeline fsr_rcas_pipeline;
 };
 
 static struct swapchain *swapchain_from_handle( VkSwapchainKHR handle )
@@ -896,6 +926,7 @@ static VkResult win32u_vkCreateDevice( VkPhysicalDevice client_physical_device, 
     unsigned int queue_count, props_count, i;
     struct vulkan_device *device;
     struct mempool pool = {0};
+    VkPhysicalDeviceFeatures features = {0};
     VkResult res;
 
     if (TRACE_ON(vulkan))
@@ -916,8 +947,7 @@ static VkResult win32u_vkCreateDevice( VkPhysicalDevice client_physical_device, 
     device->queues = (void *)(device + 1);
     device->queue_props = (void *)(device->queues + queue_count);
 
-{
-        VkPhysicalDeviceFeatures features = {0};
+    {
         VkPhysicalDeviceFeatures2 *features2;
 
         /* Enable shaderStorageImageWriteWithoutFormat for fshack
@@ -938,7 +968,7 @@ static VkResult win32u_vkCreateDevice( VkPhysicalDevice client_physical_device, 
             features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
             create_info->pEnabledFeatures = &features;
         }
-}
+    }
 
     if (device->extensions.has_VK_WINE_openvr_device_extensions)
     {
@@ -2118,28 +2148,75 @@ const uint32_t blit_comp_spv[] =
     0x0000005b, 0x00000021, 0x00040063, 0x00000056, 0x0000005a, 0x0000005b, 0x000100fd, 0x00010038,
 };
 
-static VkResult create_pipeline( struct vulkan_device *device, struct swapchain *swapchain, VkShaderModule shaderModule )
+static void destroy_pipeline(struct vulkan_device *device, struct fs_comp_pipeline *pipeline)
+{
+    device->p_vkDestroyPipeline(device->host.device, pipeline->pipeline, NULL);
+    pipeline->pipeline = VK_NULL_HANDLE;
+
+    device->p_vkDestroyPipelineLayout(device->host.device, pipeline->pipeline_layout, NULL);
+    pipeline->pipeline_layout = VK_NULL_HANDLE;
+}
+
+static VkResult create_pipeline( struct vulkan_device *device, struct swapchain *swapchain, const uint32_t *code, uint32_t code_size, uint32_t push_size, struct fs_comp_pipeline *pipeline )
 {
     VkComputePipelineCreateInfo pipelineInfo = {0};
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo = {0};
+    VkShaderModuleCreateInfo shaderInfo = {0};
+    VkPushConstantRange pushConstants;
+    VkShaderModule shaderModule = 0;
     VkResult res;
+
+    pipeline->push_size = push_size;
+
+    pushConstants.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pushConstants.offset = 0;
+    pushConstants.size = push_size;
+
+    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &swapchain->descriptor_set_layout;
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &pushConstants;
+
+    if ((res = device->p_vkCreatePipelineLayout(device->host.device, &pipelineLayoutInfo, NULL, &pipeline->pipeline_layout)))
+    {
+        ERR("vkCreatePipelineLayout: %d\n", res);
+        goto fail;
+    }
+
+    shaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    shaderInfo.codeSize = code_size;
+    shaderInfo.pCode = code;
+
+    if ((res = device->p_vkCreateShaderModule(device->host.device, &shaderInfo, NULL, &shaderModule)))
+    {
+        ERR("vkCreateShaderModule: %d\n", res);
+        goto fail;
+    }
 
     pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     pipelineInfo.stage.module = shaderModule;
     pipelineInfo.stage.pName = "main";
-    pipelineInfo.layout = swapchain->pipeline_layout;
+    pipelineInfo.layout = pipeline->pipeline_layout;
     pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
     pipelineInfo.basePipelineIndex = -1;
 
     if ((res = device->p_vkCreateComputePipelines( device->host.device, VK_NULL_HANDLE, 1,
-                                                   &pipelineInfo, NULL, &swapchain->pipeline )))
+                                                   &pipelineInfo, NULL, &pipeline->pipeline )))
     {
         ERR( "vkCreateComputePipelines: %d\n", res );
-        return res;
+        goto fail;
     }
+    else goto out;
 
-    return VK_SUCCESS;
+fail:
+    destroy_pipeline(device, pipeline);
+
+out:
+    device->p_vkDestroyShaderModule(device->host.device, shaderModule, NULL);
+    return res;
 }
 
 static VkResult create_descriptor_set( struct vulkan_device *device, struct swapchain *swapchain, struct fs_hack_image *hack )
@@ -2165,7 +2242,7 @@ static VkResult create_descriptor_set( struct vulkan_device *device, struct swap
     userDescriptorImageInfo.sampler = swapchain->sampler;
 
     realDescriptorImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-    realDescriptorImageInfo.imageView = hack->blit_view;
+    realDescriptorImageInfo.imageView = swapchain->upscaler.is_fsr ? hack->fsr_view : hack->swapchain_view;
 
     descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     descriptorWrites[0].dstSet = hack->descriptor_set;
@@ -2184,10 +2261,47 @@ static VkResult create_descriptor_set( struct vulkan_device *device, struct swap
     descriptorWrites[1].pImageInfo = &realDescriptorImageInfo;
 
     device->p_vkUpdateDescriptorSets( device->host.device, 2, descriptorWrites, 0, NULL );
+
+    if (swapchain->upscaler.is_fsr)
+    {
+        if ((res = device->p_vkAllocateDescriptorSets(device->host.device, &descriptorAllocInfo, &hack->fsr_set)))
+        {
+            ERR("vkAllocateDescriptorSets: %d\n", res);
+            return res;
+        }
+
+        userDescriptorImageInfo.imageView = hack->fsr_view;
+
+        realDescriptorImageInfo.imageView = hack->swapchain_view;
+
+        descriptorWrites[0].dstSet = hack->fsr_set;
+        descriptorWrites[1].dstSet = hack->fsr_set;
+
+        device->p_vkUpdateDescriptorSets(device->host.device, 2, descriptorWrites, 0, NULL);
+    }
+
     return VK_SUCCESS;
 }
 
-static VkResult init_blit_images( struct vulkan_device *device, struct swapchain *swapchain )
+static VkFormat srgb_to_unorm(VkFormat format)
+{
+    switch (format)
+    {
+        case VK_FORMAT_R8G8B8A8_SRGB: return VK_FORMAT_R8G8B8A8_UNORM;
+        case VK_FORMAT_B8G8R8A8_SRGB: return VK_FORMAT_B8G8R8A8_UNORM;
+        case VK_FORMAT_R8G8B8_SRGB: return VK_FORMAT_R8G8B8_UNORM;
+        case VK_FORMAT_B8G8R8_SRGB: return VK_FORMAT_B8G8R8_UNORM;
+        case VK_FORMAT_A8B8G8R8_SRGB_PACK32: return VK_FORMAT_A8B8G8R8_UNORM_PACK32;
+        default: return format;
+    }
+}
+
+static BOOL is_srgb(VkFormat format)
+{
+    return format != srgb_to_unorm(format);
+}
+
+static VkResult init_compute_state( struct vulkan_device *device, struct swapchain *swapchain )
 {
     VkResult res;
     VkSamplerCreateInfo samplerInfo = {0};
@@ -2195,18 +2309,20 @@ static VkResult init_blit_images( struct vulkan_device *device, struct swapchain
     VkDescriptorPoolCreateInfo poolInfo = {0};
     VkDescriptorSetLayoutBinding layoutBindings[2] = {{0}, {0}};
     VkDescriptorSetLayoutCreateInfo descriptorLayoutInfo = {0};
-    VkPipelineLayoutCreateInfo pipelineLayoutInfo = {0};
-    VkPushConstantRange pushConstants;
-    VkShaderModuleCreateInfo shaderInfo = {0};
-    VkShaderModule shaderModule = 0;
+    VkDeviceSize fsrMemTotal = 0, offs;
+    VkImageCreateInfo imageInfo = {0};
+    VkMemoryRequirements fsrMemReq;
+    VkMemoryAllocateInfo allocInfo = {0};
+    VkPhysicalDeviceMemoryProperties memProperties;
     VkImageViewCreateInfo viewInfo = {0};
     uint32_t i;
+    uint32_t fsr_memory_type = -1;
 
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     samplerInfo.magFilter = samplerInfo.minFilter = fs_hack_is_integer() ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
-    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    samplerInfo.addressModeU = swapchain->upscaler.is_fsr ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    samplerInfo.addressModeV = swapchain->upscaler.is_fsr ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    samplerInfo.addressModeW = swapchain->upscaler.is_fsr ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
     samplerInfo.anisotropyEnable = VK_FALSE;
     samplerInfo.maxAnisotropy = 1;
     samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
@@ -2233,6 +2349,13 @@ static VkResult init_blit_images( struct vulkan_device *device, struct swapchain
     poolInfo.poolSizeCount = 2;
     poolInfo.pPoolSizes = poolSizes;
     poolInfo.maxSets = swapchain->n_images;
+
+    if (swapchain->upscaler.is_fsr)
+    {
+        poolSizes[0].descriptorCount *= 2;
+        poolSizes[1].descriptorCount *= 2;
+        poolInfo.maxSets *= 2;
+    }
 
     if ((res = device->p_vkCreateDescriptorPool( device->host.device, &poolInfo, NULL, &swapchain->descriptor_pool )))
     {
@@ -2263,36 +2386,133 @@ static VkResult init_blit_images( struct vulkan_device *device, struct swapchain
         goto fail;
     }
 
-    pushConstants.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    pushConstants.offset = 0;
-    pushConstants.size = 4 * sizeof(float); /* 2 * vec2 */
-
-    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipelineLayoutInfo.setLayoutCount = 1;
-    pipelineLayoutInfo.pSetLayouts = &swapchain->descriptor_set_layout;
-    pipelineLayoutInfo.pushConstantRangeCount = 1;
-    pipelineLayoutInfo.pPushConstantRanges = &pushConstants;
-
-    if ((res = device->p_vkCreatePipelineLayout( device->host.device, &pipelineLayoutInfo, NULL,
-                                                 &swapchain->pipeline_layout )))
-    {
-        ERR( "vkCreatePipelineLayout: %d\n", res );
+    if ((res = create_pipeline( device, swapchain, blit_comp_spv, sizeof(blit_comp_spv),
+                                4 * sizeof(float) /* 2 * vec2 */, &swapchain->blit_pipeline )))
         goto fail;
-    }
 
-    shaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    shaderInfo.codeSize = sizeof(blit_comp_spv);
-    shaderInfo.pCode = blit_comp_spv;
-
-    if ((res = device->p_vkCreateShaderModule( device->host.device, &shaderInfo, NULL, &shaderModule )))
+    if (swapchain->upscaler.is_fsr)
     {
-        ERR( "vkCreateShaderModule: %d\n", res );
-        goto fail;
+        if (swapchain->upscaler.fsr.lite) {
+            if ((res = create_pipeline( device, swapchain, fsr_easu_lite_comp_spv, sizeof(fsr_easu_lite_comp_spv),
+                                        16 * sizeof(uint32_t) /* 4 * uvec4 */, &swapchain->fsr_easu_pipeline )))
+                goto fail;
+        }
+        else
+        {
+            if ((res = create_pipeline( device, swapchain, fsr_easu_comp_spv, sizeof(fsr_easu_comp_spv),
+                                        16 * sizeof(uint32_t) /* 4 * uvec4 */, &swapchain->fsr_easu_pipeline )))
+                goto fail;
+        }
+        if ((res = create_pipeline( device, swapchain, fsr_rcas_comp_spv, sizeof(fsr_rcas_comp_spv),
+                                    8 * sizeof(uint32_t) /* uvec4 + ivec4 */, &swapchain->fsr_rcas_pipeline )))
+            goto fail;
+
+        /* create intermediate fsr images */
+        for (i = 0; i < swapchain->n_images; ++i)
+        {
+            struct fs_hack_image *hack = &swapchain->fs_hack_images[i];
+
+            imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+            imageInfo.imageType = VK_IMAGE_TYPE_2D;
+            imageInfo.extent.width = swapchain->host_extents.width;
+            imageInfo.extent.height = swapchain->host_extents.height;
+            imageInfo.extent.depth = 1;
+            imageInfo.mipLevels = 1;
+            imageInfo.arrayLayers = 1;
+            imageInfo.format = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+            imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+            imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+            imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+            imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+            if ((res = device->p_vkCreateImage( device->host.device, &imageInfo, NULL, &hack->fsr_image )))
+            {
+                ERR("vkCreateImage failed: %d\n", res);
+                goto fail;
+            }
+
+            device->p_vkGetImageMemoryRequirements(device->host.device, hack->fsr_image, &fsrMemReq);
+
+            offs = fsrMemTotal % fsrMemReq.alignment;
+            if(offs) fsrMemTotal += fsrMemReq.alignment - offs;
+
+            fsrMemTotal += fsrMemReq.size;
+        }
+
+        /* allocate backing memory */
+        device->physical_device->instance->p_vkGetPhysicalDeviceMemoryProperties(device->physical_device->host.physical_device, &memProperties);
+
+        for (i = 0; i < memProperties.memoryTypeCount; i++)
+        {
+            if ((memProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+            {
+                if (fsrMemReq.memoryTypeBits & (1 << i))
+                {
+                    fsr_memory_type = i;
+                    break;
+                }
+            }
+        }
+
+        if (fsr_memory_type == -1)
+        {
+            ERR("unable to find suitable memory type\n");
+            res = VK_ERROR_OUT_OF_HOST_MEMORY;
+            goto fail;
+        }
+
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = fsrMemTotal;
+        allocInfo.memoryTypeIndex = fsr_memory_type;
+
+        if ((res = device->p_vkAllocateMemory( device->host.device, &allocInfo, NULL, &swapchain->fsr_image_memory )))
+        {
+            ERR("vkAllocateMemory: %d\n", res);
+            goto fail;
+        }
+
+        /* bind backing memory and create imageviews */
+        fsrMemTotal = 0;
+        for (i = 0; i < swapchain->n_images; ++i)
+        {
+            struct fs_hack_image *hack = &swapchain->fs_hack_images[i];
+
+            device->p_vkGetImageMemoryRequirements(device->host.device, hack->fsr_image, &fsrMemReq);
+
+            offs = fsrMemTotal % fsrMemReq.alignment;
+            if(offs) fsrMemTotal += fsrMemReq.alignment - offs;
+
+            if ((res = device->p_vkBindImageMemory( device->host.device, hack->fsr_image, swapchain->fsr_image_memory, fsrMemTotal )))
+            {
+                ERR("vkBindImageMemory: %d\n", res);
+                goto fail;
+            }
+
+            fsrMemTotal += fsrMemReq.size;
+        }
+
+        /* create imageviews */
+        for (i = 0; i < swapchain->n_images; ++i)
+        {
+            struct fs_hack_image *hack = &swapchain->fs_hack_images[i];
+
+            viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            viewInfo.image = hack->fsr_image;
+            viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            viewInfo.format = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+            viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            viewInfo.subresourceRange.baseMipLevel = 0;
+            viewInfo.subresourceRange.levelCount = 1;
+            viewInfo.subresourceRange.baseArrayLayer = 0;
+            viewInfo.subresourceRange.layerCount = 1;
+
+            if ((res = device->p_vkCreateImageView( device->host.device, &viewInfo, NULL, &hack->fsr_view )))
+            {
+                ERR("vkCreateImageView(blit): %d\n", res);
+                goto fail;
+            }
+        }
     }
-
-    if ((res = create_pipeline( device, swapchain, shaderModule ))) goto fail;
-
-    device->p_vkDestroyShaderModule( device->host.device, shaderModule, NULL );
 
     for (i = 0; i < swapchain->n_images; ++i)
     {
@@ -2301,14 +2521,14 @@ static VkResult init_blit_images( struct vulkan_device *device, struct swapchain
         viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         viewInfo.image = hack->swapchain_image;
         viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format = VK_FORMAT_B8G8R8A8_UNORM;
+        viewInfo.format = swapchain->upscaler.is_fsr ? srgb_to_unorm(swapchain->format) : VK_FORMAT_B8G8R8A8_UNORM;
         viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         viewInfo.subresourceRange.baseMipLevel = 0;
         viewInfo.subresourceRange.levelCount = 1;
         viewInfo.subresourceRange.baseArrayLayer = 0;
         viewInfo.subresourceRange.layerCount = 1;
 
-        if ((res = device->p_vkCreateImageView( device->host.device, &viewInfo, NULL, &hack->blit_view )))
+        if ((res = device->p_vkCreateImageView( device->host.device, &viewInfo, NULL, &hack->swapchain_view )))
         {
             ERR( "vkCreateImageView(blit): %d\n", res );
             goto fail;
@@ -2324,23 +2544,28 @@ fail:
     {
         struct fs_hack_image *hack = &swapchain->fs_hack_images[i];
 
-        device->p_vkDestroyImageView( device->host.device, hack->blit_view, NULL );
-        hack->blit_view = VK_NULL_HANDLE;
+        device->p_vkDestroyImageView(device->host.device, hack->fsr_view, NULL);
+        hack->fsr_view = VK_NULL_HANDLE;
+
+        device->p_vkDestroyImageView(device->host.device, hack->swapchain_view, NULL);
+        hack->swapchain_view = VK_NULL_HANDLE;
+
+        device->p_vkDestroyImage(device->host.device, hack->fsr_image, NULL);
+        hack->fsr_image = VK_NULL_HANDLE;
     }
 
-    device->p_vkDestroyShaderModule( device->host.device, shaderModule, NULL );
-
-    device->p_vkDestroyPipeline( device->host.device, swapchain->pipeline, NULL );
-    swapchain->pipeline = VK_NULL_HANDLE;
-
-    device->p_vkDestroyPipelineLayout( device->host.device, swapchain->pipeline_layout, NULL );
-    swapchain->pipeline_layout = VK_NULL_HANDLE;
+    destroy_pipeline(device, &swapchain->blit_pipeline);
+    destroy_pipeline(device, &swapchain->fsr_easu_pipeline);
+    destroy_pipeline(device, &swapchain->fsr_rcas_pipeline);
 
     device->p_vkDestroyDescriptorSetLayout( device->host.device, swapchain->descriptor_set_layout, NULL );
     swapchain->descriptor_set_layout = VK_NULL_HANDLE;
 
     device->p_vkDestroyDescriptorPool( device->host.device, swapchain->descriptor_pool, NULL );
     swapchain->descriptor_pool = VK_NULL_HANDLE;
+
+    device->p_vkFreeMemory( device->host.device, swapchain->fsr_image_memory, NULL );
+    swapchain->fsr_image_memory = VK_NULL_HANDLE;
 
     device->p_vkDestroySampler( device->host.device, swapchain->sampler, NULL );
     swapchain->sampler = VK_NULL_HANDLE;
@@ -2351,8 +2576,10 @@ fail:
 static void destroy_fs_hack_image( struct vulkan_device *device, struct swapchain *swapchain, struct fs_hack_image *hack )
 {
     device->p_vkDestroyImageView( device->host.device, hack->user_view, NULL );
-    device->p_vkDestroyImageView( device->host.device, hack->blit_view, NULL );
+    device->p_vkDestroyImageView(device->host.device, hack->swapchain_view, NULL);
+    device->p_vkDestroyImageView(device->host.device, hack->fsr_view, NULL);
     device->p_vkDestroyImage( device->host.device, hack->user_image, NULL );
+    device->p_vkDestroyImage(device->host.device, hack->fsr_image, NULL);
     if (hack->cmd) device->p_vkFreeCommandBuffers( device->host.device, swapchain->cmd_pools[hack->cmd_queue_idx], 1, &hack->cmd );
     device->p_vkDestroySemaphore( device->host.device, hack->blit_finished, NULL );
 }
@@ -2419,6 +2646,9 @@ static VkResult init_fs_hack_images( struct vulkan_device *device, struct swapch
         imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
         imageInfo.queueFamilyIndexCount = createinfo->queueFamilyIndexCount;
         imageInfo.pQueueFamilyIndices = createinfo->pQueueFamilyIndices;
+
+        if (is_srgb(createinfo->imageFormat))
+            imageInfo.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
 
         if (createinfo->flags & VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR)
             imageInfo.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
@@ -2495,7 +2725,7 @@ static VkResult init_fs_hack_images( struct vulkan_device *device, struct swapch
         viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         viewInfo.image = swapchain->fs_hack_images[i].user_image;
         viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format = VK_FORMAT_B8G8R8A8_SRGB;
+        viewInfo.format = swapchain->upscaler.is_fsr ? srgb_to_unorm(createinfo->imageFormat) : VK_FORMAT_B8G8R8A8_SRGB;
         viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         viewInfo.subresourceRange.baseMipLevel = 0;
         viewInfo.subresourceRange.levelCount = 1;
@@ -2522,6 +2752,24 @@ fail:
     return res;
 }
 
+static VkResult win32u_vkSetLatencySleepModeNV(VkDevice device, VkSwapchainKHR swapchain, const VkLatencySleepModeInfoNV *pSleepModeInfo)
+{
+    VkLatencySleepModeInfoNV sleep_mode_info_host;
+
+    struct vulkan_device *vk_device = vulkan_device_from_handle(device);
+    struct swapchain *vk_swapchain = swapchain_from_handle(swapchain);
+
+    vk_device->low_latency_enabled = pSleepModeInfo->lowLatencyMode;
+
+    sleep_mode_info_host.sType = VK_STRUCTURE_TYPE_LATENCY_SLEEP_MODE_INFO_NV;
+    sleep_mode_info_host.pNext = NULL;
+    sleep_mode_info_host.lowLatencyMode = pSleepModeInfo->lowLatencyMode;
+    sleep_mode_info_host.lowLatencyBoost = pSleepModeInfo->lowLatencyBoost;
+    sleep_mode_info_host.minimumIntervalUs = pSleepModeInfo->minimumIntervalUs;
+
+    return vk_device->p_vkSetLatencySleepModeNV(vk_device->host.device, vk_swapchain->obj.host.swapchain, &sleep_mode_info_host);
+}
+
 static BOOL surface_get_fshack_dpi( struct surface *surface )
 {
     UINT dpi = NtUserGetDpiForWindow( surface->hwnd ), raw = NtUserGetWinMonitorDpi( surface->hwnd, MDT_RAW_DPI );
@@ -2542,6 +2790,8 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
     VkSwapchainKHR host_swapchain;
     RECT client_rect;
     VkResult res;
+    BOOL lite;
+    float sharpness;
 
     if (!NtUserIsWindow( surface->hwnd ))
     {
@@ -2589,10 +2839,21 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
         if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_STORAGE_BIT))
             FIXME( "Swapchain does not support required VK_IMAGE_USAGE_STORAGE_BIT\n" );
 
+        swapchain->upscaler.is_fsr = fs_hack_is_fsr(&lite, &sharpness);
+        swapchain->upscaler.fsr.lite = lite;
+        swapchain->upscaler.fsr.sharpness = sharpness;
         swapchain->host_extents = capabilities.minImageExtent;
         create_info_host.imageExtent = capabilities.minImageExtent;
-        create_info_host.imageFormat = VK_FORMAT_B8G8R8A8_UNORM;
+        create_info_host.imageFormat = swapchain->upscaler.is_fsr ? VK_FORMAT_B8G8R8A8_SRGB: VK_FORMAT_B8G8R8A8_UNORM;
         create_info_host.imageUsage = VK_IMAGE_USAGE_STORAGE_BIT;
+
+        swapchain->format = create_info_host.imageFormat;
+
+        if (swapchain->upscaler.is_fsr) {
+            swapchain->format = srgb_to_unorm(swapchain->format);
+            create_info_host.imageFormat = srgb_to_unorm(create_info_host.imageFormat);
+            create_info_host.imageUsage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT; /* XXX: check if supported by surface */
+        }
 
         if (create_info->imageFormat != VK_FORMAT_B8G8R8A8_UNORM && create_info->imageFormat != VK_FORMAT_B8G8R8A8_SRGB)
             FIXME( "swapchain image format is not BGRA8 UNORM/SRGB. Things may go badly. %d\n",
@@ -2630,7 +2891,7 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
             return res;
         }
 
-        if ((res = init_blit_images( device, swapchain )))
+        if ((res = init_compute_state(device, swapchain)))
         {
             ERR( "creating blit images failed: %d\n", res );
             device->p_vkDestroySwapchainKHR( device->host.device, swapchain->obj.host.swapchain, NULL );
@@ -2669,12 +2930,14 @@ void win32u_vkDestroySwapchainKHR( VkDevice client_device, VkSwapchainKHR client
             device->p_vkDestroyCommandPool( device->host.device, swapchain->cmd_pools[i], NULL );
         }
 
-        device->p_vkDestroyPipeline( device->host.device, swapchain->pipeline, NULL );
-        device->p_vkDestroyPipelineLayout( device->host.device, swapchain->pipeline_layout, NULL );
+        destroy_pipeline(device, &swapchain->blit_pipeline);
+        destroy_pipeline(device, &swapchain->fsr_easu_pipeline);
+        destroy_pipeline(device, &swapchain->fsr_rcas_pipeline);
         device->p_vkDestroyDescriptorSetLayout( device->host.device, swapchain->descriptor_set_layout, NULL );
         device->p_vkDestroyDescriptorPool( device->host.device, swapchain->descriptor_pool, NULL );
         device->p_vkDestroySampler( device->host.device, swapchain->sampler, NULL );
         device->p_vkFreeMemory( device->host.device, swapchain->user_image_memory, NULL );
+        device->p_vkFreeMemory(device->host.device, swapchain->fsr_image_memory, NULL);
         free( swapchain->cmd_pools );
         free( swapchain->fs_hack_images );
     }
@@ -2808,6 +3071,31 @@ static VkCommandBuffer create_hack_cmd( struct vulkan_queue *queue, struct swapc
     return cmd;
 }
 
+static void bind_pipeline( struct vulkan_device *device, VkCommandBuffer cmd, struct fs_comp_pipeline *pipeline,
+                           VkDescriptorSet set, void *push_data )
+{
+    device->p_vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline->pipeline);
+
+    device->p_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                            pipeline->pipeline_layout, 0, 1, &set, 0, NULL);
+
+    device->p_vkCmdPushConstants(cmd, pipeline->pipeline_layout,
+                                       VK_SHADER_STAGE_COMPUTE_BIT, 0, pipeline->push_size, push_data);
+}
+
+static void init_barrier(VkImageMemoryBarrier *barrier)
+{
+    barrier->sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier->pNext = NULL;
+    barrier->srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier->dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier->subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier->subresourceRange.baseMipLevel = 0;
+    barrier->subresourceRange.levelCount = 1;
+    barrier->subresourceRange.baseArrayLayer = 0;
+    barrier->subresourceRange.layerCount = 1;
+}
+
 static VkResult record_compute_cmd( struct vulkan_device *device, struct swapchain *swapchain, struct fs_hack_image *hack )
 {
     VkResult res;
@@ -2817,6 +3105,9 @@ static VkResult record_compute_cmd( struct vulkan_device *device, struct swapcha
 
     TRACE( "recording compute command\n" );
 
+    init_barrier(&barriers[0]);
+    init_barrier(&barriers[1]);
+
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
 
@@ -2824,44 +3115,22 @@ static VkResult record_compute_cmd( struct vulkan_device *device, struct swapcha
 
     /* for the cs we run... */
     /* transition user image from PRESENT_SRC to SHADER_READ */
-    barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barriers[0].oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     barriers[0].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barriers[0].image = hack->user_image;
-    barriers[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barriers[0].subresourceRange.baseMipLevel = 0;
-    barriers[0].subresourceRange.levelCount = 1;
-    barriers[0].subresourceRange.baseArrayLayer = 0;
-    barriers[0].subresourceRange.layerCount = 1;
     barriers[0].srcAccessMask = 0;
     barriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
     /* storage image... */
     /* transition swapchain image from whatever to GENERAL */
-    barriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barriers[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     barriers[1].newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    barriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barriers[1].image = hack->swapchain_image;
-    barriers[1].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barriers[1].subresourceRange.baseMipLevel = 0;
-    barriers[1].subresourceRange.levelCount = 1;
-    barriers[1].subresourceRange.baseArrayLayer = 0;
-    barriers[1].subresourceRange.layerCount = 1;
     barriers[1].srcAccessMask = 0;
     barriers[1].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
 
     device->p_vkCmdPipelineBarrier( hack->cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                                     0, 0, NULL, 0, NULL, 2, barriers );
-
-    /* perform blit shader */
-    device->p_vkCmdBindPipeline( hack->cmd, VK_PIPELINE_BIND_POINT_COMPUTE, swapchain->pipeline );
-
-    device->p_vkCmdBindDescriptorSets( hack->cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                       swapchain->pipeline_layout, 0, 1, &hack->descriptor_set, 0, NULL );
 
     /* vec2: blit dst offset in real coords */
     constants[0] = 0;
@@ -2874,40 +3143,23 @@ static VkResult record_compute_cmd( struct vulkan_device *device, struct swapcha
     /* vec2: blit dst extents in real coords */
     constants[2] = swapchain->host_extents.width;
     constants[3] = swapchain->host_extents.height;
-    device->p_vkCmdPushConstants( hack->cmd, swapchain->pipeline_layout,
-                                  VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(constants), constants );
+    bind_pipeline(device, hack->cmd, &swapchain->blit_pipeline, hack->descriptor_set, constants);
 
     /* local sizes in shader are 8 */
     device->p_vkCmdDispatch( hack->cmd, ceil( swapchain->host_extents.width / 8. ),
                              ceil( swapchain->host_extents.height / 8. ), 1 );
 
     /* transition user image from SHADER_READ back to PRESENT_SRC */
-    barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barriers[0].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     barriers[0].newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-    barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barriers[0].image = hack->user_image;
-    barriers[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barriers[0].subresourceRange.baseMipLevel = 0;
-    barriers[0].subresourceRange.levelCount = 1;
-    barriers[0].subresourceRange.baseArrayLayer = 0;
-    barriers[0].subresourceRange.layerCount = 1;
     barriers[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
     barriers[0].dstAccessMask = 0;
 
     /* transition swapchain image from GENERAL to PRESENT_SRC */
-    barriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barriers[1].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
     barriers[1].newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-    barriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barriers[1].image = hack->swapchain_image;
-    barriers[1].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barriers[1].subresourceRange.baseMipLevel = 0;
-    barriers[1].subresourceRange.levelCount = 1;
-    barriers[1].subresourceRange.baseArrayLayer = 0;
-    barriers[1].subresourceRange.layerCount = 1;
     barriers[1].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     barriers[1].dstAccessMask = 0;
 
@@ -2921,6 +3173,163 @@ static VkResult record_compute_cmd( struct vulkan_device *device, struct swapcha
     }
 
     return VK_SUCCESS;
+}
+
+static VkResult record_fsr_cmd(struct vulkan_device *device, struct swapchain *swapchain, struct fs_hack_image *hack)
+{
+    VkImageMemoryBarrier barriers[3] = {{0}};
+    VkCommandBufferBeginInfo beginInfo = {0};
+    union
+    {
+        uint32_t uint[16];
+        float    fp[16];
+    } c;
+    VkResult result;
+
+    TRACE("recording compute command\n");
+
+    init_barrier(&barriers[0]);
+    init_barrier(&barriers[1]);
+    init_barrier(&barriers[2]);
+
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+
+    device->p_vkBeginCommandBuffer(hack->cmd, &beginInfo);
+
+    /* 1st pass (easu) */
+    /* transition user image from PRESENT_SRC to SHADER_READ */
+    barriers[0].oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    barriers[0].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barriers[0].image = hack->user_image;
+    barriers[0].srcAccessMask = 0;
+    barriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+    /* storage image... */
+    /* transition fsr image from whatever to GENERAL */
+    barriers[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barriers[1].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barriers[1].image = hack->swapchain_image;
+    barriers[1].srcAccessMask = 0;
+    barriers[1].dstAccessMask = 0;
+
+    device->p_vkCmdPipelineBarrier( hack->cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, NULL, 0, NULL, 2, barriers );
+
+    /* perform easu shader */
+
+    c.fp[0] = swapchain->extents.width * (1.0f / swapchain->host_extents.width);
+    c.fp[1] = swapchain->extents.height * (1.0f / swapchain->host_extents.height);
+    c.fp[2] = 0.5f * c.fp[0] - 0.5f;
+    c.fp[3] = 0.5f * c.fp[1] - 0.5f;
+    // Viewport pixel position to normalized image space.
+    // This is used to get upper-left of 'F' tap.
+    c.fp[4] = 1.0f / swapchain->extents.width;
+    c.fp[5] = 1.0f / swapchain->extents.height;
+    // Centers of gather4, first offset from upper-left of 'F'.
+    //      +---+---+
+    //      |   |   |
+    //      +--(0)--+
+    //      | b | c |
+    //  +---F---+---+---+
+    //  | e | f | g | h |
+    //  +--(1)--+--(2)--+
+    //  | i | j | k | l |
+    //  +---+---+---+---+
+    //      | n | o |
+    //      +--(3)--+
+    //      |   |   |
+    //      +---+---+
+    c.fp[6] =  1.0f * c.fp[4];
+    c.fp[7] = -1.0f * c.fp[5];
+    // These are from (0) instead of 'F'.
+    c.fp[8] = -1.0f * c.fp[4];
+    c.fp[9] =  2.0f * c.fp[5];
+    c.fp[10] =  1.0f * c.fp[4];
+    c.fp[11] =  2.0f * c.fp[5];
+    c.fp[12] =  0.0f * c.fp[4];
+    c.fp[13] =  4.0f * c.fp[5];
+    c.uint[14] = swapchain->host_extents.width;
+    c.uint[15] = swapchain->host_extents.height;
+
+    bind_pipeline(device, hack->cmd, &swapchain->fsr_easu_pipeline, hack->descriptor_set, c.uint);
+
+    /* local sizes in shader are 8 */
+    device->p_vkCmdDispatch(hack->cmd, ceil(swapchain->host_extents.width / 8.),
+            ceil(swapchain->host_extents.height / 8.), 1);
+
+    /* transition user image from SHADER_READ back to PRESENT_SRC */
+    barriers[0].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barriers[0].newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    barriers[0].image = hack->user_image;
+    barriers[0].srcAccessMask = 0;
+    barriers[0].dstAccessMask = 0;
+
+    /* transition fsr image from GENERAL to SHADER_READ */
+    barriers[1].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barriers[1].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barriers[1].image = hack->swapchain_image;
+    barriers[1].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barriers[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+    /* transition swapchain image from whatever to GENERAL */
+    barriers[2].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barriers[2].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barriers[2].image = hack->swapchain_image;
+    barriers[2].srcAccessMask = 0;
+    barriers[2].dstAccessMask = 0;
+
+    device->p_vkCmdPipelineBarrier(hack->cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 3, barriers);
+
+    /* 2nd pass (rcas) */
+
+    c.fp[0] = exp2f(-swapchain->upscaler.fsr.sharpness);
+    c.uint[2] = swapchain->host_extents.width;
+    c.uint[3] = swapchain->host_extents.height;
+    c.uint[4] = 0;
+    c.uint[5] = 0;
+    c.uint[6] = 0 + swapchain->host_extents.width;
+    c.uint[7] = 0 + swapchain->host_extents.height;
+
+    bind_pipeline(device, hack->cmd, &swapchain->fsr_rcas_pipeline, hack->fsr_set, c.uint);
+
+    /* local sizes in shader are 8 */
+    device->p_vkCmdDispatch(hack->cmd, ceil(swapchain->host_extents.width / 8.),
+            ceil(swapchain->host_extents.height / 8.), 1);
+
+    /* transition swapchain image from GENERAL to PRESENT_SRC */
+    barriers[0].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barriers[0].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barriers[0].image = hack->swapchain_image;
+    barriers[0].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barriers[0].dstAccessMask = 0;
+
+    device->p_vkCmdPipelineBarrier(hack->cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, barriers);
+
+    result = device->p_vkEndCommandBuffer(hack->cmd);
+    if (result != VK_SUCCESS)
+    {
+        ERR("vkEndCommandBuffer: %d\n", result);
+        return result;
+    }
+
+    return VK_SUCCESS;
+}
+
+#define win32u_vk_find_struct(s, t) win32u_vk_find_struct_((void *)s, VK_STRUCTURE_TYPE_##t)
+static void *win32u_vk_find_struct_(void *s, VkStructureType t)
+{
+    VkBaseOutStructure *header;
+
+    for (header = s; header; header = header->pNext)
+    {
+        if (header->sType == t)
+            return header;
+    }
+
+    return NULL;
 }
 
 static VkResult win32u_vkQueuePresentKHR( VkQueue client_queue, const VkPresentInfoKHR *client_present_info )
@@ -2956,7 +3365,8 @@ static VkResult win32u_vkQueuePresentKHR( VkQueue client_queue, const VkPresentI
             if (hack->cmd) device->p_vkFreeCommandBuffers( queue->device->host.device, swapchain->cmd_pools[hack->cmd_queue_idx], 1, &hack->cmd );
             if (!(queue->device->queue_props[queue->info.queueFamilyIndex].queueFlags & VK_QUEUE_COMPUTE_BIT)) goto failed; /* TODO */
 
-            if (!(hack->cmd = create_hack_cmd( queue, swapchain, queue->info.queueFamilyIndex )) || record_compute_cmd( queue->device, swapchain, hack ))
+            if (!(hack->cmd = create_hack_cmd( queue, swapchain, queue->info.queueFamilyIndex )) ||
+                (swapchain->upscaler.is_fsr ? record_fsr_cmd(queue->device, swapchain, hack) : record_compute_cmd( queue->device, swapchain, hack )))
             {
                 device->p_vkFreeCommandBuffers( queue->device->host.device, swapchain->cmd_pools[hack->cmd_queue_idx], 1, &hack->cmd );
                 hack->cmd = NULL;
@@ -2996,6 +3406,8 @@ static VkResult win32u_vkQueuePresentKHR( VkQueue client_queue, const VkPresentI
     {
         VkSubmitInfo submit_info = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO};
         VkPipelineStageFlags *stages;
+        VkLatencySubmissionPresentIdNV latencySubmitInfo;
+        VkPresentIdKHR *present_id;
 
         if (!(stages = mem_alloc( &pool, sizeof(VkPipelineStageFlags) * present_info->waitSemaphoreCount ))) goto failed;
         for (uint32_t i = 0; i < present_info->waitSemaphoreCount; ++i) stages[i] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
@@ -3009,6 +3421,15 @@ static VkResult win32u_vkQueuePresentKHR( VkQueue client_queue, const VkPresentI
         submit_info.signalSemaphoreCount = 1;
         submit_info.pSignalSemaphores = &blit_sema;
         device->p_vkQueueSubmit( queue->host.queue, 1, &submit_info, VK_NULL_HANDLE );
+
+        if ((queue->device->low_latency_enabled) &&
+            (present_id = win32u_vk_find_struct(present_info, PRESENT_ID_KHR)))
+        {
+            latencySubmitInfo.sType = VK_STRUCTURE_TYPE_LATENCY_SUBMISSION_PRESENT_ID_NV;
+            latencySubmitInfo.pNext = NULL;
+            latencySubmitInfo.presentID = *present_id->pPresentIds;
+            submit_info.pNext = &latencySubmitInfo;
+        }
 
         present_info->waitSemaphoreCount = 1;
         present_info->pWaitSemaphores = &blit_sema;
@@ -3955,6 +4376,7 @@ static struct vulkan_funcs vulkan_funcs =
     .p_vkMapMemory = win32u_vkMapMemory,
     .p_vkMapMemory2KHR = win32u_vkMapMemory2KHR,
     .p_vkQueuePresentKHR = win32u_vkQueuePresentKHR,
+    .p_vkSetLatencySleepModeNV = win32u_vkSetLatencySleepModeNV,
     .p_vkQueueSubmit = win32u_vkQueueSubmit,
     .p_vkQueueSubmit2 = win32u_vkQueueSubmit2,
     .p_vkQueueSubmit2KHR = win32u_vkQueueSubmit2KHR,

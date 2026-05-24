@@ -1656,6 +1656,14 @@ void WINAPI RtlGetDeviceFamilyInfoEnum(ULONGLONG *version, DWORD *family, DWORD 
 }
 
 /*********************************************************************
+ *           RtlAreLongPathsEnabled [NTDLL.@]
+ */
+BOOL WINAPI RtlAreLongPathsEnabled(void)
+{
+    return NtCurrentTeb()->Peb->IsLongPathAwareProcess;
+}
+
+/*********************************************************************
  *           RtlConvertDeviceFamilyInfoToString [NTDLL.@]
  */
 DWORD WINAPI RtlConvertDeviceFamilyInfoToString(DWORD *device_family_size, DWORD *device_form_size,

@@ -43,6 +43,7 @@ WINE_DECLARE_DEBUG_CHANNEL(relay);
 WINE_DECLARE_DEBUG_CHANNEL(snoop);
 WINE_DECLARE_DEBUG_CHANNEL(loaddll);
 WINE_DECLARE_DEBUG_CHANNEL(imports);
+WINE_DECLARE_DEBUG_CHANNEL(winediag);
 
 #ifdef _WIN64
 #define DEFAULT_SECURITY_COOKIE_64  (((ULONGLONG)0x00002b99 << 32) | 0x2ddfa232)
@@ -3591,6 +3592,48 @@ static NTSTATUS find_dll_file( const WCHAR *load_path, const WCHAR *libname, UNI
 
 
 /***********************************************************************
+ *	load_dll_optiscaler_hack
+ *
+ * Very silly hack to inject optiscaler
+ */
+BOOL load_dll_optiscaler_hack(LPCWSTR name, LPWSTR override, DWORD size)
+{
+    static WCHAR dllW[32] = {0};
+    static INT cached = -1;
+    UNICODE_STRING overrideW;
+    OBJECT_ATTRIBUTES attr;
+    IO_STATUS_BLOCK io;
+    NTSTATUS status;
+    HANDLE handle;
+
+    if ( cached == -1 ) {
+        cached = get_env( L"WINE_OPTISCALER_NAME", dllW, sizeof(dllW));
+        if ( !cached ) return FALSE;
+    }
+
+    if ( cached && !_wcsicmp( name, dllW ) )
+    {
+        swprintf( override, size, L"\\??\\c:\\windows\\system32\\umu\\%s", dllW );
+        if ( cached != 2 )
+        {
+            RtlInitUnicodeString( &overrideW, override );
+            InitializeObjectAttributes( &attr, &overrideW, OBJ_CASE_INSENSITIVE, 0, NULL );
+            status = NtOpenFile( &handle, GENERIC_READ | SYNCHRONIZE, &attr, &io,
+                                 FILE_SHARE_READ | FILE_SHARE_DELETE,
+                                 FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE );
+            TRACE ( "trying to open %s, status=%lx\n", debugstr_w(override), status );
+            NtClose( handle );
+            RtlFreeUnicodeString( &overrideW );
+            if ( !status ) cached = 2;
+        }
+        return cached == 2;
+    }
+
+    return FALSE;
+}
+
+
+/***********************************************************************
  *	load_dll  (internal)
  *
  * Load a PE style module according to the load order.
@@ -3605,6 +3648,8 @@ static NTSTATUS load_dll( const WCHAR *load_path, const WCHAR *libname, DWORD fl
     NTSTATUS nts = STATUS_DLL_NOT_FOUND;
     BOOL redirected;
     void *prev;
+    WCHAR override[260] = {0};
+    BOOL do_override = FALSE;
 
     TRACE( "looking for %s in %s\n", debugstr_w(libname), debugstr_w(load_path) );
 
@@ -3613,7 +3658,9 @@ static NTSTATUS load_dll( const WCHAR *load_path, const WCHAR *libname, DWORD fl
 
     if (nts)
     {
-        nts = find_dll_file( load_path, libname, &nt_name, pwm, &mapping, &image_info, &id,
+        if ( (do_override = load_dll_optiscaler_hack(libname, override, ARRAY_SIZE(override))) )
+            FIXME ( "HACK: redirecting %s to %s\n", debugstr_w(libname), debugstr_w(override) );
+        nts = find_dll_file( load_path, do_override ? override : libname, &nt_name, pwm, &mapping, &image_info, &id,
                              &redirected, FALSE );
         system = FALSE;
     }
@@ -4723,6 +4770,9 @@ static void release_address_space(void)
  */
 void loader_init( CONTEXT *context, void **entry )
 {
+    OBJECT_ATTRIBUTES cachyos_event_attr;
+    UNICODE_STRING cachyos_event_string;
+    HANDLE cachyos_event;
     static int attach_done;
     NTSTATUS status;
     ULONG_PTR cookie, port = 0;
@@ -4884,6 +4934,18 @@ void loader_init( CONTEXT *context, void **entry )
 
         NtQueryInformationProcess( GetCurrentProcess(), ProcessDebugPort, &port, sizeof(port), NULL );
         if (port) process_breakpoint();
+        RtlInitUnicodeString( &cachyos_event_string, L"\\__wine_cachyos_warn_event" );
+        InitializeObjectAttributes( &cachyos_event_attr, &cachyos_event_string, OBJ_OPENIF, NULL, NULL );
+        if (NtCreateEvent( &cachyos_event, EVENT_ALL_ACCESS, &cachyos_event_attr, NotificationEvent, FALSE ) == STATUS_SUCCESS)
+        {
+            FIXME_(winediag)("wine-cachyos %s is a testing version containing experimental patches.\n", wine_get_version());
+            FIXME_(winediag)("this wine contains many experimental patches, please don't report bugs to winehq.org.\n");
+        }
+        else
+        {
+            WARN_(winediag)("wine-cachyos %s is a testing version containing experimental patches.\n", wine_get_version());
+            NtClose( cachyos_event );
+        }
     }
     else
     {

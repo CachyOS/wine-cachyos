@@ -1513,6 +1513,29 @@ static void free_stream_buffers(struct wm_reader *reader)
     }
 }
 
+static BOOL is_new_wow64(void)
+{
+    BOOL is_wow64 = FALSE, old_wow64 = FALSE;
+    static int wow64_cached = -1;
+    
+    if (wow64_cached < 0)
+    {
+        if (!IsWow64Process( GetCurrentProcess(), &is_wow64 )) is_wow64 = FALSE;
+        if (is_wow64)
+        {
+            TEB64 *teb64 = ULongToPtr( NtCurrentTeb()->GdiBatchCount );
+            if (teb64)
+            {
+                PEB64 *peb64 = ULongToPtr(teb64->Peb);
+                old_wow64 = !peb64->LdrData;
+            }
+        }
+        wow64_cached = is_wow64 && !old_wow64;
+        FIXME("Running on new-wow64 mode: %s\n", !!wow64_cached ? "True" : "False");
+    }
+    return !!wow64_cached;
+}
+
 static void release_stream_allocators(struct wm_reader *reader)
 {
     unsigned int i;
@@ -1537,6 +1560,7 @@ static HRESULT init_stream(struct wm_reader *reader)
     HRESULT hr;
     WORD i;
 
+    enable_opengl = enable_opengl && !is_new_wow64();
 {
     const char *sgi = getenv("SteamGameId");
     if (sgi && (0
@@ -1549,6 +1573,7 @@ static HRESULT init_stream(struct wm_reader *reader)
     ))
     enable_opengl = FALSE;
 }
+    FIXME("Enabling opengl parser context: %s\n", enable_opengl ? "True" : "False");
 
     /* 32-bit GStreamer ORC cannot efficiently convert I420 to RGBA, use OpenGL converter
      * in that case but keep the usual codepath otherwise.
@@ -1680,6 +1705,7 @@ static HRESULT reinit_stream(struct wm_reader *reader, bool read_compressed)
     HRESULT hr;
     WORD i;
 
+    enable_opengl = enable_opengl && !is_new_wow64();
 {
     const char *sgi = getenv("SteamGameId");
     if (sgi && (0
@@ -1692,6 +1718,7 @@ static HRESULT reinit_stream(struct wm_reader *reader, bool read_compressed)
     ))
     enable_opengl = FALSE;
 }
+    FIXME("Enabling opengl parser context: %s\n", enable_opengl ? "True" : "False");
 
     ReleaseSemaphore(reader->read_sem, 1, NULL);
 

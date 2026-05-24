@@ -98,8 +98,8 @@ static inline ULONGLONG monotonic_counter(void)
     return mach_continuous_time() * timebase.numer / timebase.denom / 100;
 #elif defined(HAVE_CLOCK_GETTIME)
     struct timespec ts;
-#ifdef CLOCK_BOOTTIME
-    if (!clock_gettime( CLOCK_BOOTTIME, &ts ))
+#ifdef CLOCK_MONOTONIC_RAW
+    if (!clock_gettime( CLOCK_MONOTONIC_RAW, &ts ))
         return ts.tv_sec * (ULONGLONG)TICKSPERSEC + ts.tv_nsec / 100;
 #endif
     if (!clock_gettime( CLOCK_MONOTONIC, &ts ))
@@ -2521,22 +2521,7 @@ NTSTATUS WINAPI NtQuerySystemTime( LARGE_INTEGER *time )
 {
 #ifdef HAVE_CLOCK_GETTIME
     struct timespec ts;
-    static clockid_t clock_id = CLOCK_MONOTONIC; /* placeholder */
-
-    if (clock_id == CLOCK_MONOTONIC)
-    {
-#ifdef CLOCK_REALTIME_COARSE
-        struct timespec res;
-
-        /* Use CLOCK_REALTIME_COARSE if it has 1 ms or better resolution */
-        if (!clock_getres( CLOCK_REALTIME_COARSE, &res ) && res.tv_sec == 0 && res.tv_nsec <= 1000000)
-            clock_id = CLOCK_REALTIME_COARSE;
-        else
-#endif /* CLOCK_REALTIME_COARSE */
-            clock_id = CLOCK_REALTIME;
-    }
-
-    if (!clock_gettime( clock_id, &ts ))
+    if (!clock_gettime( CLOCK_REALTIME, &ts ))
     {
         time->QuadPart = ticks_from_time_t( ts.tv_sec ) + (ts.tv_nsec + 50) / 100;
     }

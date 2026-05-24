@@ -551,12 +551,115 @@ HMODULE WINAPI DECLSPEC_HOTPATCH LoadLibraryExA( LPCSTR name, HANDLE file, DWORD
 
 
 /***********************************************************************
+ * LoadLibary redirect/replace hack
+ */
+BOOL loaddll_redirect(LPCWSTR name, LPWSTR override, DWORD size)
+{
+    WCHAR *entry, *next, *match, *token, *path, *stem;
+    WCHAR envW[MAX_PATH * 8] = {0}, nameW[MAX_PATH] = {0};
+    UINT ret;
+
+    if ( wcsstr( name, L"nvidia/wine/nvngx_dlssg.dll" ) )
+    {
+        TRACE("refusing to redirect %ls\n", name);
+        return FALSE;
+    }
+
+    ret = GetEnvironmentVariableW( L"WINE_LOADDLL_REDIRECT", envW, sizeof(envW));
+    if ( !ret ) return FALSE;
+    if ( ret >= ARRAY_SIZE(envW) )
+    {
+        ERR("WINE_LOADDLL_REDIRECT larger than %lu (%u)\n", (unsigned long)ARRAY_SIZE(envW), ret);
+        return FALSE;
+    }
+
+    wcscpy(nameW, name);
+    stem = wcspbrk( nameW, L"\\/" );
+    while (stem)
+    {
+        if ( !wcspbrk( stem + 1, L"\\/" ) )
+            break;
+        stem = wcspbrk( ++stem, L"\\/" );
+    }
+    if ( stem ) stem++;
+    else stem = nameW;
+
+    TRACE("looking for %ls redirect\n", stem);
+
+    entry = envW;
+    while (*entry)
+    {
+        while (*entry == L';') entry++;
+        if (!*entry) break;
+        next = wcschr( entry, L';' );
+        if (next) *next++ = 0;
+        else next = entry + wcslen(entry);
+        if ( (match = wcsstr( entry, stem)) )
+        {
+            path = wcschr( match, L'=' );
+            if (path) *path++ = 0;
+            else return FALSE;
+            token = wcschr( match, L',' );
+            if (token) *token = 0;
+            if ( wcsstr( path, match ) || !wcscmp ( path + wcslen(path) - 4, L".dll" ) )
+                wcscpy( override, path );
+            else
+                swprintf( override, size, L"%s\\%s", path, match );
+            return TRUE;
+        }
+        entry = next;
+    }
+    return FALSE;
+}
+
+BOOL loaddll_upscaler_hack(LPCWSTR name, LPWSTR override, DWORD size)
+{
+    WCHAR envW[64] = {0};
+    UINT ret;
+
+    ret = GetEnvironmentVariableW( L"WINE_UPSCALER_REPLACE", envW, sizeof(envW));
+    if ( !ret || ret >= ARRAY_SIZE(envW) ) return FALSE;
+
+    if ( wcsstr( envW, L"fsr3" ) )
+    {
+        /* HACK: override amd_fidelityfx_*.dll path to a non-standard location for FSR3 upgrade */
+        if (wcsstr( name, L"amd_fidelityfx_vk.dll" )) wcscpy( override, L"c:\\windows\\system32\\umu\\amd_fidelityfx_vk.dll" );
+        if (wcsstr( name, L"amd_fidelityfx_dx12.dll" )) wcscpy( override, L"c:\\windows\\system32\\umu\\amd_fidelityfx_dx12.dll" );
+    }
+    if ( wcsstr( envW, L"fsr4" ) )
+    {
+        /* HACK: override amdxcffx64.dll path to a non-standard location for FSR4 upgrade */
+        if (wcsstr( name, L"amdxcffx64.dll" )) wcscpy( override, L"c:\\windows\\system32\\amdxcffx64.dll" );
+    }
+    if ( wcsstr( envW, L"dlss" ) )
+    {
+        /* HACK: override nvngx_dlss*.dll paths to a non-standard location for DLSS upgrade */
+        if (wcsstr( name, L"nvngx_dlss.dll" )) wcscpy( override, L"c:\\windows\\system32\\umu\\nvngx_dlss.dll" );
+        if (wcsstr( name, L"nvngx_dlssd.dll" )) wcscpy( override, L"c:\\windows\\system32\\umu\\nvngx_dlssd.dll" );
+        if (wcsstr( name, L"nvngx_dlssg.dll" ) && !wcsstr( name, L"nvidia/wine/nvngx_dlssg.dll" ))
+            wcscpy( override, L"c:\\windows\\system32\\umu\\nvngx_dlssg.dll" );
+    }
+    if ( wcsstr( envW, L"xess" ) )
+    {
+        /* HACK: override libxe*.dll paths to a non-standard location for XeSS upgrade */
+        if (wcsstr( name, L"libxess.dll" )) wcscpy( override, L"c:\\windows\\system32\\umu\\libxess.dll" );
+        if (wcsstr( name, L"libxess_dx11.dll" )) wcscpy( override, L"c:\\windows\\system32\\umu\\libxess_dx11.dll" );
+        if (wcsstr( name, L"libxell.dll" )) wcscpy( override, L"c:\\windows\\system32\\umu\\libxell.dll" );
+        if (wcsstr( name, L"libxess_fg.dll" )) wcscpy( override, L"c:\\windows\\system32\\umu\\libxess_fg.dll" );
+    }
+
+    return override[0] ? TRUE : FALSE;
+}
+
+
+/***********************************************************************
  *	LoadLibraryExW   (kernelbase.@)
  */
 HMODULE WINAPI DECLSPEC_HOTPATCH LoadLibraryExW( LPCWSTR name, HANDLE file, DWORD flags )
 {
     UNICODE_STRING str;
     HMODULE module;
+    WCHAR overrideW[MAX_PATH] = {0};
 
     if (!name)
     {
@@ -571,11 +674,14 @@ HMODULE WINAPI DECLSPEC_HOTPATCH LoadLibraryExW( LPCWSTR name, HANDLE file, DWOR
         flags = 0;
     }
 
-    RtlInitUnicodeString( &str, name );
+    if ( loaddll_upscaler_hack(name, overrideW, ARRAY_SIZE(overrideW)) )
+        FIXME( "HACK: redirecting %s to %s\n", debugstr_w(name), debugstr_w(overrideW));
+
+    RtlInitUnicodeString( &str, overrideW[0] ? overrideW : name );
     if (str.Length && str.Buffer[str.Length/sizeof(WCHAR) - 1] != ' ') return load_library( &str, flags );
 
     /* library name has trailing spaces */
-    RtlCreateUnicodeString( &str, name );
+    RtlCreateUnicodeString( &str, overrideW[0] ? overrideW : name );
     while (str.Length > sizeof(WCHAR) && str.Buffer[str.Length/sizeof(WCHAR) - 1] == ' ')
         str.Length -= sizeof(WCHAR);
 
