@@ -261,7 +261,9 @@ struct test_media_stream
     IMFMediaSource *source;
     IMFStreamDescriptor *sd;
     IMFMediaEventQueue *event_queue;
+    DWORD stream_index;
     BOOL is_new;
+    unsigned int samples_per_request;
     LONGLONG sample_duration, sample_time;
 };
 
@@ -356,10 +358,12 @@ static HRESULT WINAPI test_media_stream_GetStreamDescriptor(IMFMediaStream *ifac
 }
 
 static BOOL fail_request_sample;
+static DWORD block_sample_stream = ~0u;
 
 static HRESULT WINAPI test_media_stream_RequestSample(IMFMediaStream *iface, IUnknown *token)
 {
     struct test_media_stream *stream = impl_from_IMFMediaStream(iface);
+    unsigned int i, sample_count = stream->samples_per_request ? stream->samples_per_request : 1;
     IMFMediaBuffer *buffer;
     IMFSample *sample;
     HRESULT hr;
@@ -367,41 +371,47 @@ static HRESULT WINAPI test_media_stream_RequestSample(IMFMediaStream *iface, IUn
     if (fail_request_sample)
         return E_NOTIMPL;
 
-    hr = MFCreateSample(&sample);
-    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
-    if (stream->sample_duration)
+    if (stream->stream_index == block_sample_stream)
+        return S_OK;
+
+    for (i = 0; i < sample_count; ++i)
     {
-        hr = IMFSample_SetSampleDuration(sample, stream->sample_duration);
+        hr = MFCreateSample(&sample);
         ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+        if (stream->sample_duration)
+        {
+            hr = IMFSample_SetSampleDuration(sample, stream->sample_duration);
+            ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
 
-        hr = IMFSample_SetSampleTime(sample, stream->sample_time);
+            hr = IMFSample_SetSampleTime(sample, stream->sample_time);
+            ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
+            stream->sample_time += stream->sample_duration;
+        }
+        else
+        {
+            hr = IMFSample_SetSampleTime(sample, 123);
+            ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
+            hr = IMFSample_SetSampleDuration(sample, 1);
+            ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+        }
+
+        if (token)
+            IMFSample_SetUnknown(sample, &MFSampleExtension_Token, token);
+
+        /* Reader expects buffers, empty samples are considered an error. */
+        hr = MFCreateMemoryBuffer(8, &buffer);
         ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+        hr = IMFSample_AddBuffer(sample, buffer);
+        ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+        IMFMediaBuffer_Release(buffer);
 
-        stream->sample_time += stream->sample_duration;
+        hr = IMFMediaEventQueue_QueueEventParamUnk(stream->event_queue, MEMediaSample, &GUID_NULL, S_OK,
+                (IUnknown *)sample);
+        ok(hr == S_OK || hr == MF_E_SHUTDOWN, "Unexpected hr %#lx.\n", hr);
+        IMFSample_Release(sample);
     }
-    else
-    {
-        hr = IMFSample_SetSampleTime(sample, 123);
-        ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
-
-        hr = IMFSample_SetSampleDuration(sample, 1);
-        ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
-    }
-
-    if (token)
-        IMFSample_SetUnknown(sample, &MFSampleExtension_Token, token);
-
-    /* Reader expects buffers, empty samples are considered an error. */
-    hr = MFCreateMemoryBuffer(8, &buffer);
-    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
-    hr = IMFSample_AddBuffer(sample, buffer);
-    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
-    IMFMediaBuffer_Release(buffer);
-
-    hr = IMFMediaEventQueue_QueueEventParamUnk(stream->event_queue, MEMediaSample, &GUID_NULL, S_OK,
-            (IUnknown *)sample);
-    ok(hr == S_OK || hr == MF_E_SHUTDOWN, "Unexpected hr %#lx.\n", hr);
-    IMFSample_Release(sample);
 
     return S_OK;
 }
@@ -637,6 +647,7 @@ static struct test_media_stream *create_test_stream(DWORD stream_index, IMFMedia
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
     stream->source = source;
     IMFMediaSource_AddRef(stream->source);
+    stream->stream_index = stream_index;
     stream->is_new = TRUE;
 
     IMFMediaSource_CreatePresentationDescriptor(source, &pd);
@@ -720,6 +731,11 @@ struct async_callback
     IMFSourceReaderCallback IMFSourceReaderCallback_iface;
     LONG refcount;
     HANDLE event;
+    HRESULT hr;
+    DWORD stream_index;
+    DWORD stream_flags;
+    LONGLONG timestamp;
+    IMFSample *sample;
 };
 
 static struct async_callback *impl_from_IMFSourceReaderCallback(IMFSourceReaderCallback *iface)
@@ -753,7 +769,12 @@ static ULONG WINAPI async_callback_Release(IMFSourceReaderCallback *iface)
     ULONG refcount = InterlockedDecrement(&callback->refcount);
 
     if (!refcount)
+    {
+        if (callback->sample)
+            IMFSample_Release(callback->sample);
+        CloseHandle(callback->event);
         free(callback);
+    }
 
     return refcount;
 }
@@ -761,8 +782,20 @@ static ULONG WINAPI async_callback_Release(IMFSourceReaderCallback *iface)
 static HRESULT WINAPI async_callback_OnReadSample(IMFSourceReaderCallback *iface, HRESULT hr, DWORD stream_index,
         DWORD stream_flags, LONGLONG timestamp, IMFSample *sample)
 {
-    ok(0, "Unexpected call.\n");
-    return E_NOTIMPL;
+    struct async_callback *callback = impl_from_IMFSourceReaderCallback(iface);
+
+    callback->hr = hr;
+    callback->stream_index = stream_index;
+    callback->stream_flags = stream_flags;
+    callback->timestamp = timestamp;
+    if (callback->sample)
+        IMFSample_Release(callback->sample);
+    callback->sample = sample;
+    if (callback->sample)
+        IMFSample_AddRef(callback->sample);
+    SetEvent(callback->event);
+
+    return S_OK;
 }
 
 static HRESULT WINAPI async_callback_OnFlush(IMFSourceReaderCallback *iface, DWORD stream_index)
@@ -794,8 +827,24 @@ static struct async_callback *create_async_callback(void)
     callback = calloc(1, sizeof(*callback));
     callback->IMFSourceReaderCallback_iface.lpVtbl = &async_callback_vtbl;
     callback->refcount = 1;
+    callback->event = CreateEventW(NULL, FALSE, FALSE, NULL);
+    ok(!!callback->event, "Failed to create event.\n");
 
     return callback;
+}
+
+static void reset_async_callback(struct async_callback *callback)
+{
+    callback->hr = E_FAIL;
+    callback->stream_index = ~0u;
+    callback->stream_flags = 0xdeadbeef;
+    callback->timestamp = -1;
+    if (callback->sample)
+    {
+        IMFSample_Release(callback->sample);
+        callback->sample = NULL;
+    }
+    ResetEvent(callback->event);
 }
 
 static void test_source_reader(const char *filename, bool video)
@@ -1156,12 +1205,18 @@ static void test_source_reader(const char *filename, bool video)
 
 static void test_source_reader_from_media_source(void)
 {
-    static const DWORD expected_sample_order[10] = {0, 0, 1, 1, 0, 0, 0, 0, 1, 0};
     static const struct attribute_desc audio_stream_type_desc[] =
     {
         ATTR_GUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio),
         ATTR_GUID(MF_MT_SUBTYPE, MFAudioFormat_PCM),
         ATTR_UINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 32),
+        {0},
+    };
+    static const struct attribute_desc audio_stream_type_16bit_desc[] =
+    {
+        ATTR_GUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio),
+        ATTR_GUID(MF_MT_SUBTYPE, MFAudioFormat_PCM),
+        ATTR_UINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16),
         {0},
     };
 
@@ -1176,6 +1231,10 @@ static void test_source_reader_from_media_source(void)
     IMFSample *sample;
     LONGLONG timestamp;
     IMFAttributes *attributes;
+    IMFMediaType *media_types[2];
+    IMFMediaTypeHandler *handler;
+    IMFStreamDescriptor *current_type_stream;
+    UINT32 bits_per_sample;
     ULONG refcount;
     int i;
     PROPVARIANT pos;
@@ -1340,6 +1399,37 @@ static void test_source_reader_from_media_source(void)
     IMFSourceReader_Release(reader);
     IMFMediaSource_Release(source);
 
+    hr = MFCreateMediaType(&media_types[0]);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    init_media_type(media_types[0], audio_stream_type_desc, -1);
+    hr = MFCreateMediaType(&media_types[1]);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    init_media_type(media_types[1], audio_stream_type_16bit_desc, -1);
+    hr = MFCreateStreamDescriptor(0, ARRAY_SIZE(media_types), media_types, &current_type_stream);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFStreamDescriptor_GetMediaTypeHandler(current_type_stream, &handler);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFMediaTypeHandler_SetCurrentMediaType(handler, media_types[1]);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    IMFMediaTypeHandler_Release(handler);
+    IMFMediaType_Release(media_types[0]);
+    IMFMediaType_Release(media_types[1]);
+
+    source = create_test_source(&current_type_stream, 1);
+    ok(!!source, "Failed to create test source.\n");
+    hr = MFCreateSourceReaderFromMediaSource(source, NULL, &reader);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFSourceReader_GetCurrentMediaType(reader, 0, &media_type);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    bits_per_sample = 0;
+    hr = IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_BITS_PER_SAMPLE, &bits_per_sample);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    ok(bits_per_sample == 16, "Unexpected bits per sample %u.\n", bits_per_sample);
+    IMFMediaType_Release(media_type);
+    IMFSourceReader_Release(reader);
+    IMFMediaSource_Release(source);
+    IMFStreamDescriptor_Release(current_type_stream);
+
     /* Request a non-native bit depth. */
     source = create_test_source(audio_streams, 1);
     ok(!!source, "Failed to create test source.\n");
@@ -1476,16 +1566,26 @@ static void test_source_reader_from_media_source(void)
 
     fail_request_sample = FALSE;
 
-    /* MF_SOURCE_READER_ANY_STREAM with streams of different sample sizes */
+    /* ready any stream response */
     source = create_test_source(audio_streams, 2);
     ok(!!source, "Failed to create test source.\n");
 
     test_source = impl_from_IMFMediaSource(source);
     test_source->streams[0]->sample_duration = 100000;
-    test_source->streams[1]->sample_duration = 400000;
+    test_source->streams[0]->samples_per_request = 3;
+    test_source->streams[1]->sample_duration = 100000;
 
-    hr = MFCreateSourceReaderFromMediaSource(source, NULL, &reader);
+    callback = create_async_callback();
+
+    hr = MFCreateAttributes(&attributes, 1);
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFAttributes_SetUnknown(attributes, &MF_SOURCE_READER_ASYNC_CALLBACK,
+            (IUnknown *)&callback->IMFSourceReaderCallback_iface);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
+    hr = MFCreateSourceReaderFromMediaSource(source, attributes, &reader);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    IMFAttributes_Release(attributes);
 
     hr = IMFSourceReader_SetStreamSelection(reader, 0, TRUE);
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
@@ -1493,20 +1593,45 @@ static void test_source_reader_from_media_source(void)
     hr = IMFSourceReader_SetStreamSelection(reader, 1, TRUE);
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
 
-    /* The source reader picks the stream whose last sample had the lower timestamp */
-    for (i = 0; i < ARRAY_SIZE(expected_sample_order); i++)
-    {
-        hr = IMFSourceReader_ReadSample(reader, MF_SOURCE_READER_ANY_STREAM, 0, &actual_index, &stream_flags, &timestamp, &sample);
-        ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
-        ok(!stream_flags, "Unexpected stream flags %#lx.\n", stream_flags);
-        ok(!!sample, "Expected sample object.\n");
-        ok (actual_index == expected_sample_order[i], "Got sample %u from unexpected stream %lu, expected %lu.\n",
-                i, actual_index, expected_sample_order[i]);
-        IMFSample_Release(sample);
-    }
+    reset_async_callback(callback);
+    hr = IMFSourceReader_ReadSample(reader, 1, 0, NULL, NULL, NULL, NULL);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    ok(WaitForSingleObject(callback->event, 1000) == WAIT_OBJECT_0, "Timed out waiting for callback.\n");
+    ok(callback->hr == S_OK, "Unexpected hr %#lx.\n", callback->hr);
+    ok(callback->stream_index == 1, "Unexpected stream index %lu.\n", callback->stream_index);
+    ok(!callback->stream_flags, "Unexpected stream flags %#lx.\n", callback->stream_flags);
+    ok(callback->timestamp == 0, "Unexpected timestamp.\n");
+    ok(!!callback->sample, "Expected sample object.\n");
+
+    block_sample_stream = 1;
+
+    reset_async_callback(callback);
+    hr = IMFSourceReader_ReadSample(reader, 0, 0, NULL, NULL, NULL, NULL);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    ok(WaitForSingleObject(callback->event, 1000) == WAIT_OBJECT_0, "Timed out waiting for callback.\n");
+    ok(callback->hr == S_OK, "Unexpected hr %#lx.\n", callback->hr);
+    ok(!callback->stream_index, "Unexpected stream index %lu.\n", callback->stream_index);
+    ok(!callback->stream_flags, "Unexpected stream flags %#lx.\n", callback->stream_flags);
+    ok(callback->timestamp == 0, "Unexpected timestamp.\n");
+    ok(!!callback->sample, "Expected sample object.\n");
+
+    Sleep(100);
+
+    reset_async_callback(callback);
+    hr = IMFSourceReader_ReadSample(reader, MF_SOURCE_READER_ANY_STREAM, 0, NULL, NULL, NULL, NULL);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    ok(WaitForSingleObject(callback->event, 1000) == WAIT_OBJECT_0, "Timed out waiting for callback.\n");
+    ok(callback->hr == S_OK, "Unexpected hr %#lx.\n", callback->hr);
+    ok(!callback->stream_index, "Unexpected stream index %lu.\n", callback->stream_index);
+    ok(!callback->stream_flags, "Unexpected stream flags %#lx.\n", callback->stream_flags);
+    ok(callback->timestamp == 100000, "Unexpected timestamp.\n");
+    ok(!!callback->sample, "Expected sample object.\n");
+
+    block_sample_stream = ~0u;
 
     IMFSourceReader_Release(reader);
     IMFMediaSource_Release(source);
+    IMFSourceReaderCallback_Release(&callback->IMFSourceReaderCallback_iface);
 
     for (i = 0; i < ARRAY_SIZE(audio_streams); i++)
         IMFStreamDescriptor_Release(audio_streams[i]);
@@ -3882,6 +4007,159 @@ skip_tests:
     expect_dxgi_manager = NULL;
 }
 
+static void test_source_reader_wma_audio_alignment(void)
+{
+    UINT32 block_align, avg_bytes, bits_per_sample, channels, sample_rate;
+    IMFSourceReader *reader;
+    IMFByteStream *stream;
+    IMFMediaType *media_type;
+    HRESULT hr;
+
+    if (!pMFCreateMFByteStreamOnStream)
+    {
+        win_skip("MFCreateMFByteStreamOnStream() not found\n");
+        return;
+    }
+
+    stream = get_resource_stream("test.wma");
+    hr = MFCreateSourceReaderFromByteStream(stream, NULL, &reader);
+    IMFByteStream_Release(stream);
+    if (FAILED(hr))
+    {
+        skip("MFCreateSourceReaderFromByteStream() failed, is GStreamer missing?\n");
+        return;
+    }
+
+    hr = MFCreateMediaType(&media_type);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFMediaType_SetGUID(media_type, &MF_MT_MAJOR_TYPE, &MFMediaType_Audio);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFMediaType_SetGUID(media_type, &MF_MT_SUBTYPE, &MFAudioFormat_PCM);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFSourceReader_SetCurrentMediaType(reader, MF_SOURCE_READER_FIRST_AUDIO_STREAM, NULL, media_type);
+    IMFMediaType_Release(media_type);
+    if (FAILED(hr))
+    {
+        skip("Failed to set PCM output type, hr %#lx.\n", hr);
+        IMFSourceReader_Release(reader);
+        return;
+    }
+
+    hr = IMFSourceReader_GetCurrentMediaType(reader, MF_SOURCE_READER_FIRST_AUDIO_STREAM, &media_type);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
+    hr = IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_BITS_PER_SAMPLE, &bits_per_sample);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_NUM_CHANNELS, &channels);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_SAMPLES_PER_SECOND, &sample_rate);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_BLOCK_ALIGNMENT, &block_align);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    ok(block_align == bits_per_sample * channels / 8,
+            "Expected block_align %u, got %u.\n", bits_per_sample * channels / 8, block_align);
+    hr = IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_AVG_BYTES_PER_SECOND, &avg_bytes);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    ok(avg_bytes == sample_rate * block_align,
+            "Expected avg_bytes_per_sec %u, got %u.\n", sample_rate * block_align, avg_bytes);
+    IMFMediaType_Release(media_type);
+
+    hr = MFCreateMediaType(&media_type);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFMediaType_SetGUID(media_type, &MF_MT_MAJOR_TYPE, &MFMediaType_Audio);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFMediaType_SetGUID(media_type, &MF_MT_SUBTYPE, &MFAudioFormat_Float);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFSourceReader_SetCurrentMediaType(reader, MF_SOURCE_READER_FIRST_AUDIO_STREAM, NULL, media_type);
+    IMFMediaType_Release(media_type);
+    if (SUCCEEDED(hr))
+    {
+        hr = IMFSourceReader_GetCurrentMediaType(reader, MF_SOURCE_READER_FIRST_AUDIO_STREAM, &media_type);
+        ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
+        hr = IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_BITS_PER_SAMPLE, &bits_per_sample);
+        ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+        hr = IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_NUM_CHANNELS, &channels);
+        ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+        hr = IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_SAMPLES_PER_SECOND, &sample_rate);
+        ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+        hr = IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_BLOCK_ALIGNMENT, &block_align);
+        ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+        ok(block_align == bits_per_sample * channels / 8,
+                "Expected block_align %u, got %u.\n", bits_per_sample * channels / 8, block_align);
+        hr = IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_AVG_BYTES_PER_SECOND, &avg_bytes);
+        ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+        ok(avg_bytes == sample_rate * block_align,
+                "Expected avg_bytes_per_sec %u, got %u.\n", sample_rate * block_align, avg_bytes);
+        IMFMediaType_Release(media_type);
+    }
+
+    IMFSourceReader_Release(reader);
+}
+
+static void test_source_reader_wma_compressed_stream(void)
+{
+    UINT32 bits_per_sample;
+    IMFSourceReader *reader;
+    IMFByteStream *stream;
+    IMFMediaType *media_type;
+    IMFTransform *transform;
+    GUID subtype;
+    HRESULT hr;
+
+    if (!pMFCreateMFByteStreamOnStream)
+    {
+        win_skip("MFCreateMFByteStreamOnStream() not found\n");
+        return;
+    }
+
+    stream = get_resource_stream("test.wma");
+    hr = MFCreateSourceReaderFromByteStream(stream, NULL, &reader);
+    IMFByteStream_Release(stream);
+    if (FAILED(hr))
+    {
+        skip("MFCreateSourceReaderFromByteStream() failed, is GStreamer missing?\n");
+        return;
+    }
+
+    /* the native type must be the compressed WMA format, not decoded PCM. */
+    hr = IMFSourceReader_GetNativeMediaType(reader, MF_SOURCE_READER_FIRST_AUDIO_STREAM, 0, &media_type);
+    ok(hr == S_OK, "GetNativeMediaType returned %#lx.\n", hr);
+    hr = IMFMediaType_GetGUID(media_type, &MF_MT_SUBTYPE, &subtype);
+    ok(hr == S_OK, "GetGUID returned %#lx.\n", hr);
+    ok(IsEqualGUID(&subtype, &MFAudioFormat_WMAudioV8), "Expected WMAudioV8 subtype, got %s.\n",
+            debugstr_guid(&subtype));
+    bits_per_sample = 0;
+    hr = IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_BITS_PER_SAMPLE, &bits_per_sample);
+    ok(hr == S_OK, "GetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE) returned %#lx.\n", hr);
+    ok(bits_per_sample == 16, "Expected 16 bits per sample, got %u.\n", bits_per_sample);
+    IMFMediaType_Release(media_type);
+
+    /* requesting decoded PCM output should insert the WMA decoder transform. */
+    hr = MFCreateMediaType(&media_type);
+    ok(hr == S_OK, "MFCreateMediaType returned %#lx.\n", hr);
+    hr = IMFMediaType_SetGUID(media_type, &MF_MT_MAJOR_TYPE, &MFMediaType_Audio);
+    ok(hr == S_OK, "SetGUID returned %#lx.\n", hr);
+    hr = IMFMediaType_SetGUID(media_type, &MF_MT_SUBTYPE, &MFAudioFormat_PCM);
+    ok(hr == S_OK, "SetGUID returned %#lx.\n", hr);
+    hr = IMFSourceReader_SetCurrentMediaType(reader, MF_SOURCE_READER_FIRST_AUDIO_STREAM, NULL, media_type);
+    IMFMediaType_Release(media_type);
+    if (FAILED(hr))
+    {
+        skip("Failed to set PCM output type, hr %#lx.\n", hr);
+        IMFSourceReader_Release(reader);
+        return;
+    }
+
+    hr = IMFSourceReader_GetServiceForStream(reader, MF_SOURCE_READER_FIRST_AUDIO_STREAM,
+            &GUID_NULL, &IID_IMFTransform, (void **)&transform);
+    ok(hr == S_OK, "GetServiceForStream returned %#lx.\n", hr);
+    if (hr == S_OK)
+        IMFTransform_Release(transform);
+
+    IMFSourceReader_Release(reader);
+}
+
 START_TEST(mfplat)
 {
     HRESULT hr;
@@ -3902,6 +4180,8 @@ START_TEST(mfplat)
     test_source_reader_transform_stream_change();
     test_source_reader_transforms_d3d9();
     test_source_reader_transforms_d3d11();
+    test_source_reader_wma_audio_alignment();
+    test_source_reader_wma_compressed_stream();
     test_reader_d3d9();
     test_sink_writer_create();
     test_sink_writer_get_object();

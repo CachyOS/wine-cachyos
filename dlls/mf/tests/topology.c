@@ -71,6 +71,11 @@
 
 extern GUID DMOVideoFormat_RGB32;
 
+static const GUID test_major_type = {0x9e3665a3,0x7319,0x4098,{0xb2,0x9f,0x05,0x25,0x0c,0xcf,0x2f,0xf6}};
+static const GUID test_subtype_a = {0xe5a79621,0x743c,0x4bca,{0x95,0x3e,0xb4,0x8b,0x5a,0xd4,0x83,0x6d}};
+static const GUID test_subtype_b = {0x584faed4,0x5b1d,0x475c,{0xac,0x91,0x06,0x98,0x41,0x24,0xc3,0xd1}};
+static const GUID test_subtype_c = {0x1c69d7e4,0x9d9e,0x494d,{0xb9,0xc4,0xde,0x1a,0xd4,0x79,0x27,0x10}};
+
 #define EXPECT_REF(obj,ref) _expect_ref((IUnknown*)obj, ref, __LINE__)
 static void _expect_ref(IUnknown* obj, ULONG expected_refcount, int line)
 {
@@ -2291,6 +2296,7 @@ enum loader_test_flags
     LOADER_EXPECT_MFT_INPUT_ENUMERATED = 0x8000,
     LOADER_ADD_OPTIONAL_TEST_MFT_DOWNSTREAM = 0x10000,
     LOADER_EXPECT_MFT_OUTPUT_ENUMERATED_TODO = 0x20000,
+    LOADER_EXPECT_MFT_OUTPUT_RESTORED = 0x40000,
 };
 
 static void test_topology_loader(void)
@@ -2491,6 +2497,21 @@ static void test_topology_loader(void)
     static const media_type_desc video_dummy =
     {
         ATTR_GUID(MF_MT_MAJOR_TYPE, MFMediaType_Video),
+    };
+    static const media_type_desc test_type_a =
+    {
+        ATTR_GUID(MF_MT_MAJOR_TYPE, test_major_type),
+        ATTR_GUID(MF_MT_SUBTYPE, test_subtype_a),
+    };
+    static const media_type_desc test_type_b =
+    {
+        ATTR_GUID(MF_MT_MAJOR_TYPE, test_major_type),
+        ATTR_GUID(MF_MT_SUBTYPE, test_subtype_b),
+    };
+    static const media_type_desc test_type_c =
+    {
+        ATTR_GUID(MF_MT_MAJOR_TYPE, test_major_type),
+        ATTR_GUID(MF_MT_SUBTYPE, test_subtype_c),
     };
 
     const struct loader_test
@@ -2984,6 +3005,16 @@ static void test_topology_loader(void)
             .flags = LOADER_ADD_TEST_MFT | LOADER_NO_CURRENT_OUTPUT | LOADER_ADD_OPTIONAL_TEST_MFT_DOWNSTREAM | LOADER_EXPECT_MFT_INPUT_ENUMERATED | LOADER_EXPECT_MFT_OUTPUT_ENUMERATED_TODO,
         },
         {
+            /* custom -> custom, reject optional MFT after changing test MFT output, restore test MFT output */
+            .input_types = {&test_type_a}, .output_types = {&test_type_b}, .sink_method = MF_CONNECT_DIRECT, .source_method = -1,
+            .mft_input_types = {&test_type_a}, .mft_output_types = {&test_type_b, &test_type_c},
+            .optional_mft_input_types = {&test_type_c},
+            .optional_mft_output_type = &test_type_c,
+            .optional_mft_count = 1, .expect_optional_mft_rejected = {TRUE}, .expected_result = S_OK,
+            .flags = LOADER_ADD_TEST_MFT | LOADER_NO_CURRENT_OUTPUT | LOADER_ADD_OPTIONAL_TEST_MFT_DOWNSTREAM
+                    | LOADER_EXPECT_MFT_OUTPUT_ENUMERATED | LOADER_EXPECT_MFT_OUTPUT_RESTORED,
+        },
+        {
             /* H264 -> NV12, add test MFT and unconnectable optional test MFT, converter is not added for optional connection */
             .input_types = {&video_h264_1280}, .output_types = {&video_nv12_1280}, .sink_method = -1, .source_method = -1,
             .mft_input_types = {&video_nv12_1280}, .mft_output_types = {&video_nv12_1280},
@@ -3263,7 +3294,7 @@ static void test_topology_loader(void)
                             init_media_type(optional_mft_types[j], *optional_desc, -1);
                             if (test->optional_mft_input_types[j])
                                 optional_input_types = &optional_mft_types[j];
-                            else
+                            if (test->optional_mft_output_type)
                                 optional_output_types = &optional_mft_types[j];
                         }
 
@@ -3430,6 +3461,7 @@ static void test_topology_loader(void)
             for (j = 0; j < test->optional_mft_count; ++j)
             {
                 hr = IMFTopology_GetNodeByID(full_topology, optional_mft_node_id[j], &mft_node);
+                todo_wine_if(test->flags & LOADER_EXPECT_MFT_OUTPUT_ENUMERATED_TODO)
                 ok(hr == (test->expect_optional_mft_rejected[j] ? MF_E_NOT_FOUND : S_OK), "Unexpected hr %#lx.\n", hr);
                 expect_optional_rejected |= test->expect_optional_mft_rejected[j];
 
@@ -3465,6 +3497,7 @@ todo_wine {
 
             hr = IMFTopology_GetNodeCount(full_topology, &node_count);
             ok(hr == S_OK, "Failed to get node count, hr %#lx.\n", hr);
+            todo_wine_if(test->flags & LOADER_EXPECT_MFT_OUTPUT_ENUMERATED_TODO)
             ok(node_count == count, "Unexpected node count %u.\n", node_count);
 
             hr = IMFTopologyNode_GetTopoNodeID(src_node, &node_id);
@@ -3657,6 +3690,7 @@ todo_wine {
             ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
             hr = IMFTopology_GetNodeCount(topology2, &node_count);
             ok(hr == S_OK, "Failed to get node count, hr %#lx.\n", hr);
+            todo_wine_if(test->flags & LOADER_EXPECT_MFT_OUTPUT_ENUMERATED_TODO)
             ok(node_count == count, "Unexpected node count %u.\n", node_count);
 
             ref = IMFTopology_Release(topology2);
@@ -3679,6 +3713,19 @@ todo_wine {
 
         if (test_transform)
         {
+            if (test->flags & LOADER_EXPECT_MFT_OUTPUT_RESTORED)
+            {
+                hr = IMFTransform_GetOutputCurrentType(&test_transform->IMFTransform_iface, 0, &media_type);
+                ok(hr == S_OK, "Failed to get test MFT output type, hr %#lx.\n", hr);
+                if (hr == S_OK)
+                {
+                    hr = IMFMediaType_Compare(output_types[test->expected_output_index], (IMFAttributes *)media_type,
+                            MF_ATTRIBUTES_MATCH_OUR_ITEMS, &ret);
+                    ok(hr == S_OK, "Failed to compare media types, hr %#lx.\n", hr);
+                    ok(ret, "Test MFT output type was not restored.\n");
+                    IMFMediaType_Release(media_type);
+                }
+            }
             ok(test_transform->input_enum_complete == !!(test->flags & LOADER_EXPECT_MFT_INPUT_ENUMERATED),
                     "got transform input_enum_complete %u\n", test_transform->input_enum_complete);
             todo_wine_if((test->flags & LOADER_EXPECT_MFT_OUTPUT_ENUMERATED_TODO) || (test_transform->output_enum_complete && (test->flags & LOADER_TODO)))

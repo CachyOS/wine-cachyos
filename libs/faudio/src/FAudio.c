@@ -309,9 +309,7 @@ uint32_t FAudio_CreateSourceVoice(
 	(*ppSourceVoice)->src.maxFreqRatio = MaxFrequencyRatio;
 
 	if (	pSourceFormat->wFormatTag == FAUDIO_FORMAT_PCM ||
-		pSourceFormat->wFormatTag == FAUDIO_FORMAT_IEEE_FLOAT ||
-		pSourceFormat->wFormatTag == FAUDIO_FORMAT_WMAUDIO2 ||
-		pSourceFormat->wFormatTag == FAUDIO_FORMAT_WMAUDIO3	)
+		pSourceFormat->wFormatTag == FAUDIO_FORMAT_IEEE_FLOAT	)
 	{
 		FAudioWaveFormatExtensible *fmtex = (FAudioWaveFormatExtensible*) audio->pMalloc(
 			sizeof(FAudioWaveFormatExtensible)
@@ -333,14 +331,6 @@ uint32_t FAudio_CreateSourceVoice(
 		else if (pSourceFormat->wFormatTag == FAUDIO_FORMAT_IEEE_FLOAT)
 		{
 			FAudio_memcpy(&fmtex->SubFormat, &DATAFORMAT_SUBTYPE_IEEE_FLOAT, sizeof(FAudioGUID));
-		}
-		else if (pSourceFormat->wFormatTag == FAUDIO_FORMAT_WMAUDIO2)
-		{
-			FAudio_memcpy(&fmtex->SubFormat, &DATAFORMAT_SUBTYPE_WMAUDIO2, sizeof(FAudioGUID));
-		}
-		else if (pSourceFormat->wFormatTag == FAUDIO_FORMAT_WMAUDIO3)
-		{
-			FAudio_memcpy(&fmtex->SubFormat, &DATAFORMAT_SUBTYPE_WMAUDIO3, sizeof(FAudioGUID));
 		}
 		(*ppSourceVoice)->src.format = &fmtex->Format;
 	}
@@ -498,6 +488,23 @@ uint32_t FAudio_CreateSourceVoice(
 		}
 #else
 		FAudio_assert(0 && "XMA2 is not supported!");
+		(*ppSourceVoice)->src.decode = FAudio_INTERNAL_DecodeWMAERROR;
+#endif /* HAVE_WMADEC */
+	}
+	else if (	(*ppSourceVoice)->src.format->wFormatTag == FAUDIO_FORMAT_WMAUDIO2 ||
+			(*ppSourceVoice)->src.format->wFormatTag == FAUDIO_FORMAT_WMAUDIO3 ||
+			(*ppSourceVoice)->src.format->wFormatTag == FAUDIO_FORMAT_WMAUDIO_LOSSLESS	)
+	{
+#ifdef HAVE_WMADEC
+		if (FAudio_WMADEC_init(
+			*ppSourceVoice,
+			(*ppSourceVoice)->src.format->wFormatTag
+		) != 0)
+		{
+			(*ppSourceVoice)->src.decode = FAudio_INTERNAL_DecodeWMAERROR;
+		}
+#else
+		FAudio_assert(0 && "xWMA is not supported!");
 		(*ppSourceVoice)->src.decode = FAudio_INTERNAL_DecodeWMAERROR;
 #endif /* HAVE_WMADEC */
 	}

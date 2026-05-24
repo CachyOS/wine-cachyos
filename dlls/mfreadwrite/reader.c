@@ -450,8 +450,6 @@ static HRESULT source_reader_queue_response(struct source_reader *reader, struct
 
     source_reader_response_ready(reader, response);
 
-    stream->last_sample_ts = timestamp;
-
     return S_OK;
 }
 
@@ -686,6 +684,42 @@ static void media_type_try_copy_attr(IMFMediaType *dst, IMFMediaType *src, const
     PropVariantClear(&value);
 }
 
+static HRESULT media_type_update_audio_attrs_from_upstream(IMFMediaType *media_type, IMFMediaType *upstream_type)
+{
+    UINT32 bits_per_sample, channel_count, sample_rate;
+    GUID subtype = GUID_NULL;
+    HRESULT hr = S_OK;
+
+    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_NUM_CHANNELS, &hr);
+    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_BITS_PER_SAMPLE, &hr);
+    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_SAMPLES_PER_SECOND, &hr);
+    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_CHANNEL_MASK, &hr);
+    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_VALID_BITS_PER_SAMPLE, &hr);
+
+    if (FAILED(hr))
+        return hr;
+
+    IMFMediaType_GetGUID(media_type, &MF_MT_SUBTYPE, &subtype);
+    if ((IsEqualGUID(&subtype, &MFAudioFormat_PCM) || IsEqualGUID(&subtype, &MFAudioFormat_Float))
+            && SUCCEEDED(IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_BITS_PER_SAMPLE, &bits_per_sample))
+            && SUCCEEDED(IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_NUM_CHANNELS, &channel_count))
+            && SUCCEEDED(IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_SAMPLES_PER_SECOND, &sample_rate)))
+    {
+        UINT32 block_alignment = bits_per_sample * channel_count / 8;
+
+        if (FAILED(hr = IMFMediaType_SetUINT32(media_type, &MF_MT_AUDIO_BLOCK_ALIGNMENT, block_alignment)))
+            return hr;
+
+        return IMFMediaType_SetUINT32(media_type, &MF_MT_AUDIO_AVG_BYTES_PER_SECOND, sample_rate * block_alignment);
+    }
+
+    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_BLOCK_ALIGNMENT, &hr);
+    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_AVG_BYTES_PER_SECOND, &hr);
+    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_SAMPLES_PER_BLOCK, &hr);
+
+    return hr;
+}
+
 /* update a media type with additional attributes reported by upstream element */
 /* also present in mf/topology_loader.c pipeline */
 static HRESULT update_media_type_from_upstream(IMFMediaType *media_type, IMFMediaType *upstream_type, BOOL advanced)
@@ -712,15 +746,8 @@ static HRESULT update_media_type_from_upstream(IMFMediaType *media_type, IMFMedi
     if (!advanced)
         media_type_try_copy_attr(media_type, upstream_type, &MF_MT_DEFAULT_STRIDE, &hr);
 
-    /* propagate common audio attributes */
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_NUM_CHANNELS, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_BLOCK_ALIGNMENT, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_BITS_PER_SAMPLE, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_SAMPLES_PER_SECOND, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_AVG_BYTES_PER_SECOND, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_CHANNEL_MASK, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_SAMPLES_PER_BLOCK, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_VALID_BITS_PER_SAMPLE, &hr);
+    if (SUCCEEDED(hr))
+        hr = media_type_update_audio_attrs_from_upstream(media_type, upstream_type);
 
     return hr;
 }
@@ -1298,7 +1325,10 @@ static BOOL source_reader_get_read_result(struct source_reader *reader, struct m
         *timestamp = response->timestamp;
         *sample = response->sample;
         if (*sample)
+        {
             IMFSample_AddRef(*sample);
+            stream->last_sample_ts = response->timestamp;
+        }
 
         source_reader_release_response(response);
     }
@@ -1325,9 +1355,9 @@ static BOOL source_reader_get_read_result(struct source_reader *reader, struct m
 
 static HRESULT source_reader_get_next_selected_stream(struct source_reader *reader, DWORD *stream_index)
 {
-    unsigned int i, first_selected = ~0u;
+    unsigned int i, first_selected = ~0u, ready_index = ~0u;
     BOOL selected, stream_drained;
-    LONGLONG min_ts = MAXLONGLONG;
+    LONGLONG min_ts = MAXLONGLONG, min_ts_ready = MAXLONGLONG;
 
     for (i = 0; i < reader->stream_count; ++i)
     {
@@ -1339,17 +1369,28 @@ static HRESULT source_reader_get_next_selected_stream(struct source_reader *read
             if (first_selected == ~0u)
                 first_selected = i;
 
-            /* Pick the stream whose last sample had the lowest timestamp. */
-            if (!stream_drained && reader->streams[i].last_sample_ts < min_ts)
+            if (!stream_drained)
             {
-                min_ts = reader->streams[i].last_sample_ts;
-                *stream_index = i;
+                /* use least advanced stream if no responses are ready */
+                if (reader->streams[i].last_sample_ts < min_ts)
+                {
+                    min_ts = reader->streams[i].last_sample_ts;
+                    *stream_index = i;
+                }
+                /* between streams that have queued responses, use the one with the lowest delivered timestamp */
+                if (reader->streams[i].responses && reader->streams[i].last_sample_ts < min_ts_ready)
+                {
+                    min_ts_ready = reader->streams[i].last_sample_ts;
+                    ready_index = i;
+                }
             }
         }
     }
 
-    /* If all selected streams reached EOS, use first selected. */
-    if (first_selected != ~0u && min_ts == MAXLONGLONG)
+    /* prefer a stream with queued responses, else use the least advanced stream */
+    if (ready_index != ~0u)
+        *stream_index = ready_index;
+    else if (first_selected != ~0u && min_ts == MAXLONGLONG)
     {
         if (reader->flag_eos_for_all_streams)
             *stream_index = reader->next_stream_eos_index++ % reader->stream_count;
@@ -2770,7 +2811,9 @@ static HRESULT create_source_reader_from_source(IMFMediaSource *source, IMFAttri
         if (FAILED(hr))
             break;
 
-        hr = IMFMediaTypeHandler_GetMediaTypeByIndex(handler, 0, &src_type);
+        hr = IMFMediaTypeHandler_GetCurrentMediaType(handler, &src_type);
+        if (FAILED(hr))
+            hr = IMFMediaTypeHandler_GetMediaTypeByIndex(handler, 0, &src_type);
         IMFMediaTypeHandler_Release(handler);
         if (FAILED(hr))
             break;

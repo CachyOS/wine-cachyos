@@ -821,13 +821,22 @@ static HRESULT topology_branch_connect_optional_chain(IMFTopology *topology, str
             break;
         if (SUCCEEDED(hr = topology_branch_create_optional(topology, current, node, stream, &up_branch, &down_branch)))
         {
+            IMFMediaType *restore_type = NULL;
+
+            media_type_handler_get_current(current->up.handler, &restore_type);
             if (FAILED(hr = topology_branch_connect(topology, CONNECT_DIRECT, up_branch, NULL, !!method))
                     || FAILED(hr = topology_branch_connect(topology, CONNECT_DIRECT, down_branch, NULL, FALSE)))
             {
-                if (FAILED(hr = topology_branch_connect(topology, CONNECT_DIRECT, current, NULL, FALSE)))
+                if (restore_type)
+                    hr = topology_branch_connect_with_type(topology, current, restore_type);
+                else
+                    hr = topology_branch_connect(topology, CONNECT_DIRECT, current, NULL, FALSE);
+                if (FAILED(hr))
                     WARN("Failed to restore previous branch %s\n", debugstr_topology_branch(current));
                 IMFTopology_RemoveNode(topology, down_branch->up.node);
             }
+            if (restore_type)
+                IMFMediaType_Release(restore_type);
             topology_branch_destroy(down_branch);
             topology_branch_destroy(up_branch);
         }
