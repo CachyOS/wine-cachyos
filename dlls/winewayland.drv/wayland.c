@@ -40,7 +40,11 @@ struct wayland process_wayland =
     .text_input.mutex = PTHREAD_MUTEX_INITIALIZER,
     .data_device.mutex = PTHREAD_MUTEX_INITIALIZER,
     .output_list = {&process_wayland.output_list, &process_wayland.output_list},
-    .output_mutex = PTHREAD_MUTEX_INITIALIZER
+    .output_mutex = PTHREAD_MUTEX_INITIALIZER,
+    .supports_extended_volume = FALSE,
+    .supports_pq = FALSE,
+    .supports_scrgb = FALSE,
+    .supports_win_pq = FALSE
 };
 
 /**********************************************************************
@@ -86,6 +90,17 @@ static const struct wl_seat_listener seat_listener =
     wl_seat_handle_name
 };
 
+static int wayland_disable_ssd(void)
+{
+    static int disabled = -1;
+    const char *env;
+
+    if (disabled == -1)
+        disabled = (env = getenv("WAYLANDDRV_SSD")) && !strcmp(env, "0");
+
+    return disabled;
+}
+
 /**********************************************************************
  *          Registry handling
  */
@@ -124,7 +139,7 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
          * states, instead of falling back to (ab)using the maximized state. */
         process_wayland.xdg_wm_base =
             wl_registry_bind(registry, id, &xdg_wm_base_interface,
-                             version < 2 ? version : 2);
+                             version < 5 ? version : 5);
         xdg_wm_base_add_listener(process_wayland.xdg_wm_base, &xdg_wm_base_listener, NULL);
     }
     else if (strcmp(interface, "wl_shm") == 0)
@@ -141,13 +156,14 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
         }
         pthread_mutex_lock(&seat->mutex);
         seat->wl_seat = wl_registry_bind(registry, id, &wl_seat_interface,
-                                         version < 8 ? version : 8);
+                                         version < 5 ? version : 5);
         seat->global_id = id;
         wl_seat_add_listener(seat->wl_seat, &seat_listener, NULL);
         pthread_mutex_unlock(&seat->mutex);
         if (process_wayland.zwp_text_input_manager_v3) wayland_text_input_init();
         /* Recreate the data device for the new seat. */
         if (process_wayland.data_device.zwlr_data_control_device_v1 ||
+            process_wayland.data_device.ext_data_control_device_v1 ||
             process_wayland.data_device.wl_data_device)
         {
             wayland_data_device_init();
@@ -184,6 +200,11 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
         process_wayland.zwlr_data_control_manager_v1 =
             wl_registry_bind(registry, id, &zwlr_data_control_manager_v1_interface, 1);
     }
+    else if (strcmp(interface, "ext_data_control_manager_v1") == 0)
+    {
+        process_wayland.ext_data_control_manager_v1 =
+            wl_registry_bind(registry, id, &ext_data_control_manager_v1_interface, 1);
+    }
     else if (strcmp(interface, "wl_data_device_manager") == 0)
     {
         process_wayland.wl_data_device_manager =
@@ -199,6 +220,57 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
         process_wayland.wp_cursor_shape_manager_v1 =
             wl_registry_bind(registry, id, &wp_cursor_shape_manager_v1_interface,
                              version < 2 ? version : 2);
+    }
+    else if (strcmp(interface, "wp_fractional_scale_manager_v1") == 0)
+    {
+        process_wayland.wp_fractional_scale_manager_v1 =
+            wl_registry_bind(registry, id, &wp_fractional_scale_manager_v1_interface, 1);
+    }
+    else if (strcmp(interface, "xdg_toplevel_tag_manager_v1") == 0)
+    {
+        process_wayland.xdg_toplevel_tag_manager_v1 =
+            wl_registry_bind(registry, id, &xdg_toplevel_tag_manager_v1_interface, 1);
+    }
+    else if (strcmp(interface, "wp_content_type_manager_v1") == 0)
+    {
+        process_wayland.wp_content_type_manager_v1 =
+            wl_registry_bind(registry, id, &wp_content_type_manager_v1_interface, 1);
+    }
+    else if (strcmp(interface, "zxdg_decoration_manager_v1") == 0)
+    {
+        if (wayland_disable_ssd()) return;
+        if (version >= 2)
+        {
+            process_wayland.zxdg_decoration_manager_v1 =
+                wl_registry_bind(registry, id, &zxdg_decoration_manager_v1_interface, 2);
+        }
+        else if (WAYLAND_HasWindowManager("KDE"))
+        {
+            process_wayland.zxdg_decoration_manager_v1 =
+                wl_registry_bind(registry, id, &zxdg_decoration_manager_v1_interface, 1);
+        }
+    }
+    else if (strcmp(interface, "wp_color_manager_v1") == 0)
+    {
+        process_wayland.wp_color_manager_v1 =
+            wl_registry_bind(registry, id, &wp_color_manager_v1_interface,
+                             version < 3 ? version : 3);
+        if (process_wayland.wp_color_manager_v1) wayland_color_manager_init();
+    }
+    else if (strcmp(interface, "xdg_activation_v1") == 0)
+    {
+        process_wayland.xdg_activation_v1 =
+            wl_registry_bind(registry, id, &xdg_activation_v1_interface, 1);
+    }
+    else if (strcmp(interface, "wp_pointer_warp_v1") == 0)
+    {
+        process_wayland.wp_pointer_warp_v1 =
+            wl_registry_bind(registry, id, &wp_pointer_warp_v1_interface, 1);
+    }
+    else if (strcmp(interface, "zwp_keyboard_shortcuts_inhibit_manager_v1") == 0)
+    {
+        process_wayland.zwp_keyboard_shortcuts_inhibit_manager_v1 =
+            wl_registry_bind(registry, id, &zwp_keyboard_shortcuts_inhibit_manager_v1_interface, 1);
     }
 }
 
@@ -247,6 +319,7 @@ static const struct wl_registry_listener registry_listener = {
  */
 BOOL wayland_process_init(void)
 {
+    int i = 0, ret;
     struct wl_display *wl_display_wrapper;
 
     process_wayland.wl_display = wl_display_connect(NULL);
@@ -255,7 +328,8 @@ BOOL wayland_process_init(void)
 
     TRACE("wl_display=%p\n", process_wayland.wl_display);
 
-    if (!(process_wayland.wl_event_queue = wl_display_create_queue(process_wayland.wl_display)))
+    if (!(process_wayland.wl_event_queue =
+          wl_display_create_queue_with_name(process_wayland.wl_display, "winewayland")))
     {
         ERR("Failed to create event queue\n");
         return FALSE;
@@ -280,10 +354,25 @@ BOOL wayland_process_init(void)
     /* Populate registry */
     wl_registry_add_listener(process_wayland.wl_registry, &registry_listener, NULL);
 
-    /* We need two roundtrips. One to get and bind globals, one to handle all
-     * initial events produced from registering the globals. */
-    wl_display_roundtrip_queue(process_wayland.wl_display, process_wayland.wl_event_queue);
-    wl_display_roundtrip_queue(process_wayland.wl_display, process_wayland.wl_event_queue);
+    /* We need at least four roundtrips:
+     * 1. Get and bind globals
+     * 2. Handle initial events
+     * 3. Event handling for zxdg_output and image description
+     * 4. Event handling for the created image description infos.
+     * However, not all compositors can dispatch the above events within 4 roundtrips,
+     * so we do roundtrips until no more events are dispatched with a hard cap at 10 roundtrips. */
+    while (i < 10 && ++i)
+    {
+        ret = wl_display_roundtrip_queue(process_wayland.wl_display,
+                                         process_wayland.wl_event_queue);
+        if (ret < 0) return FALSE;
+        /* There are always two events dispatched when "nothing" happens:
+         * 1. wl_display.sync which creates a callback object
+         * 2. wl_callback.done */
+        if (ret <= 2) break;
+    }
+
+    TRACE("Finished initial roundtrips in %d iterations\n", i);
 
     /* Check for required protocol globals. */
     if (!process_wayland.wl_compositor)
@@ -326,12 +415,27 @@ BOOL wayland_process_init(void)
     {
         if (!process_wayland.wl_data_device_manager)
             ERR("Wayland compositor doesn't support optional wl_data_device_manager (clipboard won't work)\n");
-        else
-            ERR("Wayland compositor doesn't support optional zwlr_data_control_manager_v1 (clipboard functionality will be limited)\n");
+        else if (!process_wayland.ext_data_control_manager_v1)
+            ERR("Wayland compositor doesn't support optional zwlr_data_control_manager_v1 or ext_data_control_manager_v1 (clipboard functionality will be limited)\n");
     }
 
     if (!process_wayland.xdg_toplevel_icon_manager_v1)
         ERR("Wayland compositor doesn't support xdg_toplevel_icon_manager_v1 (window icons will not be supported)\n");
+
+    if (!process_wayland.wp_fractional_scale_manager_v1)
+        ERR("Wayland compositor doesn't support wp_fractional_scale_manager_v1 (fractional scaling will be broken)\n");
+
+    if (!process_wayland.xdg_toplevel_tag_manager_v1)
+        WARN("Wayland compositor doesn't support optional xdg_toplevel_tag_manager_v1!\n");
+
+    if (!process_wayland.wp_content_type_manager_v1)
+        WARN("Wayland compositor doesn't support optional wp_content_type_manager_v1!\n");
+
+    if (!process_wayland.zxdg_decoration_manager_v1)
+        WARN("Wayland compositor doesn't support optional zxdg_decoration_manager_v1!\n");
+
+    if (!process_wayland.xdg_activation_v1)
+        ERR("Wayland compositor doesn't support xdg_activation_v1! (Flash Window will not be supported)\n");
 
     process_wayland.initialized = TRUE;
 

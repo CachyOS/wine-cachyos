@@ -384,6 +384,9 @@ void add_window_client_surface( HWND hwnd, struct client_surface *surface )
 {
     pthread_mutex_lock( &surfaces_lock );
 
+    /* due to client surface reuse, this element may already be in the list */
+    if (!list_empty( &surface->entry )) list_remove( &surface->entry );
+
     surface->hwnd = hwnd;
     list_add_tail( &client_surfaces, &surface->entry );
     surface->funcs->update( surface );
@@ -2162,7 +2165,8 @@ static struct window_surface *get_window_surface( HWND hwnd, UINT swp_flags, BOO
     if (IsRectEmpty( surface_rect )) needs_surface = FALSE;
     else if (create_layered || is_layered) needs_surface = TRUE;
 
-    if (needs_surface && !is_layered && !create_layered && window_clip_client_surfaces( hwnd )
+    /* At the present time, winewayland requires a toplevel surfaces for its client surfaces */
+    if (needs_surface && !is_layered && !create_layered && window_clip_client_surfaces( hwnd ) && user_driver->dc_funcs.pPutImage
         && !(!create_opaque && NtUserGetLayeredWindowAttributes( hwnd, NULL, NULL, &layered_flags ) && layered_flags & LWA_COLORKEY))
     {
         if (new_surface) window_surface_release( new_surface );
@@ -2215,6 +2219,19 @@ static BOOL is_fullscreen( const MONITORINFO *info, const RECT *rect )
            rect->top <= info->rcMonitor.top && rect->bottom >= info->rcMonitor.bottom;
 }
 
+static int use_move_hack(void)
+{
+    static volatile int enabled = -1;
+
+    if (enabled == -1)
+    {
+        const char *env = getenv("WINE_MOVE_HACK");
+        enabled = (env && !strcmp(env, "1"));
+    }
+
+    return enabled;
+}
+
 /***********************************************************************
  *           apply_window_pos
  *
@@ -2228,11 +2245,60 @@ static BOOL apply_window_pos( HWND hwnd, HWND insert_after, UINT swp_flags, stru
     HWND owner_hint, surface_win = 0, toplevel;
     UINT raw_dpi, monitor_dpi, dpi = get_thread_dpi();
     BOOL ret, is_layered, is_child, need_icons = FALSE;
-    struct window_rects old_rects;
+    struct window_rects old_rects, adjusted;
     RECT extra_rects[3];
     struct window_surface *old_surface;
     HICON icon, icon_small;
     ICONINFO ii, ii_small;
+
+    /* HACK: move windows within the virtual screen on winewayland */
+    if (use_move_hack())
+    {
+        RECT temp, *adj;
+        RECT virtual_screen = get_virtual_screen_rect( get_thread_dpi(), MDT_DEFAULT );
+
+        adjusted = *new_rects;
+        adj = &adjusted.client;
+
+        intersect_rect(&temp, &virtual_screen, adj);
+
+        /* we aren't off screen */
+        if (!IsRectEmpty(&temp))
+        {
+            LONG offset_x = 0, offset_y = 0;
+
+            if (adj->bottom - adj->top <=
+                virtual_screen.bottom - virtual_screen.top)
+            {
+                if (adj->bottom > virtual_screen.bottom)
+                    offset_y = virtual_screen.bottom - adj->bottom;
+                else if (virtual_screen.top > adj->top)
+                    offset_y = virtual_screen.top - adj->top;
+            }
+
+            if (adj->right - adj->left <=
+                virtual_screen.right - virtual_screen.left)
+            {
+                if (adj->right > virtual_screen.right)
+                    offset_x = virtual_screen.right - adj->right;
+                else if (virtual_screen.left > adj->left)
+                    offset_x = virtual_screen.left - adj->left;
+            }
+
+            OffsetRect(&adjusted.client, offset_x, offset_y);
+            OffsetRect(&adjusted.visible, offset_x, offset_y);
+            OffsetRect(&adjusted.window, offset_x, offset_y);
+
+            if (offset_x != 0 || offset_y != 0)
+            {
+                TRACE("vscreen rect %s\n", wine_dbgstr_rect(&virtual_screen));
+                TRACE("Original window rects: %s\n", debugstr_window_rects(new_rects));
+                TRACE("Adjusted window rects: %s\n", debugstr_window_rects(&adjusted));
+
+                new_rects = &adjusted;
+            }
+        }
+    }
 
     toplevel = NtUserGetAncestor( hwnd, GA_ROOT );
     is_layered = new_surface && new_surface->alpha_mask;

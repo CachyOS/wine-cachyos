@@ -91,6 +91,7 @@ struct thread
     int                    dbg_hidden;    /* hidden from debugger */
     int                    bypass_proc_suspend; /* will still run if the process is suspended */
     obj_handle_t           desktop;       /* desktop handle */
+    client_ptr_t           layout;        /* keyboard layout handle */
     int                    desktop_users; /* number of objects using the thread desktop */
     timeout_t              creation_time; /* Thread creation time */
     timeout_t              exit_time;     /* Thread exit time */

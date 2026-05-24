@@ -218,7 +218,7 @@ struct gdi_dc_funcs
 };
 
 /* increment this when you change the DC function table */
-#define WINE_GDI_DRIVER_VERSION 108
+#define WINE_GDI_DRIVER_VERSION 109
 
 #define GDI_PRIORITY_NULL_DRV        0  /* null driver */
 #define GDI_PRIORITY_FONT_DRV      100  /* any font driver */
@@ -263,6 +263,7 @@ struct client_surface
     const struct client_surface_funcs *funcs;
     struct list                        entry;          /* entry in win32u managed list */
     LONG                               ref;            /* reference count */
+    LONG                               busy_ref;       /* count of drawables/swapchains referencing this surface */
     HWND                               hwnd;           /* window the surface was created for */
     LONG                               updated;        /* has been moved / resized / reparented */
     LONG                               offscreen;      /* client window is offscreen */
@@ -382,6 +383,7 @@ struct user_driver_funcs
     UINT    (*pImeProcessKey)(HIMC,UINT,UINT,const BYTE*);
     void    (*pNotifyIMEStatus)(HWND,UINT);
     BOOL    (*pSetIMECompositionRect)(HWND,RECT);
+    BOOL    (*pSetIMEEnabled)(HWND,BOOL);
     /* cursor/icon functions */
     void    (*pDestroyCursorIcon)(HCURSOR);
     void    (*pSetCursor)(HWND,HCURSOR);

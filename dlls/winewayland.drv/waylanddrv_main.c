@@ -39,7 +39,9 @@ static const struct user_driver_funcs waylanddrv_funcs =
     .pClipCursor = WAYLAND_ClipCursor,
     .pDesktopWindowProc = WAYLAND_DesktopWindowProc,
     .pDestroyWindow = WAYLAND_DestroyWindow,
+    .pFlashWindowEx = WAYLAND_FlashWindowEx,
     .pSetIMECompositionRect = WAYLAND_SetIMECompositionRect,
+    .pSetIMEEnabled = WAYLAND_SetIMEEnabled,
     .pKbdLayerDescriptor = WAYLAND_KbdLayerDescriptor,
     .pReleaseKbdTables = WAYLAND_ReleaseKbdTables,
     .pSetCursor = WAYLAND_SetCursor,
@@ -54,6 +56,8 @@ static const struct user_driver_funcs waylanddrv_funcs =
     .pWindowPosChanged = WAYLAND_WindowPosChanged,
     .pWindowPosChanging = WAYLAND_WindowPosChanging,
     .pCreateWindowSurface = WAYLAND_CreateWindowSurface,
+    .pGetWindowStyleMasks = WAYLAND_GetWindowStyleMasks,
+    .pHasWindowManager = WAYLAND_HasWindowManager,
     .pVulkanInit = WAYLAND_VulkanInit,
     .pOpenGLInit = WAYLAND_OpenGLInit,
 };
@@ -119,6 +123,7 @@ static NTSTATUS waylanddrv_unix_init_clipboard(void *arg)
      * per-process clipboard window and handling, we can use the default clipboard
      * window from the desktop process. */
     if (process_wayland.zwlr_data_control_manager_v1) return STATUS_UNSUCCESSFUL;
+    if (process_wayland.ext_data_control_manager_v1) return STATUS_UNSUCCESSFUL;
     return STATUS_SUCCESS;
 }
 
