@@ -233,7 +233,7 @@
 @ stub FsRtlFastUnlockSingle
 @ stub FsRtlFindInTunnelCache
 @ stub FsRtlFreeFileLock
-@ stub FsRtlGetFileSize
+@ stdcall FsRtlGetFileSize(ptr ptr)
 @ stub FsRtlGetNextFileLock
 @ stub FsRtlGetNextLargeMcbEntry
 @ stub FsRtlGetNextMcbEntry
@@ -522,6 +522,7 @@
 @ stub IoWriteOperationCount
 @ stub IoWritePartitionTableEx
 @ stub IoWriteTransferCount
+@ stdcall KdChangeOption(long long ptr long ptr ptr)
 @ extern KdDebuggerEnabled
 @ stub KdDebuggerNotPresent
 @ stdcall KdDisableDebugger()

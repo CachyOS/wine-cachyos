@@ -875,6 +875,32 @@ err:
 }
 
 /***********************************************************************
+ *           copy_rectangle_into_center_of_square
+ *
+ * Copies non-square rectangle src to the center of square dest.
+ */
+static void copy_rectangle_into_center_of_square(const unsigned int *src,
+                                                 int src_w, int src_h,
+                                                 unsigned int *dest)
+{
+    int dest_length;
+
+    if (src_w > src_h)
+    {
+        dest += src_w * (src_w - src_h) / 2;
+        dest_length = src_w;
+    }
+    else
+    {
+        dest += (src_h - src_w) / 2;
+        dest_length = src_h;
+    }
+
+    for (int h = 0; h < src_h; h++, dest += dest_length, src += src_w)
+        memcpy(dest, src, src_w * 4);
+}
+
+/***********************************************************************
  *           wayland_shm_buffer_from_color_bitmaps
  *
  * Create a wayland_shm_buffer for a color bitmap.
@@ -882,7 +908,8 @@ err:
  * Adapted from wineandroid.drv code.
  */
 struct wayland_shm_buffer *wayland_shm_buffer_from_color_bitmaps(HDC hdc, HBITMAP color,
-                                                                 HBITMAP mask)
+                                                                 HBITMAP mask,
+                                                                 BOOL allow_padding)
 {
     struct wayland_shm_buffer *shm_buffer = NULL;
     char buffer[FIELD_OFFSET(BITMAPINFO, bmiColors[256])];
@@ -890,15 +917,10 @@ struct wayland_shm_buffer *wayland_shm_buffer_from_color_bitmaps(HDC hdc, HBITMA
     BITMAP bm;
     unsigned int *ptr, *bits = NULL;
     unsigned char *mask_bits = NULL;
-    int i, j;
-    BOOL has_alpha = FALSE;
+    int i, j, square_length;
+    BOOL has_alpha = FALSE, use_padding = FALSE;
 
     if (!NtGdiExtGetObjectW(color, sizeof(bm), &bm)) goto failed;
-
-    shm_buffer = wayland_shm_buffer_create(bm.bmWidth, bm.bmHeight,
-                                           WL_SHM_FORMAT_ARGB8888);
-    if (!shm_buffer) goto failed;
-    bits = shm_buffer->map_data;
 
     info->bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     info->bmiHeader.biWidth = bm.bmWidth;
@@ -911,6 +933,24 @@ struct wayland_shm_buffer *wayland_shm_buffer_from_color_bitmaps(HDC hdc, HBITMA
     info->bmiHeader.biYPelsPerMeter = 0;
     info->bmiHeader.biClrUsed = 0;
     info->bmiHeader.biClrImportant = 0;
+
+    use_padding = allow_padding && bm.bmWidth != bm.bmHeight;
+
+    if (use_padding)
+    {
+        square_length = max(bm.bmWidth, bm.bmHeight);
+        shm_buffer = wayland_shm_buffer_create(square_length, square_length,
+                                               WL_SHM_FORMAT_ARGB8888);
+        if (!shm_buffer) goto failed;
+        if (!(bits = malloc(info->bmiHeader.biSizeImage))) goto failed;
+    }
+    else
+    {
+        shm_buffer = wayland_shm_buffer_create(bm.bmWidth, bm.bmHeight,
+                                               WL_SHM_FORMAT_ARGB8888);
+        if (!shm_buffer) goto failed;
+        bits = shm_buffer->map_data;
+    }
 
     if (!NtGdiGetDIBitsInternal(hdc, color, 0, bm.bmHeight, bits, info,
                                 DIB_RGB_COLORS, 0, 0))
@@ -941,8 +981,16 @@ struct wayland_shm_buffer *wayland_shm_buffer_from_color_bitmaps(HDC hdc, HBITMA
         free(mask_bits);
     }
 
+    if (use_padding)
+    {
+        copy_rectangle_into_center_of_square(bits, bm.bmWidth,
+                                             bm.bmHeight, shm_buffer->map_data);
+        free(bits);
+        bits = shm_buffer->map_data;
+    }
+
     /* Wayland requires pre-multiplied alpha values */
-    for (ptr = bits, i = 0; i < bm.bmWidth * bm.bmHeight; ptr++, i++)
+    for (ptr = bits, i = 0; i < shm_buffer->width * shm_buffer->height; ptr++, i++)
     {
         unsigned char alpha = *ptr >> 24;
         if (alpha == 0)
@@ -962,6 +1010,7 @@ struct wayland_shm_buffer *wayland_shm_buffer_from_color_bitmaps(HDC hdc, HBITMA
 
 failed:
     if (shm_buffer) wayland_shm_buffer_unref(shm_buffer);
+    if (use_padding) free(bits);
     free(mask_bits);
     return NULL;
 }
@@ -1253,7 +1302,7 @@ void wayland_surface_set_icon_buffer(struct wayland_surface *surface, UINT type,
     TRACE("surface=%p type=%x ii=%p\n", surface, type, ii);
 
     hDC = NtGdiCreateCompatibleDC(0);
-    icon_buf = wayland_shm_buffer_from_color_bitmaps(hDC, ii->hbmColor, ii->hbmMask);
+    icon_buf = wayland_shm_buffer_from_color_bitmaps(hDC, ii->hbmColor, ii->hbmMask, TRUE);
     NtGdiDeleteObjectApp(hDC);
 
     if (surface->big_icon_buffer && type == ICON_BIG)

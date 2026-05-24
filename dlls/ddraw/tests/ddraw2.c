@@ -2753,6 +2753,7 @@ static void test_window_style(void)
     RECT fullscreen_rect, r;
     HWND window, window2;
     IDirectDraw2 *ddraw;
+    unsigned int i;
     HRESULT hr;
     ULONG ref;
     BOOL ret;
@@ -2963,10 +2964,19 @@ static void test_window_style(void)
     ok(tmp & WS_VISIBLE, "Expected WS_VISIBLE.\n");
     tmp = GetWindowLongA(window, GWL_EXSTYLE);
     ok(tmp & WS_EX_TOPMOST, "Expected WS_EX_TOPMOST.\n");
-    ret = ShowWindow(window, SW_HIDE);
-    ok(ret, "ShowWindow failed, error %#lx.\n", GetLastError());
-    ret = SetWindowPos(window, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE);
-    ok(ret, "SetWindowPos failed, error %#lx.\n", GetLastError());
+    for (i = 0; i < 5; ++i)
+    {
+        /* Try a few times to hide the window. Something in Win11 26H1 shows it again and makes it
+         * topmost. This is in addition to the ddraw periodic check below, which only makes it
+         * topmost but not visible */
+        ret = SetWindowPos(window, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_HIDEWINDOW);
+        ok(ret, "SetWindowPos failed, error %#lx.\n", GetLastError());
+        tmp = GetWindowLongA(window, GWL_STYLE);
+        if (!(tmp & WS_VISIBLE))
+            break;
+        Sleep(100);
+    }
+    ok(i < 5, "Failed to hide the window.\n");
     tmp = GetWindowLongA(window, GWL_STYLE);
     ok(!(tmp & WS_VISIBLE), "Got unexpected WS_VISIBLE.\n");
     tmp = GetWindowLongA(window, GWL_EXSTYLE);
@@ -15431,7 +15441,10 @@ static void test_caps(void)
         {
             .dwSize = sizeof(DDSURFACEDESC),
             .dwFlags = DDSD_CAPS | DDSD_ZBUFFERBITDEPTH | DDSD_WIDTH | DDSD_HEIGHT,
-            .ddsCaps.dwCaps = DDSCAPS_ZBUFFER,
+            .ddsCaps =
+            {
+                .dwCaps = DDSCAPS_ZBUFFER,
+            },
             .dwZBufferBitDepth = depth_caps[i].depth,
             .dwWidth = 64,
             .dwHeight = 64,
@@ -15524,7 +15537,10 @@ static void test_caps(void)
             {
                 .dwSize = sizeof(DDSURFACEDESC),
                 .dwFlags = DDSD_CAPS | DDSD_ZBUFFERBITDEPTH | DDSD_WIDTH | DDSD_HEIGHT,
-                .ddsCaps.dwCaps = DDSCAPS_ZBUFFER,
+                .ddsCaps =
+                {
+                    .dwCaps = DDSCAPS_ZBUFFER,
+                },
                 .dwZBufferBitDepth = depth_caps[i].depth,
                 .dwWidth = 64,
                 .dwHeight = 64,
@@ -16601,7 +16617,7 @@ static HRESULT WINAPI test_enum_devices_caps_callback(GUID *guid, char *device_d
                 | D3DDEVCAPS_TEXTURESYSTEMMEMORY
                 | D3DDEVCAPS_DRAWPRIMTLVERTEX;
 
-        todo_wine ok(enum_devices_index == 1, "Expected index %u.\n", enum_devices_index);
+        ok(enum_devices_index == 1, "Expected index %u.\n", enum_devices_index);
         ok(!strcmp(device_name, "RGB Emulation"), "Got name %s.\n", debugstr_a(device_name));
 
         todo_wine ok(hel->dwFlags == hel_flags, "Got HEL flags %#lx.\n", hel->dwFlags);
@@ -16633,7 +16649,7 @@ static HRESULT WINAPI test_enum_devices_caps_callback(GUID *guid, char *device_d
                 | D3DDD_LIGHTINGCAPS
                 | D3DDD_BCLIPPING;
 
-        todo_wine ok(enum_devices_index == 2, "Expected index %u.\n", enum_devices_index);
+        ok(enum_devices_index == 2, "Expected index %u.\n", enum_devices_index);
         ok(!strcmp(device_name, "Direct3D HAL"), "Got name %s.\n", debugstr_a(device_name));
 
         ok(hal->dcmColorModel == D3DCOLOR_RGB, "HAL Device hal caps has colormodel %lu\n", hel->dcmColorModel);
