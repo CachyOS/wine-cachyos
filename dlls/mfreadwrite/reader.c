@@ -450,8 +450,6 @@ static HRESULT source_reader_queue_response(struct source_reader *reader, struct
 
     source_reader_response_ready(reader, response);
 
-    stream->last_sample_ts = timestamp;
-
     return S_OK;
 }
 
@@ -1315,7 +1313,10 @@ static BOOL source_reader_get_read_result(struct source_reader *reader, struct m
         *timestamp = response->timestamp;
         *sample = response->sample;
         if (*sample)
+        {
             IMFSample_AddRef(*sample);
+            stream->last_sample_ts = response->timestamp;
+        }
 
         source_reader_release_response(response);
     }
@@ -1342,9 +1343,9 @@ static BOOL source_reader_get_read_result(struct source_reader *reader, struct m
 
 static HRESULT source_reader_get_next_selected_stream(struct source_reader *reader, DWORD *stream_index)
 {
-    unsigned int i, first_selected = ~0u;
+    unsigned int i, first_selected = ~0u, ready_index = ~0u;
     BOOL selected, stream_drained;
-    LONGLONG min_ts = MAXLONGLONG;
+    LONGLONG min_ts = MAXLONGLONG, min_ts_ready = MAXLONGLONG;
 
     for (i = 0; i < reader->stream_count; ++i)
     {
@@ -1356,17 +1357,28 @@ static HRESULT source_reader_get_next_selected_stream(struct source_reader *read
             if (first_selected == ~0u)
                 first_selected = i;
 
-            /* Pick the stream whose last sample had the lowest timestamp. */
-            if (!stream_drained && reader->streams[i].last_sample_ts < min_ts)
+            if (!stream_drained)
             {
-                min_ts = reader->streams[i].last_sample_ts;
-                *stream_index = i;
+                /* use least advanced stream if no responses are ready */
+                if (reader->streams[i].last_sample_ts < min_ts)
+                {
+                    min_ts = reader->streams[i].last_sample_ts;
+                    *stream_index = i;
+                }
+                /* between streams that have queued responses, use the one with the lowest delivered timestamp */
+                if (reader->streams[i].responses && reader->streams[i].last_sample_ts < min_ts_ready)
+                {
+                    min_ts_ready = reader->streams[i].last_sample_ts;
+                    ready_index = i;
+                }
             }
         }
     }
 
-    /* If all selected streams reached EOS, use first selected. */
-    if (first_selected != ~0u && min_ts == MAXLONGLONG)
+    /* prefer a stream with queued responses, else use the least advanced stream */
+    if (ready_index != ~0u)
+        *stream_index = ready_index;
+    else if (first_selected != ~0u && min_ts == MAXLONGLONG)
     {
         if (reader->flag_eos_for_all_streams)
             *stream_index = reader->next_stream_eos_index++ % reader->stream_count;
