@@ -793,6 +793,17 @@ static const struct wp_color_manager_v1_listener wp_color_manager_listener = {
  */
 void wayland_color_manager_init(void)
 {
+    struct wayland_output *output;
+
     wp_color_manager_v1_add_listener(process_wayland.wp_color_manager_v1,
                                      &wp_color_manager_listener, NULL);
+
+    /* The color manager global may be advertised after some wl_output
+     * globals, in which case those outputs were created without an image
+     * description. Set one up for them now. */
+    wl_list_for_each(output, &process_wayland.output_list, link)
+    {
+        if (!output->wp_color_management_output_v1)
+            wayland_output_use_image_description(output);
+    }
 }
