@@ -373,6 +373,7 @@ static void wayland_image_description_info_v1_done(void *data,
                                               struct wp_image_description_info_v1 *info)
 {
     struct wayland_output *output = data;
+    output->color_management_done = TRUE;
     wayland_output_done(output);
 }
 
@@ -793,6 +794,68 @@ static const struct wp_color_manager_v1_listener wp_color_manager_listener = {
  */
 void wayland_color_manager_init(void)
 {
+    struct wayland_output *output;
+
     wp_color_manager_v1_add_listener(process_wayland.wp_color_manager_v1,
                                      &wp_color_manager_listener, NULL);
+
+    /* The color manager global may be advertised after some wl_output
+     * globals, in which case those outputs were created without an image
+     * description. Set one up for them now. */
+    wl_list_for_each(output, &process_wayland.output_list, link)
+    {
+        if (!output->wp_color_management_output_v1)
+            wayland_output_use_image_description(output);
+    }
+}
+
+/**********************************************************************
+ *          wayland_outputs_color_management_done
+ *
+ * Returns whether every output has finished its initial color-management
+ * image-description information exchange. An output is considered done if
+ * it has received an image_description_info 'done' event, or if it has no
+ * in-flight image description object (color management unavailable or the
+ * image description failed). Used at process init to drain the extra
+ * round-trips the color-management handshake needs before the synthetic
+ * EDID (and its HDR static metadata) is generated.
+ *
+ * In practice, every known compositor which implements color-management
+ * and HDR support will only need roughly one more round-trip on startup
+ * for all of the exchanges. Due to how KWin and wlroots implement their
+ * color-management, the exact information needed for HDR metadata
+ * generation is available with the current number of handshakes, and any
+ * extra information from the last round-trip is not required yet.
+ * However, Mutter requires at least this one extra round-trip for the
+ * preferred image description to be ready for the client application.
+ * There are probably many way better ways to handle this than round-
+ * tripping until the 'done' state is reached, but this is the least
+ * painful edit required to make things work as-is.
+ *
+ * Mutter really only needs one more round-trip, but the above loop codes
+ * for up to 8 loops, to allow for a compositor "worst case scenario",
+ * without potentially allowing for the application to completely hang
+ * on startup. I still think that coding a specific number of round-trips
+ * is a dodgy way of doing it, but this repeat-until-ready-or-give-up
+ * setup at least tries to be neat about it.
+ */
+BOOL wayland_outputs_color_management_done(void)
+{
+    struct wayland_output *output;
+    BOOL done = TRUE;
+
+    pthread_mutex_lock(&process_wayland.output_mutex);
+
+    wl_list_for_each(output, &process_wayland.output_list, link)
+    {
+        if (output->wp_image_description_v1 && !output->color_management_done)
+        {
+            done = FALSE;
+            break;
+        }
+    }
+
+    pthread_mutex_unlock(&process_wayland.output_mutex);
+
+    return done;
 }
