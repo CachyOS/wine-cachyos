@@ -484,7 +484,9 @@ HRESULT STDMETHODCALLTYPE AmdExtD3DFactory_CreateInterface(IAmdExtD3DFactory *if
         this->ref = 1;
         *out = &this->IAmdExtD3DShaderIntrinsics_iface;
         return S_OK;
-    } else if (IsEqualGUID(iid, &IID_IAmdExtD3DDevice8)) {
+    }
+    else if (IsEqualGUID(iid, &IID_IAmdExtD3DDevice8))
+    {
         struct AmdExtD3DDevice8 *this = calloc(1, sizeof(struct AmdExtD3DDevice8));
         this->IAmdExtD3DDevice8_iface.lpVtbl = &AmdExtD3DDevice8_vtable;
         this->ref = 1;
@@ -492,7 +494,14 @@ HRESULT STDMETHODCALLTYPE AmdExtD3DFactory_CreateInterface(IAmdExtD3DFactory *if
         TRACE("FSR 4 supported: %d\n", this->fsr4_supported);
         *out = &this->IAmdExtD3DDevice8_iface;
         return S_OK;
-    } else {
+    }
+    /* some apps will try to query IAmdExtD3DDevice1 for debugging markers,
+     * prevent that from causing spam in proton logs */
+    else if (IsEqualGUID(iid, &IID_IAmdExtD3DDevice) ||
+             IsEqualGUID(iid, &IID_IAmdExtD3DDevice1))
+        return E_NOINTERFACE;
+    else
+    {
         FIXME("unknown guid %s\n", debugstr_guid(iid));
     }
 
