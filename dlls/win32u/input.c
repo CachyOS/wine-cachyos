@@ -1391,10 +1391,11 @@ HKL WINAPI NtUserActivateKeyboardLayout( HKL layout, UINT flags )
     HKL old_layout;
     LCID locale;
     HWND focus;
+    static int once;
 
     TRACE_(keyboard)( "layout %p, flags %x\n", layout, flags );
 
-    if (flags) FIXME_(keyboard)( "flags %x not supported\n", flags );
+    if (flags && !once++) FIXME_(keyboard)( "flags %x not supported\n", flags );
 
     if (layout == (HKL)HKL_NEXT || layout == (HKL)HKL_PREV)
     {
