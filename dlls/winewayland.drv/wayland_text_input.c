@@ -135,12 +135,13 @@ static void text_input_leave(void *data, struct zwp_text_input_v3 *zwp_text_inpu
     TRACE("data %p, text_input %p.\n", data, zwp_text_input_v3);
 
     pthread_mutex_lock(&text_input->mutex);
-    wayland_text_input_ime_disable(text_input);
     if (text_input->focused_hwnd)
     {
-        post_ime_update(text_input->focused_hwnd, 0, NULL, NULL);
+        if (text_input->enabled)
+            post_ime_update(text_input->focused_hwnd, 0, NULL, NULL);
         text_input->focused_hwnd = NULL;
     }
+    wayland_text_input_ime_disable(text_input);
     pthread_mutex_unlock(&text_input->mutex);
 }
 
