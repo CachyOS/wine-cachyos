@@ -29,6 +29,7 @@ SOURCES = \
 	wayland_pointer.c \
 	wayland_surface.c \
 	wayland_text_input.c \
+	wayland_touch.c \
 	waylanddrv_main.c \
 	window.c \
 	window_surface.c \
