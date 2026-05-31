@@ -168,6 +168,20 @@ struct wayland_pointer
     pthread_mutex_t mutex;
 };
 
+struct wayland_touch_point
+{
+    struct wl_list link;
+    LPARAM xy;
+    HWND focused_hwnd;
+    int32_t id;
+};
+
+struct wayland_touch
+{
+    struct wl_touch *wl_touch;
+    struct wl_list touch_points;
+};
+
 struct wayland_text_input
 {
     struct zwp_text_input_v3 *zwp_text_input_v3;
@@ -247,6 +261,7 @@ struct wayland
     struct wayland_seat seat;
     struct wayland_keyboard keyboard;
     struct wayland_pointer pointer;
+    struct wayland_touch touch;
     struct wayland_text_input text_input;
     struct wayland_data_device data_device;
     struct wl_list output_list;
@@ -525,6 +540,13 @@ void WAYLAND_ReleaseKbdTables(const KBDTABLES *);
 void wayland_pointer_init(struct wl_pointer *wl_pointer);
 void wayland_pointer_deinit(void);
 void wayland_pointer_clear_constraint(void);
+
+
+/**********************************************************************
+ *          Wayland touch
+ */
+void wayland_touch_init(struct wl_touch *wl_touch);
+void wayland_touch_deinit(void);
 
 /**********************************************************************
  *          Wayland text input
