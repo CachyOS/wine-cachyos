@@ -37,6 +37,8 @@ struct wayland process_wayland =
     .seat.mutex = PTHREAD_MUTEX_INITIALIZER,
     .keyboard.mutex = PTHREAD_MUTEX_INITIALIZER,
     .pointer.mutex = PTHREAD_MUTEX_INITIALIZER,
+    .touch.touch_points = { &process_wayland.touch.touch_points,
+                            &process_wayland.touch.touch_points },
     .text_input.mutex = PTHREAD_MUTEX_INITIALIZER,
     .data_device.mutex = PTHREAD_MUTEX_INITIALIZER,
     .output_list = {&process_wayland.output_list, &process_wayland.output_list},
@@ -78,6 +80,11 @@ static void wl_seat_handle_capabilities(void *data, struct wl_seat *seat,
         wayland_keyboard_init(wl_seat_get_keyboard(seat));
     else if (!(caps & WL_SEAT_CAPABILITY_KEYBOARD) && process_wayland.keyboard.wl_keyboard)
         wayland_keyboard_deinit();
+
+    if ((caps & WL_SEAT_CAPABILITY_TOUCH) && !process_wayland.touch.wl_touch)
+        wayland_touch_init(wl_seat_get_touch(seat));
+    else if (!(caps & WL_SEAT_CAPABILITY_TOUCH) && process_wayland.touch.wl_touch)
+        wayland_touch_deinit();
 }
 
 static void wl_seat_handle_name(void *data, struct wl_seat *seat, const char *name)
