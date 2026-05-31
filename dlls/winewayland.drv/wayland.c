@@ -152,6 +152,11 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
             WARN("Only a single seat is currently supported, ignoring additional seats.\n");
             return;
         }
+        if (version < 3)
+        {
+            ERR("wl_seat version 3 not supported, Aborting!\n");
+            return;
+        }
         pthread_mutex_lock(&seat->mutex);
         seat->wl_seat = wl_registry_bind(registry, id, &wl_seat_interface,
                                          version < 5 ? version : 5);
