@@ -84,7 +84,7 @@ enum wayland_surface_role
 {
     WAYLAND_SURFACE_ROLE_NONE,
     WAYLAND_SURFACE_ROLE_TOPLEVEL,
-    WAYLAND_SURFACE_ROLE_SUBSURFACE,
+    WAYLAND_SURFACE_ROLE_POPUP,
 };
 
 enum wayland_surface_ensure_type
@@ -285,17 +285,19 @@ struct wayland_surface
     struct wayland_shm_buffer *big_icon_buffer;
 
     enum wayland_surface_role role;
+
+    struct xdg_surface *xdg_surface;
+
     union
     {
         struct
         {
-            struct xdg_surface *xdg_surface;
             struct xdg_toplevel *xdg_toplevel;
             struct xdg_toplevel_icon_v1 *xdg_toplevel_icon;
         };
         struct
         {
-            struct wl_subsurface *wl_subsurface;
+            struct xdg_popup *xdg_popup;
             HWND owner_hwnd;
         };
     };
@@ -332,6 +334,8 @@ void wayland_surface_destroy(struct wayland_surface *surface);
 void wayland_surface_make_toplevel(struct wayland_surface *surface);
 void wayland_surface_make_subsurface(struct wayland_surface *surface,
                                      struct wayland_surface *parent);
+void wayland_surface_make_popup(struct wayland_surface *surface,
+                                struct wayland_surface *owner);
 void wayland_surface_clear_role(struct wayland_surface *surface);
 void wayland_surface_attach_shm(struct wayland_surface *surface,
                                 struct wayland_shm_buffer *shm_buffer,
@@ -353,6 +357,11 @@ void wayland_surface_set_opacity(struct wayland_surface *surface, BYTE alpha, UI
 static inline BOOL wayland_surface_is_toplevel(struct wayland_surface *surface)
 {
     return surface->role == WAYLAND_SURFACE_ROLE_TOPLEVEL && surface->xdg_toplevel;
+}
+
+static inline BOOL wayland_surface_is_popup(struct wayland_surface *surface)
+{
+    return surface->role == WAYLAND_SURFACE_ROLE_POPUP && surface->xdg_popup;
 }
 
 /**********************************************************************
