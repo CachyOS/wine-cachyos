@@ -1371,6 +1371,8 @@ static void wayland_client_surface_detach(struct client_surface *client)
     struct wayland_client_surface *surface = impl_from_client_surface(client);
     struct wayland_win_data *data;
 
+    TRACE("%s\n", debugstr_client_surface(client));
+
     if ((data = wayland_win_data_get(client->hwnd)))
     {
         if (data->client_surface == surface) data->client_surface = NULL;
@@ -1384,6 +1386,8 @@ static void wayland_client_surface_update(struct client_surface *client)
     struct wayland_client_surface *surface = impl_from_client_surface(client);
     HWND hwnd = client->hwnd, toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
     struct wayland_win_data *data;
+
+    TRACE("%s\n", debugstr_client_surface(client));
 
     if (!(data = wayland_win_data_get(hwnd))) return;
 
@@ -1607,6 +1611,8 @@ void wayland_client_surface_attach(struct wayland_client_surface *client, HWND t
         wl_subsurface_set_desync(client->wl_subsurface);
 
         client->toplevel = toplevel;
+
+        TRACE("Created subsurface for toplevel=%p\n", toplevel);
     }
 
     NtUserGetClientRect(hwnd, &client_rect, NtUserGetWinMonitorDpi(hwnd, MDT_RAW_DPI));
