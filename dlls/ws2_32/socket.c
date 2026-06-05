@@ -1339,7 +1339,7 @@ int WINAPI connect( SOCKET s, const struct sockaddr *addr, int len )
 
     if (!(sync_event = get_sync_event())) return -1;
 
-    if (addr->sa_family == AF_UNIX && *addr->sa_data)
+    if (addr && addr->sa_family == AF_UNIX && *addr->sa_data)
     {
         WCHAR *sun_pathW = strdupAtoW(addr->sa_data);
         unix_path = wine_get_unix_file_name(sun_pathW);
