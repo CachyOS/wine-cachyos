@@ -168,7 +168,7 @@ static void reapply_cursor_clipping(void)
 {
     RECT rect;
     UINT context = NtUserSetThreadDpiAwarenessContext(NTUSER_DPI_PER_MONITOR_AWARE);
-    if (NtUserGetClipCursor(&rect )) NtUserClipCursor(&rect);
+    if (NtUserGetClipCursor(&rect)) NtUserClipCursor(&rect);
     NtUserSetThreadDpiAwarenessContext(context);
 }
 
@@ -661,8 +661,7 @@ void WAYLAND_SetWindowIcons(HWND hwnd, HICON icon, const ICONINFO *ii, HICON ico
             {
                 wayland_surface_set_icon_buffer(surface, ICON_BIG, ii);
                 if (icon_small) wayland_surface_set_icon_buffer(surface, ICON_SMALL, ii_small);
-                if (wayland_surface_is_toplevel(surface))
-                    wayland_surface_assign_icon(surface);
+                if (wayland_surface_is_toplevel(surface)) wayland_surface_assign_icon(surface);
             }
             wayland_win_data_release(data);
         }
