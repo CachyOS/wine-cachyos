@@ -1804,6 +1804,13 @@ static HRESULT reinit_stream(struct wm_reader *reader, bool read_compressed)
         stream->wg_stream = wg_parser_get_stream(reader->wg_parser, reader->stream_count - i - 1);
         stream->reader = reader;
         wg_parser_stream_get_current_format(stream->wg_stream, &format);
+        if ((stream->format.major_type == WG_MAJOR_TYPE_AUDIO && format.major_type >= WG_MAJOR_TYPE_VIDEO)
+                || (stream->format.major_type == WG_MAJOR_TYPE_VIDEO
+                        && format.major_type > WG_MAJOR_TYPE_UNKNOWN && format.major_type < WG_MAJOR_TYPE_VIDEO))
+        {
+            stream->wg_stream = wg_parser_get_stream(reader->wg_parser, i);
+            wg_parser_stream_get_current_format(stream->wg_stream, &format);
+        }
         if (stream->selection == WMT_ON)
             wg_parser_stream_enable(stream->wg_stream, read_compressed ? &format : &stream->format);
     }
