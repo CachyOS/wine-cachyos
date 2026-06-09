@@ -1520,6 +1520,30 @@ static struct makefile *find_importlib_module( const char *name )
 
 
 /*******************************************************************
+ *         is_external_header
+ */
+static bool is_external_header( struct incl_file *file )
+{
+    const char *filename = file->sourcename ? file->sourcename : file->file->name;
+    char *p, *name;
+
+    if (root_src_dir)
+    {
+        const char *relpath = skip_initial_dir( filename, root_src_dir );
+        if (relpath) filename = relpath;
+    }
+
+    name = xstrdup( filename );
+    while ((p = strrchr( name, '/' )))
+    {
+        *p = 0;
+        if (strarray_exists( external_dirs, name )) return true;
+    }
+    return false;
+}
+
+
+/*******************************************************************
  *         open_include_file
  */
 static struct file *open_include_file( const struct makefile *make, struct incl_file *pFile )
@@ -1611,6 +1635,7 @@ static struct file *open_include_file( const struct makefile *make, struct incl_
     }
 
     if (make->extlib || make->is_external) return NULL; /* ignore missing files in external libs */
+    if (pFile->included_by && is_external_header( pFile->included_by )) return NULL;
 
     fprintf( stderr, "%s:%d: error: ", pFile->included_by->file->name, pFile->included_line );
     perror( pFile->name );
