@@ -113,6 +113,9 @@ struct wayland_keyboard
     struct xkb_state *xkb_state;
     HWND focused_hwnd;
     pthread_mutex_t mutex;
+    /* scancode -> keystate mapping. The keyboard state is the same across every instance of a seat.
+     * We bind to the first seat each time, and this first bind seat should be the same every time. */
+    unsigned char keystate[0x300];
 };
 
 struct wayland_cursor
