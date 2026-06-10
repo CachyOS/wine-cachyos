@@ -392,7 +392,7 @@ static struct pw_phys_device *add_device(struct list *list, const char *pw_name,
     build_format(&dev->fmt, rate, channels, mask);
     dev->channel_mask = dev->fmt.dwChannelMask;
     dev->def_period = 100000;
-    dev->min_period = 50000;
+    dev->min_period = 30000;
     memcpy(dev->pw_name, pw_name, len + 1);
     list_add_tail(list, &dev->entry);
     TRACE("%s (%s) channels=%u mask=%#x\n", debugstr_w(dev->display), pw_name,
@@ -780,7 +780,7 @@ static void build_device_cache(struct probe *p)
         def->display = utf8_to_wstr("PipeWire");
         def->form = Speakers;
         def->def_period = 100000;
-        def->min_period = 50000;
+        def->min_period = 30000;
         if (def_src)
         {
             def->fmt = def_src->fmt;
@@ -806,7 +806,7 @@ static void build_device_cache(struct probe *p)
         def->display = utf8_to_wstr("PipeWire");
         def->form = Microphone;
         def->def_period = 100000;
-        def->min_period = 50000;
+        def->min_period = 30000;
         if (def_src)
         {
             def->fmt = def_src->fmt;
@@ -1464,8 +1464,12 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
     if (appname && (app = wstr_to_str(appname)))
     {
         pw_properties_set(props, PW_KEY_APP_NAME, app);
+        pw_properties_set(props, PW_KEY_NODE_NAME, app);
+        pw_properties_set(props, PW_KEY_NODE_DESCRIPTION, app);
         free(app);
     }
+    else
+        pw_properties_set(props, PW_KEY_NODE_NAME, "winepipewire");
     pw_properties_setf(props, PW_KEY_NODE_LATENCY, "%u/%u", period_frames, stream->info.rate);
     if (device && device[0])
     {
