@@ -60,6 +60,10 @@ WINE_DEFAULT_DEBUG_CHANNEL(pipewire);
 
 #define PW_CHANNELS_MAX 64
 
+/* Constrains driver allocations to the 32-bit address space for WoW64
+ * callers; left 0 for native 64-bit processes. */
+static ULONG_PTR zero_bits = 0;
+
 /* ----------------------------------------------------------------------
  * Stream and device structures (struct pulse_stream transplant)
  * ---------------------------------------------------------------------- */
@@ -1581,7 +1585,7 @@ static NTSTATUS pipewire_create_stream(void *args)
     {
         size = stream->real_bufsize_bytes = stream->bufsize_frames * 2 * stream->frame_size;
         if (NtAllocateVirtualMemory(GetCurrentProcess(), (void **)&stream->local_buffer,
-                                    0, &size, MEM_COMMIT, PAGE_READWRITE))
+                                    zero_bits, &size, MEM_COMMIT, PAGE_READWRITE))
             hr = E_OUTOFMEMORY;
     }
     else
@@ -1596,7 +1600,7 @@ static NTSTATUS pipewire_create_stream(void *args)
 
         size = stream->real_bufsize_bytes + capture_packets * sizeof(ACPacket);
         if (NtAllocateVirtualMemory(GetCurrentProcess(), (void **)&stream->local_buffer,
-                                    0, &size, MEM_COMMIT, PAGE_READWRITE))
+                                    zero_bits, &size, MEM_COMMIT, PAGE_READWRITE))
             hr = E_OUTOFMEMORY;
         else
         {
@@ -1615,7 +1619,7 @@ static NTSTATUS pipewire_create_stream(void *args)
             /* staging ring fed by the process callback */
             size = stream->capture_ring_size = stream->real_bufsize_bytes;
             if (NtAllocateVirtualMemory(GetCurrentProcess(), (void **)&stream->capture_ring,
-                                        0, &size, MEM_COMMIT, PAGE_READWRITE))
+                                        zero_bits, &size, MEM_COMMIT, PAGE_READWRITE))
                 hr = E_OUTOFMEMORY;
         }
     }
@@ -1959,7 +1963,7 @@ static BOOL alloc_tmp_buffer(struct pipewire_stream *stream, SIZE_T bytes)
         stream->tmp_buffer_bytes = 0;
     }
     if (NtAllocateVirtualMemory(GetCurrentProcess(), (void **)&stream->tmp_buffer,
-                                0, &bytes, MEM_COMMIT, PAGE_READWRITE))
+                                zero_bits, &bytes, MEM_COMMIT, PAGE_READWRITE))
         return FALSE;
 
     stream->tmp_buffer_bytes = bytes;
@@ -2508,55 +2512,492 @@ C_ASSERT(ARRAYSIZE(__wine_unix_call_funcs) == funcs_count);
 
 #ifdef _WIN64
 
-/* 32-bit (WoW64) processes are not supported yet.  Returning a failure status
- * makes mmdevapi's load_driver skip this driver, so those processes fall back
- * to the next entry in the driver list (e.g. pulse).  load_driver inspects this
- * status directly via the raw __wine_unix_call, so the asserting wine_unix_call
- * wrapper is never reached for an unloaded driver. */
-static NTSTATUS pipewire_wow64_not_supported(void *args)
+typedef UINT PTR32;
+
+static NTSTATUS pipewire_wow64_process_attach(void *args)
 {
-    return STATUS_NOT_IMPLEMENTED;
+    SYSTEM_BASIC_INFORMATION info;
+
+    NtQuerySystemInformation(SystemEmulationBasicInformation, &info, sizeof(info), NULL);
+    zero_bits = (ULONG_PTR)info.HighestUserAddress | 0x7fffffff;
+
+    return pipewire_process_attach( args );
+}
+
+static NTSTATUS pipewire_wow64_get_endpoint_ids(void *args)
+{
+    struct
+    {
+        EDataFlow flow;
+        PTR32 endpoints;
+        unsigned int size;
+        HRESULT result;
+        unsigned int num;
+        unsigned int default_idx;
+    } *params32 = args;
+    struct get_endpoint_ids_params params =
+    {
+        .flow = params32->flow,
+        .endpoints = ULongToPtr(params32->endpoints),
+        .size = params32->size
+    };
+    pipewire_get_endpoint_ids(&params);
+    params32->size = params.size;
+    params32->result = params.result;
+    params32->num = params.num;
+    params32->default_idx = params.default_idx;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pipewire_wow64_create_stream(void *args)
+{
+    struct
+    {
+        PTR32 name;
+        PTR32 device;
+        EDataFlow flow;
+        AUDCLNT_SHAREMODE share;
+        DWORD flags;
+        REFERENCE_TIME duration;
+        REFERENCE_TIME period;
+        PTR32 fmt;
+        HRESULT result;
+        PTR32 channel_count;
+        PTR32 stream;
+    } *params32 = args;
+    struct create_stream_params params =
+    {
+        .name = ULongToPtr(params32->name),
+        .device = ULongToPtr(params32->device),
+        .flow = params32->flow,
+        .share = params32->share,
+        .flags = params32->flags,
+        .duration = params32->duration,
+        .period = params32->period,
+        .fmt = ULongToPtr(params32->fmt),
+        .channel_count = ULongToPtr(params32->channel_count),
+        .stream = ULongToPtr(params32->stream)
+    };
+    pipewire_create_stream(&params);
+    params32->result = params.result;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pipewire_wow64_release_stream(void *args)
+{
+    struct
+    {
+        stream_handle stream;
+        HRESULT result;
+    } *params32 = args;
+    struct release_stream_params params =
+    {
+        .stream = params32->stream,
+    };
+    pipewire_release_stream(&params);
+    params32->result = params.result;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pipewire_wow64_get_render_buffer(void *args)
+{
+    struct
+    {
+        stream_handle stream;
+        UINT32 frames;
+        HRESULT result;
+        PTR32 data;
+    } *params32 = args;
+    BYTE *data = NULL;
+    struct get_render_buffer_params params =
+    {
+        .stream = params32->stream,
+        .frames = params32->frames,
+        .data = &data
+    };
+    pipewire_get_render_buffer(&params);
+    params32->result = params.result;
+    *(unsigned int *)ULongToPtr(params32->data) = PtrToUlong(data);
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pipewire_wow64_get_capture_buffer(void *args)
+{
+    struct
+    {
+        stream_handle stream;
+        HRESULT result;
+        PTR32 data;
+        PTR32 frames;
+        PTR32 flags;
+        PTR32 devpos;
+        PTR32 qpcpos;
+    } *params32 = args;
+    BYTE *data = NULL;
+    struct get_capture_buffer_params params =
+    {
+        .stream = params32->stream,
+        .data = &data,
+        .frames = ULongToPtr(params32->frames),
+        .flags = ULongToPtr(params32->flags),
+        .devpos = ULongToPtr(params32->devpos),
+        .qpcpos = ULongToPtr(params32->qpcpos)
+    };
+    pipewire_get_capture_buffer(&params);
+    params32->result = params.result;
+    *(unsigned int *)ULongToPtr(params32->data) = PtrToUlong(data);
+    return STATUS_SUCCESS;
+};
+
+static NTSTATUS pipewire_wow64_is_format_supported(void *args)
+{
+    struct
+    {
+        PTR32 device;
+        EDataFlow flow;
+        AUDCLNT_SHAREMODE share;
+        PTR32 fmt_in;
+        HRESULT result;
+    } *params32 = args;
+    struct is_format_supported_params params =
+    {
+        .device = ULongToPtr(params32->device),
+        .flow = params32->flow,
+        .share = params32->share,
+        .fmt_in = ULongToPtr(params32->fmt_in),
+    };
+    pipewire_is_format_supported(&params);
+    params32->result = params.result;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pipewire_wow64_get_loopback_capture_device(void *args)
+{
+    struct
+    {
+        PTR32 name;
+        PTR32 device;
+        PTR32 ret_device;
+        UINT32 ret_device_len;
+        HRESULT result;
+    } *params32 = args;
+
+    struct get_loopback_capture_device_params params =
+    {
+        .name = ULongToPtr(params32->name),
+        .device = ULongToPtr(params32->device),
+        .ret_device = ULongToPtr(params32->ret_device),
+        .ret_device_len = params32->ret_device_len,
+    };
+
+    pipewire_get_loopback_capture_device(&params);
+    params32->result = params.result;
+    params32->ret_device_len = params.ret_device_len;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pipewire_wow64_get_mix_format(void *args)
+{
+    struct
+    {
+        PTR32 device;
+        EDataFlow flow;
+        PTR32 fmt;
+        HRESULT result;
+    } *params32 = args;
+    struct get_mix_format_params params =
+    {
+        .device = ULongToPtr(params32->device),
+        .flow = params32->flow,
+        .fmt = ULongToPtr(params32->fmt),
+    };
+    pipewire_get_mix_format(&params);
+    params32->result = params.result;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pipewire_wow64_get_device_period(void *args)
+{
+    struct
+    {
+        PTR32 device;
+        EDataFlow flow;
+        HRESULT result;
+        PTR32 def_period;
+        PTR32 min_period;
+    } *params32 = args;
+    struct get_device_period_params params =
+    {
+        .device = ULongToPtr(params32->device),
+        .flow = params32->flow,
+        .def_period = ULongToPtr(params32->def_period),
+        .min_period = ULongToPtr(params32->min_period),
+    };
+    pipewire_get_device_period(&params);
+    params32->result = params.result;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pipewire_wow64_get_buffer_size(void *args)
+{
+    struct
+    {
+        stream_handle stream;
+        HRESULT result;
+        PTR32 frames;
+    } *params32 = args;
+    struct get_buffer_size_params params =
+    {
+        .stream = params32->stream,
+        .frames = ULongToPtr(params32->frames)
+    };
+    pipewire_get_buffer_size(&params);
+    params32->result = params.result;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pipewire_wow64_get_latency(void *args)
+{
+    struct
+    {
+        stream_handle stream;
+        HRESULT result;
+        PTR32 latency;
+    } *params32 = args;
+    struct get_latency_params params =
+    {
+        .stream = params32->stream,
+        .latency = ULongToPtr(params32->latency)
+    };
+    pipewire_get_latency(&params);
+    params32->result = params.result;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pipewire_wow64_get_current_padding(void *args)
+{
+    struct
+    {
+        stream_handle stream;
+        HRESULT result;
+        PTR32 padding;
+    } *params32 = args;
+    struct get_current_padding_params params =
+    {
+        .stream = params32->stream,
+        .padding = ULongToPtr(params32->padding)
+    };
+    pipewire_get_current_padding(&params);
+    params32->result = params.result;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pipewire_wow64_get_next_packet_size(void *args)
+{
+    struct
+    {
+        stream_handle stream;
+        HRESULT result;
+        PTR32 frames;
+    } *params32 = args;
+    struct get_next_packet_size_params params =
+    {
+        .stream = params32->stream,
+        .frames = ULongToPtr(params32->frames)
+    };
+    pipewire_get_next_packet_size(&params);
+    params32->result = params.result;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pipewire_wow64_get_frequency(void *args)
+{
+    struct
+    {
+        stream_handle stream;
+        HRESULT result;
+        PTR32 freq;
+    } *params32 = args;
+    struct get_frequency_params params =
+    {
+        .stream = params32->stream,
+        .freq = ULongToPtr(params32->freq)
+    };
+    pipewire_get_frequency(&params);
+    params32->result = params.result;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pipewire_wow64_get_position(void *args)
+{
+    struct
+    {
+        stream_handle stream;
+        BOOL device;
+        HRESULT result;
+        PTR32 pos;
+        PTR32 qpctime;
+    } *params32 = args;
+    struct get_position_params params =
+    {
+        .stream = params32->stream,
+        .device = params32->device,
+        .pos = ULongToPtr(params32->pos),
+        .qpctime = ULongToPtr(params32->qpctime)
+    };
+    pipewire_get_position(&params);
+    params32->result = params.result;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pipewire_wow64_set_volumes(void *args)
+{
+    struct
+    {
+        stream_handle stream;
+        float master_volume;
+        PTR32 volumes;
+        PTR32 session_volumes;
+    } *params32 = args;
+    struct set_volumes_params params =
+    {
+        .stream = params32->stream,
+        .master_volume = params32->master_volume,
+        .volumes = ULongToPtr(params32->volumes),
+        .session_volumes = ULongToPtr(params32->session_volumes),
+    };
+    return pipewire_set_volumes(&params);
+}
+
+static NTSTATUS pipewire_wow64_set_event_handle(void *args)
+{
+    struct
+    {
+        stream_handle stream;
+        PTR32 event;
+        HRESULT result;
+    } *params32 = args;
+    struct set_event_handle_params params =
+    {
+        .stream = params32->stream,
+        .event = ULongToHandle(params32->event)
+    };
+    pipewire_set_event_handle(&params);
+    params32->result = params.result;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pipewire_wow64_test_connect(void *args)
+{
+    struct
+    {
+        PTR32 name;
+        enum driver_priority priority;
+    } *params32 = args;
+    struct test_connect_params params =
+    {
+        .name = ULongToPtr(params32->name),
+    };
+    pipewire_test_connect(&params);
+    params32->priority = params.priority;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pipewire_wow64_get_prop_value(void *args)
+{
+    struct propvariant32
+    {
+        WORD vt;
+        WORD pad1, pad2, pad3;
+        union
+        {
+            ULONG ulVal;
+            PTR32 ptr;
+            ULARGE_INTEGER uhVal;
+        };
+    } *value32;
+    struct
+    {
+        PTR32 device;
+        EDataFlow flow;
+        PTR32 guid;
+        PTR32 prop;
+        HRESULT result;
+        PTR32 value;
+        PTR32 buffer; /* caller allocated buffer to hold value's strings */
+        PTR32 buffer_size;
+    } *params32 = args;
+    PROPVARIANT value;
+    struct get_prop_value_params params =
+    {
+        .device = ULongToPtr(params32->device),
+        .flow = params32->flow,
+        .guid = ULongToPtr(params32->guid),
+        .prop = ULongToPtr(params32->prop),
+        .value = &value,
+        .buffer = ULongToPtr(params32->buffer),
+        .buffer_size = ULongToPtr(params32->buffer_size)
+    };
+    pipewire_get_prop_value(&params);
+    params32->result = params.result;
+    if (SUCCEEDED(params.result))
+    {
+        value32 = UlongToPtr(params32->value);
+        value32->vt = value.vt;
+        switch (value.vt)
+        {
+        case VT_UI4:
+            value32->ulVal = value.ulVal;
+            break;
+        case VT_LPWSTR:
+            value32->ptr = params32->buffer;
+            break;
+        default:
+            FIXME("Unhandled vt %04x\n", value.vt);
+        }
+    }
+    return STATUS_SUCCESS;
 }
 
 const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
 {
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
-    pipewire_wow64_not_supported,
+    pipewire_wow64_process_attach,
+    pipewire_process_detach,
+    pipewire_main_loop_start,
+    pipewire_main_loop_stop,
+    pipewire_wow64_get_endpoint_ids,
+    pipewire_wow64_create_stream,
+    pipewire_wow64_release_stream,
+    pipewire_start,
+    pipewire_stop,
+    pipewire_reset,
+    pipewire_wow64_get_render_buffer,
+    pipewire_release_render_buffer,
+    pipewire_wow64_get_capture_buffer,
+    pipewire_release_capture_buffer,
+    pipewire_wow64_is_format_supported,
+    pipewire_wow64_get_loopback_capture_device,
+    pipewire_wow64_get_mix_format,
+    pipewire_wow64_get_device_period,
+    pipewire_wow64_get_buffer_size,
+    pipewire_wow64_get_latency,
+    pipewire_wow64_get_current_padding,
+    pipewire_wow64_get_next_packet_size,
+    pipewire_wow64_get_frequency,
+    pipewire_wow64_get_position,
+    pipewire_wow64_set_volumes,
+    pipewire_wow64_set_event_handle,
+    pipewire_set_sample_rate,
+    pipewire_wow64_test_connect,
+    pipewire_is_started,
+    pipewire_wow64_get_prop_value,
+    pipewire_midi_get_driver,
+    pipewire_not_implemented,
+    pipewire_not_implemented,
+    pipewire_not_implemented,
+    pipewire_not_implemented,
+    pipewire_not_implemented,
+    pipewire_not_implemented,
 };
 
 C_ASSERT(ARRAYSIZE(__wine_unix_call_wow64_funcs) == funcs_count);
