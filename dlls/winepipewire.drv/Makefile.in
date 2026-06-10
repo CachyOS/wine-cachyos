@@ -1,0 +1,6 @@
+UNIXLIB   = winepipewire.so
+UNIX_LIBS    = $(PIPEWIRE_LIBS) $(PTHREAD_LIBS)
+UNIX_CFLAGS  = $(PIPEWIRE_CFLAGS)
+
+SOURCES = \
+	pipewire.c
