@@ -1499,11 +1499,11 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
         pw_properties_set(props, PW_KEY_NODE_NAME, "winepipewire");
     pw_properties_setf(props, PW_KEY_NODE_LATENCY, "%u/%u", period_frames, stream->info.rate);
     if (device && device[0])
-    {
         pw_properties_set(props, PW_KEY_TARGET_OBJECT, device);
-        if (stream->dataflow == eCapture && device_is_sink(device))
-            pw_properties_set(props, PW_KEY_STREAM_CAPTURE_SINK, "true");
-    }
+    if (stream->dataflow == eCapture &&
+        ((stream->flags & AUDCLNT_STREAMFLAGS_LOOPBACK) ||
+         (device && device[0] && device_is_sink(device))))
+        pw_properties_set(props, PW_KEY_STREAM_CAPTURE_SINK, "true");
 
     stream->pw = pw_stream_new(pw_core_global, "winepipewire", props);
     if (!stream->pw)
