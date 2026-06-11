@@ -80,7 +80,6 @@ struct pipewire_stream
     DWORD flags;
     AUDCLNT_SHAREMODE share;
     HANDLE event;
-    HANDLE timer_thread;
     float vol[PW_CHANNELS_MAX];
 
     REFERENCE_TIME def_period;
@@ -93,7 +92,6 @@ struct pipewire_stream
     SIZE_T tmp_buffer_bytes, held_bytes, pa_held_bytes;
     BYTE *local_buffer, *tmp_buffer;
     void *locked_ptr;
-    BOOL please_quit, just_started, just_underran;
     UINT64 mmdev_period_usec;
 
     /* capture staging ring: the analogue of PulseAudio's internal record
@@ -107,6 +105,10 @@ struct pipewire_stream
 
     struct list packet_free_head;
     struct list packet_filled_head;
+
+    char *device;
+    struct list period_entry;
+    struct pipewire_period *period;
 };
 
 typedef struct _ACPacket
@@ -128,6 +130,19 @@ struct pw_phys_device
     char pw_name[];
 };
 
+struct pipewire_period
+{
+    struct list entry;
+    char *device;
+    UINT64 period_usec;
+    struct list streams;
+    HANDLE timer_thread;
+    BOOL please_quit;
+    struct pipewire_stream *timer_stream;
+    UINT64 last_time;
+    BOOL grid_valid;
+};
+
 /* ----------------------------------------------------------------------
  * Globals
  * ---------------------------------------------------------------------- */
@@ -143,6 +158,7 @@ static pthread_mutex_t pw_init_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static struct list g_render_devices = LIST_INIT(g_render_devices);
 static struct list g_capture_devices = LIST_INIT(g_capture_devices);
+static struct list active_periods = LIST_INIT(active_periods);
 static char g_default_sink[256];
 static char g_default_source[256];
 
@@ -1370,7 +1386,6 @@ static void on_stream_process(void *data)
             if (n < need_bytes)
             {
                 silence_buffer(stream->info.format, (BYTE *)d->data + n, need_bytes - n);
-                stream->just_underran = TRUE;
             }
             stream->pa_offs_bytes = (stream->pa_offs_bytes + n) % stream->real_bufsize_bytes;
             stream->pa_held_bytes -= n;
@@ -1566,6 +1581,12 @@ static NTSTATUS pipewire_create_stream(void *args)
     stream->share = params->share;
     stream->mmdev_period_usec = params->period / 10;
 
+    if (!(stream->device = strdup(params->device ? params->device : "")))
+    {
+        hr = E_OUTOFMEMORY;
+        goto exit;
+    }
+
     stream->period_bytes = stream->frame_size * muldiv(params->period, stream->info.rate, 10000000);
     if (stream->period_bytes == 0)
     {
@@ -1645,6 +1666,7 @@ exit:
             size = 0;
             NtFreeVirtualMemory(GetCurrentProcess(), (void **)&stream->capture_ring, &size, MEM_RELEASE);
         }
+        free(stream->device);
         free(stream);
     }
 
@@ -1656,22 +1678,42 @@ static NTSTATUS pipewire_release_stream(void *args)
 {
     struct release_stream_params *params = args;
     struct pipewire_stream *stream = handle_get_stream(params->stream);
+    struct pipewire_period *dead_period = NULL;
     SIZE_T size;
 
-    if (stream->timer_thread)
-    {
-        stream->please_quit = TRUE;
-        NtWaitForSingleObject(stream->timer_thread, FALSE, NULL);
-        NtClose(stream->timer_thread);
-    }
-
     pw_thread_loop_lock(pw_loop_global);
+    if (stream->period)
+    {
+        struct pipewire_period *period = stream->period;
+
+        if (period->timer_stream == stream)
+        {
+            period->timer_stream = NULL;
+            period->grid_valid = FALSE;
+        }
+        list_remove(&stream->period_entry);
+        stream->period = NULL;
+        if (list_empty(&period->streams))
+        {
+            list_remove(&period->entry);
+            period->please_quit = TRUE;
+            dead_period = period;
+        }
+    }
     if (stream->pw)
     {
         pw_stream_destroy(stream->pw);
         stream->pw = NULL;
     }
     pw_thread_loop_unlock(pw_loop_global);
+
+    if (dead_period)
+    {
+        NtWaitForSingleObject(dead_period->timer_thread, FALSE, NULL);
+        NtClose(dead_period->timer_thread);
+        free(dead_period->device);
+        free(dead_period);
+    }
 
     if (stream->tmp_buffer)
     {
@@ -1688,13 +1730,15 @@ static NTSTATUS pipewire_release_stream(void *args)
         size = 0;
         NtFreeVirtualMemory(GetCurrentProcess(), (void **)&stream->capture_ring, &size, MEM_RELEASE);
     }
+    free(stream->device);
     free(stream);
     params->result = S_OK;
     return STATUS_SUCCESS;
 }
 
 /* ----------------------------------------------------------------------
- * Capture slicing + timer thread (pulse_read / pulse_timer_loop transplant)
+ * Capture slicing + period group timer (8628-style shared timer; one Wine
+ * thread per (device, period) group)
  * ---------------------------------------------------------------------- */
 
 /* Slice period-sized packets out of the staging ring.  Runs on the Wine
@@ -1735,100 +1779,144 @@ static void pipewire_read(struct pipewire_stream *stream)
     }
 }
 
-static void pipewire_timer_loop(void *args)
+static void pipewire_period_timer_loop(void *args)
 {
-    struct pipewire_stream *stream = args;
+    struct pipewire_period *period = args;
+    struct pipewire_stream *stream;
     LARGE_INTEGER delay;
-    UINT64 last_time = 0, now;
     struct pw_time pwt;
+    UINT64 now = 0;
 
-    pw_thread_loop_lock(pw_loop_global);
-    delay.QuadPart = -(INT64)stream->mmdev_period_usec * 10;
-    if (stream->pw && pw_stream_get_time_n(stream->pw, &pwt, sizeof(pwt)) == 0 && pwt.now)
-        last_time = (UINT64)pwt.now / 1000;
-    pw_thread_loop_unlock(pw_loop_global);
+    delay.QuadPart = -(INT64)period->period_usec * 10;
 
-    while (!stream->please_quit)
+    while (!period->please_quit)
     {
         int have_now = 0;
 
         NtDelayExecution(FALSE, &delay);
 
         pw_thread_loop_lock(pw_loop_global);
-        delay.QuadPart = -(INT64)stream->mmdev_period_usec * 10;
+        delay.QuadPart = -(INT64)period->period_usec * 10;
 
-        if (stream->pw && pw_stream_get_time_n(stream->pw, &pwt, sizeof(pwt)) == 0 && pwt.now)
+        if (period->timer_stream && !period->timer_stream->started)
+        {
+            period->timer_stream = NULL;
+            period->grid_valid = FALSE;
+        }
+        if (!period->timer_stream)
+        {
+            LIST_FOR_EACH_ENTRY(stream, &period->streams, struct pipewire_stream, period_entry)
+            {
+                if (stream->started)
+                {
+                    period->timer_stream = stream;
+                    period->grid_valid = FALSE;
+                    break;
+                }
+            }
+        }
+
+        if (period->timer_stream && period->timer_stream->pw &&
+            pw_stream_get_time_n(period->timer_stream->pw, &pwt, sizeof(pwt)) == 0 && pwt.now)
         {
             now = (UINT64)pwt.now / 1000;
             have_now = 1;
         }
 
-        if (have_now)
+        if (!have_now)
+            period->grid_valid = FALSE;
+        else if (!period->grid_valid)
         {
-            if (stream->started && (stream->dataflow == eCapture || stream->held_bytes))
+            /* (re)acquire the grid; start draining next tick, mirroring the
+             * one-period start absorb of the old per-stream loop */
+            period->last_time = now;
+            period->grid_valid = TRUE;
+        }
+        else
+        {
+            INT32 adjust = period->last_time + period->period_usec - now;
+
+            if (adjust > (INT32)(period->period_usec / 2))
+                adjust = period->period_usec / 2;
+            else if (adjust < -(INT32)(period->period_usec / 2))
+                adjust = -(INT32)(period->period_usec / 2);
+
+            delay.QuadPart = -((INT64)period->period_usec + adjust) * 10;
+            period->last_time += period->period_usec;
+
+            LIST_FOR_EACH_ENTRY(stream, &period->streams, struct pipewire_stream, period_entry)
             {
-                if (stream->just_underran)
-                {
-                    last_time = now;
-                    stream->just_started = TRUE;
-                    stream->just_underran = FALSE;
-                }
-
-                if (stream->just_started)
-                {
-                    /* play out a period to absorb latency and get timing */
-                    if (now - last_time > stream->mmdev_period_usec)
-                    {
-                        stream->just_started = FALSE;
-                        last_time = now;
-                    }
-                }
-                else
-                {
-                    INT32 adjust = last_time + stream->mmdev_period_usec - now;
-
-                    if (adjust > (INT32)(stream->mmdev_period_usec / 2))
-                        adjust = stream->mmdev_period_usec / 2;
-                    else if (adjust < -(INT32)(stream->mmdev_period_usec / 2))
-                        adjust = -(INT32)(stream->mmdev_period_usec / 2);
-
-                    delay.QuadPart = -((INT64)stream->mmdev_period_usec + adjust) * 10;
-                    last_time += stream->mmdev_period_usec;
-                }
-
+                if (!stream->started)
+                    continue;
                 if (stream->dataflow == eRender)
                 {
-                    /* advance one period regardless of what the device does */
                     UINT32 adv = min(stream->period_bytes, stream->held_bytes);
                     stream->lcl_offs_bytes += adv;
                     stream->lcl_offs_bytes %= stream->real_bufsize_bytes;
                     stream->held_bytes -= adv;
                 }
                 else
-                {
                     pipewire_read(stream);
-                }
-            }
-            else
-            {
-                last_time = now;
-                delay.QuadPart = -(INT64)stream->mmdev_period_usec * 10;
             }
         }
 
-        if (stream->event)
-            NtSetEvent(stream->event, NULL);
+        LIST_FOR_EACH_ENTRY(stream, &period->streams, struct pipewire_stream, period_entry)
+            if (stream->event)
+                NtSetEvent(stream->event, NULL);
 
         pw_thread_loop_unlock(pw_loop_global);
     }
     PsTerminateSystemThread(0);
 }
 
+/* Called with the loop lock held. */
+static HRESULT pipewire_add_stream_to_period(struct pipewire_stream *stream)
+{
+    static const WCHAR name[] = {'w','i','n','e','p','i','p','e','w','i','r','e','_','t','i','m','e','r',0};
+    struct pipewire_period *period;
+
+    if (stream->period)
+        return S_OK;
+
+    LIST_FOR_EACH_ENTRY(period, &active_periods, struct pipewire_period, entry)
+    {
+        if (period->period_usec == stream->mmdev_period_usec && !strcmp(period->device, stream->device))
+        {
+            stream->period = period;
+            list_add_tail(&period->streams, &stream->period_entry);
+            return S_OK;
+        }
+    }
+
+    if (!(period = calloc(1, sizeof(*period))))
+        return E_OUTOFMEMORY;
+    if (!(period->device = strdup(stream->device)))
+    {
+        free(period);
+        return E_OUTOFMEMORY;
+    }
+    period->period_usec = stream->mmdev_period_usec;
+    list_init(&period->streams);
+    stream->period = period;
+    list_add_tail(&period->streams, &stream->period_entry);
+    list_add_tail(&active_periods, &period->entry);
+
+    if (create_unix_thread(&period->timer_thread, name, pipewire_period_timer_loop, period))
+    {
+        list_remove(&stream->period_entry);
+        list_remove(&period->entry);
+        stream->period = NULL;
+        free(period->device);
+        free(period);
+        return E_FAIL;
+    }
+    return S_OK;
+}
+
 static NTSTATUS pipewire_start(void *args)
 {
     struct start_params *params = args;
     struct pipewire_stream *stream = handle_get_stream(params->stream);
-    static const WCHAR name[] = {'w','i','n','e','p','i','p','e','w','i','r','e','_','t','i','m','e','r',0};
 
     params->result = S_OK;
     pw_thread_loop_lock(pw_loop_global);
@@ -1853,13 +1941,15 @@ static NTSTATUS pipewire_start(void *args)
         return STATUS_SUCCESS;
     }
 
+    if (FAILED(params->result = pipewire_add_stream_to_period(stream)))
+    {
+        pw_thread_loop_unlock(pw_loop_global);
+        return STATUS_SUCCESS;
+    }
+
     pw_stream_set_active(stream->pw, true);
     stream->started = TRUE;
-    stream->just_started = TRUE;
     pw_thread_loop_unlock(pw_loop_global);
-
-    if (!stream->timer_thread)
-        create_unix_thread(&stream->timer_thread, name, pipewire_timer_loop, stream);
     return STATUS_SUCCESS;
 }
 
