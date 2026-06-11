@@ -1418,8 +1418,9 @@ static void on_stream_process(void *data)
     {
         if (stream->started && stream->capture_ring)
         {
-            UINT32 avail = d->chunk->size;
-            const BYTE *src = (const BYTE *)d->data + d->chunk->offset;
+            UINT32 offs = min(d->chunk->offset, d->maxsize);
+            UINT32 avail = min(d->chunk->size, d->maxsize - offs);
+            const BYTE *src = (const BYTE *)d->data + offs;
             SIZE_T n = avail;
 
             if (n > stream->capture_ring_size)
