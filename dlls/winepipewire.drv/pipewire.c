@@ -35,6 +35,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <time.h>
 
 #include <pipewire/pipewire.h>
 #include <pipewire/extensions/metadata.h>
@@ -1885,10 +1886,31 @@ static void pipewire_period_timer_loop(void *args)
         }
 
         if (period->timer_stream && period->timer_stream->pw &&
-            pw_stream_get_time_n(period->timer_stream->pw, &pwt, sizeof(pwt)) == 0 && pwt.now)
+            pw_stream_get_time_n(period->timer_stream->pw, &pwt, sizeof(pwt)) == 0 &&
+            pwt.now && pwt.rate.denom)
         {
-            now = (UINT64)pwt.now / 1000;
-            have_now = 1;
+            struct timespec ts;
+            UINT64 mono_ns;
+
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            mono_ns = (UINT64)ts.tv_sec * 1000000000 + ts.tv_nsec;
+
+            /* pwt.now and pwt.ticks only advance once per graph cycle, so
+             * comparing the continuous period grid against them directly
+             * makes the grid chase quantum-sized steps with clamp-sized
+             * corrections every tick (the wakeup cadence smears across
+             * period +/- period/2 whenever the quantum does not divide the
+             * period).  Extrapolate the graph clock to the sampling instant
+             * instead, like winepulse's PA_STREAM_INTERPOLATE_TIMING, and
+             * treat a graph that stopped updating as having no clock so the
+             * grid free-runs at the nominal period and re-acquires on
+             * resume. */
+            if (mono_ns >= (UINT64)pwt.now && mono_ns - pwt.now < 1000000000)
+            {
+                now = pwt.ticks * (UINT64)pwt.rate.num * 1000000 / pwt.rate.denom
+                      + (mono_ns - pwt.now) / 1000;
+                have_now = 1;
+            }
         }
 
         if (!have_now)
