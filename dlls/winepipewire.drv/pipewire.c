@@ -528,7 +528,14 @@ static NTSTATUS pipewire_main_loop_start(void *args)
         pw_loop_global = NULL;
         goto out;
     }
-    pw_thread_loop_start(pw_loop_global);
+    if (pw_thread_loop_start(pw_loop_global) < 0)
+    {
+        ERR("pw_thread_loop_start failed\n");
+        pw_context_destroy(pw_ctx);
+        pw_ctx = NULL;
+        pw_thread_loop_destroy(pw_loop_global);
+        pw_loop_global = NULL;
+    }
 
 out:
     pthread_mutex_unlock(&pw_init_mutex);
@@ -1545,6 +1552,12 @@ static NTSTATUS pipewire_create_stream(void *args)
     SIZE_T bufsize_bytes, size;
     UINT32 i;
     HRESULT hr;
+
+    if (!pw_loop_global)
+    {
+        params->result = AUDCLNT_E_ENDPOINT_CREATE_FAILED;
+        return STATUS_SUCCESS;
+    }
 
     if (params->share == AUDCLNT_SHAREMODE_EXCLUSIVE)
     {
