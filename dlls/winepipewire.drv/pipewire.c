@@ -2600,6 +2600,16 @@ static NTSTATUS pipewire_set_sample_rate(void *args)
         goto exit;
     }
 
+    /* PulseAudio rejects rates outside [1, 48000 * 8] in
+     * pa_stream_update_sample_rate; mirror winepulse's observable failure
+     * code for rates the resampler cannot honor (the negated comparison
+     * also catches NaN). */
+    if (!(params->rate >= 1.0f && params->rate <= 384000.0f))
+    {
+        hr = E_OUTOFMEMORY;
+        goto exit;
+    }
+
     ratio = params->rate / (float)stream->rate_connected;
     if (pw_stream_set_control(stream->pw, SPA_PROP_rate, 1, &ratio, 0) < 0)
     {
