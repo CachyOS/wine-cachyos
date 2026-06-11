@@ -250,6 +250,30 @@ static void copy_from_ring(BYTE *dst, const BYTE *ring, SIZE_T ring_size, SIZE_T
         memcpy(dst + first, ring, n - first);
 }
 
+/* Parse {"name":"<value>"} metadata values.  spa_json_str_object_find needs
+ * PipeWire 1.4; this uses only the stable spa_json core (verified in 1.0.0). */
+static int parse_json_str_field(const char *json, const char *field, char *dst, size_t maxlen)
+{
+    struct spa_json it[2];
+    char key[64];
+    const char *val;
+    int len;
+
+    spa_json_init(&it[0], json, strlen(json));
+    if (spa_json_enter_object(&it[0], &it[1]) <= 0)
+        return -1;
+    while (spa_json_get_string(&it[1], key, sizeof(key)) > 0)
+    {
+        if (!strcmp(key, field))
+            return spa_json_get_string(&it[1], dst, maxlen) > 0 ? 0 : -1;
+        if ((len = spa_json_next(&it[1], &val)) <= 0)
+            return -1;
+        if (spa_json_is_container(val, len) && spa_json_container_len(&it[1], val, len) <= 0)
+            return -1;
+    }
+    return -1;
+}
+
 /* SPA channel position -> WASAPI speaker bit */
 static UINT spa_position_to_mask_bit(uint32_t pos)
 {
@@ -656,7 +680,7 @@ static int on_probe_metadata_property(void *data, uint32_t subject, const char *
         dst = p->default_source;
     else
         return 0;
-    spa_json_str_object_find(value, strlen(value), "name", dst, 256);
+    parse_json_str_field(value, "name", dst, 256);
     return 0;
 }
 

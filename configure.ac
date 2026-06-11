@@ -1709,7 +1709,10 @@ dnl **** Check for PipeWire ****
 if test "x$with_pipewire" != "xno";
 then
     WINE_PACKAGE_FLAGS(PIPEWIRE,[libpipewire-0.3],,,,
-        [AC_CHECK_HEADERS([pipewire/pipewire.h],,[PIPEWIRE_LIBS=""])])
+        [AC_CHECK_HEADERS([pipewire/pipewire.h],,[PIPEWIRE_LIBS=""])
+         AS_IF([test -n "$PIPEWIRE_LIBS"],
+            [AC_CHECK_DECL([pw_stream_get_time_n],,[PIPEWIRE_LIBS=""],
+                [[#include <pipewire/pipewire.h>]])])])
 fi
 WINE_NOTICE_WITH(pipewire, [test -z "$PIPEWIRE_LIBS"],
         [libpipewire-0.3 ${notice_platform}development files not found, PipeWire won't be supported.],
