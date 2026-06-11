@@ -449,8 +449,14 @@ static NTSTATUS pipewire_process_attach(void *args)
 
 static NTSTATUS pipewire_process_detach(void *args)
 {
+    /* May run at process exit (DLL_PROCESS_DETACH with lpvReserved set), with
+     * the pw_thread_loop still running: it is a raw pthread that process
+     * termination does not stop, and main_loop_stop is skipped on that path.
+     * Do not take the loop lock (a killed thread may have held it) and do not
+     * pw_deinit() here (it dlcloses the PipeWire modules under the live loop
+     * thread).  Clean library teardown happens in pipewire_main_loop_stop on
+     * the FreeLibrary path; at process exit the OS reclaims everything. */
     free_device_lists();
-    pw_deinit();
     return STATUS_SUCCESS;
 }
 
@@ -554,6 +560,7 @@ static NTSTATUS pipewire_main_loop_stop(void *args)
         pw_loop_global = NULL;
     }
     pthread_mutex_unlock(&pw_init_mutex);
+    pw_deinit();
     return STATUS_SUCCESS;
 }
 
