@@ -1845,29 +1845,37 @@ static void pipewire_period_timer_loop(void *args)
         }
         else
         {
-            INT32 adjust = period->last_time + period->period_usec - now;
+            INT64 adjust = (INT64)(period->last_time + period->period_usec) - (INT64)now;
 
-            if (adjust > (INT32)(period->period_usec / 2))
-                adjust = period->period_usec / 2;
-            else if (adjust < -(INT32)(period->period_usec / 2))
-                adjust = -(INT32)(period->period_usec / 2);
-
-            delay.QuadPart = -((INT64)period->period_usec + adjust) * 10;
-            period->last_time += period->period_usec;
-
-            LIST_FOR_EACH_ENTRY(stream, &period->streams, struct pipewire_stream, period_entry)
+            if (adjust > 1000000 || adjust < -1000000)
             {
-                if (!stream->started)
-                    continue;
-                if (stream->dataflow == eRender)
+                /* graph clock stalled or jumped: re-acquire the grid next tick */
+                period->grid_valid = FALSE;
+            }
+            else
+            {
+                if (adjust > (INT64)(period->period_usec / 2))
+                    adjust = period->period_usec / 2;
+                else if (adjust < -(INT64)(period->period_usec / 2))
+                    adjust = -(INT64)(period->period_usec / 2);
+
+                delay.QuadPart = -((INT64)period->period_usec + adjust) * 10;
+                period->last_time += period->period_usec;
+
+                LIST_FOR_EACH_ENTRY(stream, &period->streams, struct pipewire_stream, period_entry)
                 {
-                    UINT32 adv = min(stream->period_bytes, stream->held_bytes);
-                    stream->lcl_offs_bytes += adv;
-                    stream->lcl_offs_bytes %= stream->real_bufsize_bytes;
-                    stream->held_bytes -= adv;
+                    if (!stream->started)
+                        continue;
+                    if (stream->dataflow == eRender)
+                    {
+                        UINT32 adv = min(stream->period_bytes, stream->held_bytes);
+                        stream->lcl_offs_bytes += adv;
+                        stream->lcl_offs_bytes %= stream->real_bufsize_bytes;
+                        stream->held_bytes -= adv;
+                    }
+                    else
+                        pipewire_read(stream);
                 }
-                else
-                    pipewire_read(stream);
             }
         }
 
