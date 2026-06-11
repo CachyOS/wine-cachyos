@@ -2073,7 +2073,13 @@ static NTSTATUS pipewire_start(void *args)
         return STATUS_SUCCESS;
     }
 
-    pw_stream_set_active(stream->pw, true);
+    if (pw_stream_set_active(stream->pw, true) < 0)
+    {
+        /* mirrors pulse_start's failed-uncork path */
+        params->result = E_FAIL;
+        pw_thread_loop_unlock(pw_loop_global);
+        return STATUS_SUCCESS;
+    }
     stream->started = TRUE;
     pw_thread_loop_unlock(pw_loop_global);
     return STATUS_SUCCESS;
