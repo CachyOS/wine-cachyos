@@ -945,7 +945,6 @@ static NTSTATUS pipewire_test_connect(void *args)
     struct test_connect_params *params = args;
     struct probe p;
     struct probe_node *pn, *next;
-    char *name;
 
     free_device_lists();
     list_init(&g_render_devices);
@@ -1008,11 +1007,9 @@ static NTSTATUS pipewire_test_connect(void *args)
         free(pn);
     }
 
-    name = wstr_to_str(params->name);
     TRACE("probe for %s: %u sinks default=%s, %u sources default=%s, rate=%u\n",
-          debugstr_a(name), list_count(&g_render_devices), debugstr_a(g_default_sink),
+          debugstr_w(params->name), list_count(&g_render_devices), debugstr_a(g_default_sink),
           list_count(&g_capture_devices), debugstr_a(g_default_source), p.clock_rate);
-    free(name);
 
     params->priority = Priority_Preferred;
     return STATUS_SUCCESS;
