@@ -106,7 +106,7 @@ extern void update_mouse_tracking_info( HWND hwnd );
 extern void update_current_mouse_window( HWND hwnd, INT hittest, POINT pos );
 extern BOOL process_wine_clipcursor( HWND hwnd, UINT flags, BOOL reset );
 extern BOOL clip_fullscreen_window( HWND hwnd, BOOL reset );
-extern USHORT map_scan_to_kbd_vkey( USHORT scan, HKL layout );
+extern USHORT map_scan_to_kbd_vkey( USHORT scan, HKL layout, UINT *mapped );
 void update_mouse_state_from_pointer( HWND hwnd, UINT msg, unsigned int pointer_id );
 extern BOOL register_touch_window( HWND hwnd, UINT flags );
 extern BOOL unregister_touch_window( HWND hwnd );

@@ -3999,7 +3999,7 @@ NTSTATUS send_hardware_message( HWND hwnd, UINT flags, const INPUT *input, LPARA
              */
             if (req->input.kbd.flags & KEYEVENTF_SCANCODE)
             {
-                UINT scan = input->ki.wScan;
+                UINT scan = input->ki.wScan, dummy;
                 /* TODO: Use the keyboard layout of the target hwnd, once
                  * NtUserGetKeyboardLayout supports non-current threads. */
                 HKL layout = NtUserGetKeyboardLayout( 0 );
@@ -4007,8 +4007,11 @@ NTSTATUS send_hardware_message( HWND hwnd, UINT flags, const INPUT *input, LPARA
                 if (flags & SEND_HWMSG_INJECTED) scan = scan & 0xff;
                 if (req->input.kbd.flags & KEYEVENTF_EXTENDEDKEY) scan |= 0xe000;
 
-                req->input.kbd.vkey = map_scan_to_kbd_vkey( scan, layout );
-                req->input.kbd.scan &= 0xff;
+                req->input.kbd.vkey = map_scan_to_kbd_vkey( scan, layout, (flags & SEND_HWMSG_INJECTED) ? &dummy : &scan );
+                if (scan & ~0xff) req->input.kbd.flags |= KEYEVENTF_EXTENDEDKEY;
+                else req->input.kbd.flags &= ~KEYEVENTF_EXTENDEDKEY;
+
+                req->input.kbd.scan = scan & 0xff;
                 req->input.kbd.flags &= ~KEYEVENTF_SCANCODE;
             }
             break;
