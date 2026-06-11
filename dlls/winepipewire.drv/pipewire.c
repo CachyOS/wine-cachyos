@@ -423,7 +423,8 @@ static void build_format(WAVEFORMATEXTENSIBLE *fmt, uint32_t rate, uint32_t chan
 }
 
 static struct pw_phys_device *add_device(struct list *list, const char *pw_name, const char *display,
-                                         EndpointFormFactor form, uint32_t rate, uint32_t channels, UINT mask)
+                                         EndpointFormFactor form, uint32_t rate, uint32_t channels, UINT mask,
+                                         REFERENCE_TIME min_period)
 {
     size_t len = strlen(pw_name);
     struct pw_phys_device *dev = malloc(offsetof(struct pw_phys_device, pw_name) + len + 1);
@@ -439,7 +440,7 @@ static struct pw_phys_device *add_device(struct list *list, const char *pw_name,
     build_format(&dev->fmt, rate, channels, mask);
     dev->channel_mask = dev->fmt.dwChannelMask;
     dev->def_period = 100000;
-    dev->min_period = 30000;
+    dev->min_period = min_period;
     memcpy(dev->pw_name, pw_name, len + 1);
     list_add_tail(list, &dev->entry);
     TRACE("%s (%s) channels=%u mask=%#x\n", debugstr_w(dev->display), pw_name,
@@ -638,6 +639,7 @@ struct probe
     char default_sink[256];
     char default_source[256];
     uint32_t clock_rate;
+    uint32_t min_quantum;
 };
 
 static void on_probe_node_param(void *data, int seq, uint32_t id, uint32_t index,
@@ -706,6 +708,16 @@ static int on_probe_settings_property(void *data, uint32_t subject, const char *
     else if (!strcmp(key, "clock.rate") && !p->clock_rate)
     {
         p->clock_rate = (uint32_t)strtoul(value, NULL, 10);
+    }
+    else if (!strcmp(key, "clock.force-quantum"))
+    {
+        uint32_t q = (uint32_t)strtoul(value, NULL, 10);
+        if (q)
+            p->min_quantum = q;
+    }
+    else if (!strcmp(key, "clock.min-quantum") && !p->min_quantum)
+    {
+        p->min_quantum = (uint32_t)strtoul(value, NULL, 10);
     }
     return 0;
 }
@@ -820,6 +832,25 @@ static void build_device_cache(struct probe *p)
     struct probe_node *pn;
     struct pw_phys_device *dev, *def_src, *def;
     uint32_t rate = p->clock_rate ? p->clock_rate : 48000;
+    REFERENCE_TIME min_period = 30000;
+
+    /* IAudioClient3 shared-mode floor.  The graph cannot deliver cycles
+     * below clock.min-quantum (clock.force-quantum pins it outright), and
+     * 128 frames (~2.7 ms at 48 kHz) matches the typical Windows engine
+     * floor.  Clamp to the 3 ms winepulse-parity value so the advertised
+     * minimum only ever improves; without settings metadata keep 3 ms. */
+    if (p->min_quantum)
+    {
+        /* Floor division: mmdevapi converts back with a ceiling, so this
+         * round-trips to the exact frame count. */
+        REFERENCE_TIME q = (REFERENCE_TIME)p->min_quantum * 10000000 / rate;
+        REFERENCE_TIME floor_rt = (REFERENCE_TIME)128 * 10000000 / rate;
+        min_period = q > floor_rt ? q : floor_rt;
+        if (min_period > 30000)
+            min_period = 30000;
+        TRACE("min_quantum=%u rate=%u -> min_period=%d hns\n",
+              p->min_quantum, rate, (int)min_period);
+    }
 
     lstrcpynA(g_default_sink, p->default_sink, sizeof(g_default_sink));
     lstrcpynA(g_default_source, p->default_source, sizeof(g_default_source));
@@ -831,7 +862,7 @@ static void build_device_cache(struct probe *p)
         uint32_t channels = pn->have_format ? pn->channels : 2;
         UINT mask = pn->have_format ? positions_to_mask(pn->position, pn->channels)
                                     : (SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT);
-        add_device(list, pn->node_name, pn->display, form, rate, channels, mask);
+        add_device(list, pn->node_name, pn->display, form, rate, channels, mask, min_period);
     }
 
     /* Synthetic default render device at index 0 (empty pw_name -> session
@@ -853,7 +884,7 @@ static void build_device_cache(struct probe *p)
             def->pw_name[0] = '\0';
             def->form = Speakers;
             def->def_period = 100000;
-            def->min_period = 30000;
+            def->min_period = min_period;
             if (def_src)
             {
                 def->fmt = def_src->fmt;
@@ -885,7 +916,7 @@ static void build_device_cache(struct probe *p)
             def->pw_name[0] = '\0';
             def->form = Microphone;
             def->def_period = 100000;
-            def->min_period = 30000;
+            def->min_period = min_period;
             if (def_src)
             {
                 def->fmt = def_src->fmt;
