@@ -77,6 +77,7 @@ struct pipewire_stream
     struct spa_hook stream_listener;
     struct spa_audio_info_raw info;
     UINT32 frame_size;
+    UINT32 rate_connected; /* negotiated stream rate; SPA_PROP_rate is absolute vs this */
 
     DWORD flags;
     AUDCLNT_SHAREMODE share;
@@ -1610,6 +1611,8 @@ static NTSTATUS pipewire_create_stream(void *args)
     if (FAILED(hr))
         goto exit;
 
+    stream->rate_connected = stream->info.rate;
+
     if (stream->dataflow == eRender)
     {
         size = stream->real_bufsize_bytes = stream->bufsize_frames * 2 * stream->frame_size;
@@ -2482,8 +2485,13 @@ static NTSTATUS pipewire_set_sample_rate(void *args)
         goto exit;
     }
 
-    ratio = params->rate / (float)stream->info.rate;
-    pw_stream_set_control(stream->pw, SPA_PROP_rate, 1, &ratio, 0);
+    ratio = params->rate / (float)stream->rate_connected;
+    if (pw_stream_set_control(stream->pw, SPA_PROP_rate, 1, &ratio, 0) < 0)
+    {
+        /* needs PipeWire >= 1.2.6 and an active adaptive resampler */
+        hr = E_NOTIMPL;
+        goto exit;
+    }
 
     pw_stream_flush(stream->pw, false);
 
