@@ -91,6 +91,9 @@ struct pipewire_stream
     INT32 locked;
     BOOL started;
     SIZE_T bufsize_frames, real_bufsize_bytes, period_bytes;
+    /* render ring bookkeeping: lcl_offs/held track the application side,
+     * pa_offs/pa_held track the process-callback reader (field names kept
+     * from the pulse.c transplant for diffability). */
     SIZE_T lcl_offs_bytes, pa_offs_bytes;
     SIZE_T tmp_buffer_bytes, held_bytes, pa_held_bytes;
     BYTE *local_buffer, *tmp_buffer;
@@ -827,10 +830,46 @@ static void probe_roundtrip(struct probe *p)
     pw_thread_loop_timed_wait(p->loop, 2);
 }
 
+/* Synthetic default endpoint at index 0 (empty pw_name -> session manager
+ * default routing).  When the default node is known, mirror its format so
+ * the default endpoint advertises the real speaker layout. */
+static void add_default_device(struct list *list, EndpointFormFactor form, const char *match,
+                               uint32_t rate, REFERENCE_TIME min_period)
+{
+    struct pw_phys_device *dev, *def_src = NULL, *def;
+
+    if (match[0])
+    {
+        LIST_FOR_EACH_ENTRY(dev, list, struct pw_phys_device, entry)
+            if (!strcmp(dev->pw_name, match)) { def_src = dev; break; }
+    }
+    if (!(def = malloc(offsetof(struct pw_phys_device, pw_name) + 1)))
+        return;
+    if (!(def->display = utf8_to_wstr("PipeWire")))
+    {
+        free(def);
+        return;
+    }
+    def->pw_name[0] = '\0';
+    def->form = form;
+    def->def_period = 100000;
+    def->min_period = min_period;
+    if (def_src)
+    {
+        def->fmt = def_src->fmt;
+        def->channel_mask = def_src->channel_mask;
+    }
+    else
+    {
+        build_format(&def->fmt, rate, 2, SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT);
+        def->channel_mask = def->fmt.dwChannelMask;
+    }
+    list_add_head(list, &def->entry);
+}
+
 static void build_device_cache(struct probe *p)
 {
     struct probe_node *pn;
-    struct pw_phys_device *dev, *def_src, *def;
     uint32_t rate = p->clock_rate ? p->clock_rate : 48000;
     REFERENCE_TIME min_period = 30000;
 
@@ -865,71 +904,8 @@ static void build_device_cache(struct probe *p)
         add_device(list, pn->node_name, pn->display, form, rate, channels, mask, min_period);
     }
 
-    /* Synthetic default render device at index 0 (empty pw_name -> session
-     * manager default routing). */
-    def_src = NULL;
-    if (g_default_sink[0])
-    {
-        LIST_FOR_EACH_ENTRY(dev, &g_render_devices, struct pw_phys_device, entry)
-            if (!strcmp(dev->pw_name, g_default_sink)) { def_src = dev; break; }
-    }
-    if ((def = malloc(offsetof(struct pw_phys_device, pw_name) + 1)))
-    {
-        if (!(def->display = utf8_to_wstr("PipeWire")))
-        {
-            free(def);
-        }
-        else
-        {
-            def->pw_name[0] = '\0';
-            def->form = Speakers;
-            def->def_period = 100000;
-            def->min_period = min_period;
-            if (def_src)
-            {
-                def->fmt = def_src->fmt;
-                def->channel_mask = def_src->channel_mask;
-            }
-            else
-            {
-                build_format(&def->fmt, rate, 2, SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT);
-                def->channel_mask = def->fmt.dwChannelMask;
-            }
-            list_add_head(&g_render_devices, &def->entry);
-        }
-    }
-
-    def_src = NULL;
-    if (g_default_source[0])
-    {
-        LIST_FOR_EACH_ENTRY(dev, &g_capture_devices, struct pw_phys_device, entry)
-            if (!strcmp(dev->pw_name, g_default_source)) { def_src = dev; break; }
-    }
-    if ((def = malloc(offsetof(struct pw_phys_device, pw_name) + 1)))
-    {
-        if (!(def->display = utf8_to_wstr("PipeWire")))
-        {
-            free(def);
-        }
-        else
-        {
-            def->pw_name[0] = '\0';
-            def->form = Microphone;
-            def->def_period = 100000;
-            def->min_period = min_period;
-            if (def_src)
-            {
-                def->fmt = def_src->fmt;
-                def->channel_mask = def_src->channel_mask;
-            }
-            else
-            {
-                build_format(&def->fmt, rate, 2, SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT);
-                def->channel_mask = def->fmt.dwChannelMask;
-            }
-            list_add_head(&g_capture_devices, &def->entry);
-        }
-    }
+    add_default_device(&g_render_devices, Speakers, g_default_sink, rate, min_period);
+    add_default_device(&g_capture_devices, Microphone, g_default_source, rate, min_period);
 }
 
 static void probe_teardown(struct probe *p)
