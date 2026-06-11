@@ -718,6 +718,13 @@ static void on_probe_registry_global(void *data, uint32_t id, uint32_t permissio
         pn->flow = !strcmp(media_class, "Audio/Sink") ? eRender : eCapture;
         pn->node_name = strdup(node_name);
         pn->display = strdup(desc ? desc : (nick ? nick : node_name));
+        if (!pn->node_name || !pn->display)
+        {
+            free(pn->node_name);
+            free(pn->display);
+            free(pn);
+            return;
+        }
         list_add_tail(&p->nodes, &pn->entry);
 
         /* Bind the node and ask for its supported formats so we can report
@@ -812,22 +819,28 @@ static void build_device_cache(struct probe *p)
     }
     if ((def = malloc(offsetof(struct pw_phys_device, pw_name) + 1)))
     {
-        def->pw_name[0] = '\0';
-        def->display = utf8_to_wstr("PipeWire");
-        def->form = Speakers;
-        def->def_period = 100000;
-        def->min_period = 30000;
-        if (def_src)
+        if (!(def->display = utf8_to_wstr("PipeWire")))
         {
-            def->fmt = def_src->fmt;
-            def->channel_mask = def_src->channel_mask;
+            free(def);
         }
         else
         {
-            build_format(&def->fmt, rate, 2, SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT);
-            def->channel_mask = def->fmt.dwChannelMask;
+            def->pw_name[0] = '\0';
+            def->form = Speakers;
+            def->def_period = 100000;
+            def->min_period = 30000;
+            if (def_src)
+            {
+                def->fmt = def_src->fmt;
+                def->channel_mask = def_src->channel_mask;
+            }
+            else
+            {
+                build_format(&def->fmt, rate, 2, SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT);
+                def->channel_mask = def->fmt.dwChannelMask;
+            }
+            list_add_head(&g_render_devices, &def->entry);
         }
-        list_add_head(&g_render_devices, &def->entry);
     }
 
     def_src = NULL;
@@ -838,22 +851,28 @@ static void build_device_cache(struct probe *p)
     }
     if ((def = malloc(offsetof(struct pw_phys_device, pw_name) + 1)))
     {
-        def->pw_name[0] = '\0';
-        def->display = utf8_to_wstr("PipeWire");
-        def->form = Microphone;
-        def->def_period = 100000;
-        def->min_period = 30000;
-        if (def_src)
+        if (!(def->display = utf8_to_wstr("PipeWire")))
         {
-            def->fmt = def_src->fmt;
-            def->channel_mask = def_src->channel_mask;
+            free(def);
         }
         else
         {
-            build_format(&def->fmt, rate, 2, SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT);
-            def->channel_mask = def->fmt.dwChannelMask;
+            def->pw_name[0] = '\0';
+            def->form = Microphone;
+            def->def_period = 100000;
+            def->min_period = 30000;
+            if (def_src)
+            {
+                def->fmt = def_src->fmt;
+                def->channel_mask = def_src->channel_mask;
+            }
+            else
+            {
+                build_format(&def->fmt, rate, 2, SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT);
+                def->channel_mask = def->fmt.dwChannelMask;
+            }
+            list_add_head(&g_capture_devices, &def->entry);
         }
-        list_add_head(&g_capture_devices, &def->entry);
     }
 }
 
