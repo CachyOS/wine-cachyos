@@ -1126,8 +1126,8 @@ struct new_thread_request
     unsigned int access;
     unsigned int flags;
     int          request_fd;
+    int          is_system;
     /* VARARG(objattr,object_attributes); */
-    char __pad_28[4];
 };
 struct new_thread_reply
 {
@@ -7209,6 +7209,6 @@ union generic_reply
     struct fsync_free_shm_idx_reply fsync_free_shm_idx_reply;
 };
 
-#define SERVER_PROTOCOL_VERSION 931
+#define SERVER_PROTOCOL_VERSION 932
 
 #endif /* __WINE_WINE_SERVER_PROTOCOL_H */
