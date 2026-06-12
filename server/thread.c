@@ -2160,6 +2160,13 @@ DECL_HANDLER(queue_apc)
             return;
         }
         thread = get_thread_from_handle( req->handle, THREAD_SET_CONTEXT );
+        if (thread && thread->is_system)
+        {
+            release_object( apc );
+            release_object( thread );
+            set_error( STATUS_ACCESS_DENIED );
+            return;
+        }
         if (thread && call && call->user.flags & SERVER_USER_APC_SPECIAL && is_wow64_process( thread->process ))
         {
             release_object( apc );
@@ -2292,6 +2299,8 @@ DECL_HANDLER(get_thread_context)
         if (!(thread = get_thread_from_handle( req->handle, THREAD_GET_CONTEXT ))) return;
         if (req->machine != native_machine && req->machine != thread->process->machine)
             set_error( STATUS_INVALID_PARAMETER );
+        else if (thread->is_system)
+            set_error( STATUS_ACCESS_DENIED );
         else if (thread->state != RUNNING)
             set_error( STATUS_UNSUCCESSFUL );
         else
@@ -2374,7 +2383,11 @@ DECL_HANDLER(set_thread_context)
     if (contexts[CTX_NATIVE].machine != native_machine ||
         (ctx_count == 2 && contexts[CTX_WOW].machine != thread->process->machine))
         set_error( STATUS_INVALID_PARAMETER );
-    else if (thread->state != TERMINATED)
+    else if (thread->is_system)
+        set_error( STATUS_ACCESS_DENIED );
+    else if (thread->state == TERMINATED)
+        set_error( STATUS_UNSUCCESSFUL );
+    else
     {
         unsigned int flags = system_flags & contexts[CTX_NATIVE].flags;
 
@@ -2409,7 +2422,6 @@ DECL_HANDLER(set_thread_context)
             }
         }
     }
-    else set_error( STATUS_UNSUCCESSFUL );
 
     release_object( thread );
 }
