@@ -1526,6 +1526,7 @@ NTSTATUS WINAPI PsCreateSystemThread( HANDLE *handle, ACCESS_MASK access, OBJECT
         req->access     = access;
         req->flags      = THREAD_CREATE_FLAGS_BYPASS_PROCESS_FREEZE;
         req->request_fd = request_pipe[0];
+        req->is_system  = 1;
         wine_server_add_data( req, objattr, len );
         if (!(status = wine_server_call( req )))
         {
