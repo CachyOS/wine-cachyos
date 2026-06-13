@@ -30,12 +30,20 @@
 #pragma makedep unix
 #endif
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE  /* dladdr() */
+#endif
+
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
 #include <time.h>
+#include <dlfcn.h>
+#include <limits.h>
+#include <stdio.h>
+#include <unistd.h>
 
 #include <pipewire/pipewire.h>
 #include <pipewire/extensions/metadata.h>
@@ -471,8 +479,42 @@ static void free_device_lists(void)
  * Process attach / detach
  * ---------------------------------------------------------------------- */
 
+/* Containers (Steam pressure-vessel) import libpipewire from the host but its
+ * compiled-in SPA plugin path does not exist inside the container, so
+ * pw_loop_new() fails with "can't make support.system handle".  The plugins
+ * live in the same libdir as the loaded library and match its version, so
+ * derive the path from the loaded object.  Only act when SPA_PLUGIN_DIR is
+ * unset and the derived directory actually holds the support plugin. */
+static void pipewire_set_plugin_dirs(void)
+{
+    Dl_info info;
+    char libdir[PATH_MAX], path[PATH_MAX + 64], *sep;
+
+    if (getenv("SPA_PLUGIN_DIR"))
+        return;
+    if (!dladdr((void *)pw_init, &info) || !info.dli_fname)
+        return;
+    if (!realpath(info.dli_fname, libdir))
+        return;
+    if (!(sep = strrchr(libdir, '/')))
+        return;
+    *sep = 0;
+
+    snprintf(path, sizeof(path), "%s/spa-0.2/support/libspa-support.so", libdir);
+    if (access(path, F_OK))
+        return;
+
+    snprintf(path, sizeof(path), "%s/spa-0.2", libdir);
+    setenv("SPA_PLUGIN_DIR", path, 1);
+    snprintf(path, sizeof(path), "%s/pipewire-0.3", libdir);
+    if (!access(path, F_OK))
+        setenv("PIPEWIRE_MODULE_DIR", path, 0);
+    TRACE("derived SPA plugin dir from %s\n", libdir);
+}
+
 static NTSTATUS pipewire_process_attach(void *args)
 {
+    pipewire_set_plugin_dirs();
     pw_init(NULL, NULL);
     TRACE("PipeWire %s, header %s\n", pw_get_library_version(), pw_get_headers_version());
     return STATUS_SUCCESS;
