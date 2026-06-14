@@ -2398,9 +2398,9 @@ static NTSTATUS pipewire_release_render_buffer(void *args)
     stream->pa_held_bytes += written_bytes;
     if (stream->pa_held_bytes > stream->real_bufsize_bytes)
     {
-        stream->pa_offs_bytes += stream->pa_held_bytes - stream->real_bufsize_bytes;
-        stream->pa_offs_bytes %= stream->real_bufsize_bytes;
-        stream->pa_held_bytes = stream->real_bufsize_bytes;
+        WARN("%p PipeWire buffer overflow.\n", stream);
+        stream->pa_offs_bytes = stream->lcl_offs_bytes;
+        stream->pa_held_bytes = stream->held_bytes;
     }
     stream->clock_written += written_bytes;
     stream->locked = 0;
