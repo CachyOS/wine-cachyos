@@ -372,6 +372,9 @@ BOOL wayland_process_init(void)
     wl_display_roundtrip_queue(process_wayland.wl_display, process_wayland.wl_event_queue);
     wl_display_roundtrip_queue(process_wayland.wl_display, process_wayland.wl_event_queue);
 
+    /* A third roundtrip to help avoid race conditions for zxdg output and color management extensions. */
+    wl_display_roundtrip_queue(process_wayland.wl_display, process_wayland.wl_event_queue);
+
     /* Check for required protocol globals. */
     if (!process_wayland.wl_compositor)
     {
