@@ -116,6 +116,7 @@ struct pipewire_stream
     SIZE_T capture_ring_size, cap_read_offs, cap_held_bytes;
 
     INT64 clock_lastpos, clock_written;
+    UINT32 underrun_count, overrun_count; /* render starves / capture drops; one-line summary at release */
 
     struct list packet_free_head;
     struct list packet_filled_head;
@@ -502,7 +503,10 @@ static void pipewire_set_plugin_dirs(void)
 
     snprintf(path, sizeof(path), "%s/spa-0.2/support/libspa-support.so", libdir);
     if (access(path, F_OK))
+    {
+        TRACE("no SPA support plugin at %s, leaving SPA_PLUGIN_DIR unset\n", path);
         return;
+    }
 
     snprintf(path, sizeof(path), "%s/spa-0.2", libdir);
     setenv("SPA_PLUGIN_DIR", path, 1);
@@ -589,7 +593,8 @@ static NTSTATUS pipewire_main_loop_start(void *args)
 
     if (!(pw_loop_global = pw_thread_loop_new("winepipewire", NULL)))
     {
-        ERR("pw_thread_loop_new failed\n");
+        ERR("pw_thread_loop_new failed; SPA plugins may be missing "
+            "(set SPA_PLUGIN_DIR to the directory containing spa-0.2).\n");
         goto out;
     }
     if (!(pw_ctx = pw_context_new(pw_thread_loop_get_loop(pw_loop_global), NULL, 0)))
@@ -1007,7 +1012,8 @@ static NTSTATUS pipewire_test_connect(void *args)
 
     if (!(p.loop = pw_thread_loop_new("winepipewire-probe", NULL)))
     {
-        ERR("Failed to create PipeWire probe loop\n");
+        ERR("Failed to create PipeWire probe loop; SPA plugins may be missing "
+            "(set SPA_PLUGIN_DIR to the directory containing spa-0.2).\n");
         return STATUS_SUCCESS;
     }
     if (!(p.context = pw_context_new(pw_thread_loop_get_loop(p.loop), NULL, 0)))
@@ -1140,7 +1146,10 @@ static NTSTATUS pipewire_get_mix_format(void *args)
         params->result = S_OK;
     }
     else
+    {
+        WARN("device not found: flow %d %s.\n", params->flow, debugstr_a(params->device));
         params->result = E_FAIL;
+    }
     return STATUS_SUCCESS;
 }
 
@@ -1492,6 +1501,7 @@ static void on_stream_process(void *data)
             if (n < need_bytes)
             {
                 silence_buffer(stream->info.format, (BYTE *)d->data + n, need_bytes - n);
+                stream->underrun_count++;
             }
             stream->pa_offs_bytes = (stream->pa_offs_bytes + n) % stream->real_bufsize_bytes;
             stream->pa_held_bytes -= n;
@@ -1523,6 +1533,7 @@ static void on_stream_process(void *data)
                 SIZE_T drop = stream->cap_held_bytes + n - stream->capture_ring_size;
                 stream->cap_read_offs = (stream->cap_read_offs + drop) % stream->capture_ring_size;
                 stream->cap_held_bytes -= drop;
+                stream->overrun_count++;
             }
             if (n)
             {
@@ -1606,7 +1617,10 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
 
     stream->pw = pw_stream_new(pw_core_global, "winepipewire", props);
     if (!stream->pw)
+    {
+        WARN("pw_stream_new failed.\n");
         return AUDCLNT_E_ENDPOINT_CREATE_FAILED;
+    }
 
     pw_stream_add_listener(stream->pw, &stream->stream_listener, &stream_events, stream);
 
@@ -1618,7 +1632,10 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
                           PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS |
                           PW_STREAM_FLAG_INACTIVE,
                           params, 1) < 0)
+    {
+        WARN("pw_stream_connect failed.\n");
         return AUDCLNT_E_ENDPOINT_CREATE_FAILED;
+    }
 
     for (tries = 0; tries < 10; tries++)
     {
@@ -1626,14 +1643,24 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
         if (st == PW_STREAM_STATE_PAUSED || st == PW_STREAM_STATE_STREAMING)
             return S_OK;
         if (st == PW_STREAM_STATE_ERROR || st == PW_STREAM_STATE_UNCONNECTED)
+        {
+            const char *error = NULL;
+            pw_stream_get_state(stream->pw, &error);
+            WARN("stream %p connect failed: %s.\n", stream, debugstr_a(error));
             return AUDCLNT_E_ENDPOINT_CREATE_FAILED;
+        }
         if (pw_thread_loop_timed_wait(pw_loop_global, 1) != 0)
             break;
     }
     st = pw_stream_get_state(stream->pw, NULL);
     if (st == PW_STREAM_STATE_PAUSED || st == PW_STREAM_STATE_STREAMING)
         return S_OK;
-    return AUDCLNT_E_ENDPOINT_CREATE_FAILED;
+    {
+        const char *error = NULL;
+        st = pw_stream_get_state(stream->pw, &error);
+        WARN("stream %p connect timed out in state %d: %s.\n", stream, st, debugstr_a(error));
+        return AUDCLNT_E_ENDPOINT_CREATE_FAILED;
+    }
 }
 
 static NTSTATUS pipewire_create_stream(void *args)
@@ -1644,14 +1671,20 @@ static NTSTATUS pipewire_create_stream(void *args)
     UINT32 i;
     HRESULT hr;
 
+    TRACE("flow %d share %#x flags %#x period %lld dur %lld fmt %uch/%uHz/%ubit dev %s name %s.\n",
+          params->flow, params->share, params->flags, (long long)params->period,
+          (long long)params->duration, params->fmt->nChannels, params->fmt->nSamplesPerSec,
+          params->fmt->wBitsPerSample, debugstr_a(params->device), debugstr_w(params->name));
     if (!pw_loop_global)
     {
+        WARN("PipeWire main loop not running.\n");
         params->result = AUDCLNT_E_ENDPOINT_CREATE_FAILED;
         return STATUS_SUCCESS;
     }
 
     if (params->share == AUDCLNT_SHAREMODE_EXCLUSIVE)
     {
+        TRACE("Exclusive mode not supported.\n");
         params->result = AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED;
         return STATUS_SUCCESS;
     }
@@ -1703,6 +1736,7 @@ static NTSTATUS pipewire_create_stream(void *args)
     stream->period_bytes = stream->frame_size * muldiv(params->period, stream->info.rate, 10000000);
     if (stream->period_bytes == 0)
     {
+        WARN("Invalid period: %lld hns at %u Hz.\n", (long long)params->period, stream->info.rate);
         hr = E_INVALIDARG;
         goto exit;
     }
@@ -1785,6 +1819,10 @@ exit:
         free(stream);
     }
 
+    if (SUCCEEDED(hr))
+        TRACE("created stream %p, %u channels.\n", stream, stream->info.channels);
+    else
+        WARN("failed: %#x.\n", (unsigned)hr);
     pw_thread_loop_unlock(pw_loop_global);
     return STATUS_SUCCESS;
 }
@@ -1797,6 +1835,10 @@ static NTSTATUS pipewire_release_stream(void *args)
     SIZE_T size;
 
     pw_thread_loop_lock(pw_loop_global);
+    TRACE("stream %p.\n", stream);
+    if (stream->underrun_count || stream->overrun_count)
+        WARN("stream %p underran %u times, overran %u times.\n",
+             stream, stream->underrun_count, stream->overrun_count);
     if (stream->period)
     {
         struct pipewire_period *period = stream->period;
@@ -2028,6 +2070,8 @@ static HRESULT pipewire_add_stream_to_period(struct pipewire_stream *stream)
         {
             stream->period = period;
             list_add_tail(&period->streams, &stream->period_entry);
+            TRACE("stream %p joins period %p (%llu us, dev %s).\n", stream, period,
+                  (unsigned long long)period->period_usec, debugstr_a(period->device));
             return S_OK;
         }
     }
@@ -2047,6 +2091,8 @@ static HRESULT pipewire_add_stream_to_period(struct pipewire_stream *stream)
 
     if (create_unix_thread(&period->timer_thread, name, pipewire_period_timer_loop, period))
     {
+        ERR("Failed to create timer thread for period %llu us.\n",
+            (unsigned long long)stream->mmdev_period_usec);
         list_remove(&stream->period_entry);
         list_remove(&period->entry);
         stream->period = NULL;
@@ -2054,6 +2100,8 @@ static HRESULT pipewire_add_stream_to_period(struct pipewire_stream *stream)
         free(period);
         return E_FAIL;
     }
+    TRACE("stream %p created period %p (%llu us, dev %s).\n", stream, period,
+          (unsigned long long)period->period_usec, debugstr_a(period->device));
     return S_OK;
 }
 
@@ -2062,6 +2110,7 @@ static NTSTATUS pipewire_start(void *args)
     struct start_params *params = args;
     struct pipewire_stream *stream = handle_get_stream(params->stream);
 
+    TRACE("stream %p.\n", stream);
     params->result = S_OK;
     pw_thread_loop_lock(pw_loop_global);
     if (!stream_valid(stream))
@@ -2094,6 +2143,7 @@ static NTSTATUS pipewire_start(void *args)
     if (pw_stream_set_active(stream->pw, true) < 0)
     {
         /* mirrors pulse_start's failed-uncork path */
+        WARN("pw_stream_set_active failed for stream %p.\n", stream);
         params->result = E_FAIL;
         pw_thread_loop_unlock(pw_loop_global);
         return STATUS_SUCCESS;
@@ -2108,6 +2158,7 @@ static NTSTATUS pipewire_stop(void *args)
     struct stop_params *params = args;
     struct pipewire_stream *stream = handle_get_stream(params->stream);
 
+    TRACE("stream %p.\n", stream);
     pw_thread_loop_lock(pw_loop_global);
     if (!stream_valid(stream))
     {
@@ -2135,6 +2186,7 @@ static NTSTATUS pipewire_reset(void *args)
     struct reset_params *params = args;
     struct pipewire_stream *stream = handle_get_stream(params->stream);
 
+    TRACE("stream %p.\n", stream);
     pw_thread_loop_lock(pw_loop_global);
     if (!stream_valid(stream))
     {
@@ -2496,6 +2548,7 @@ static NTSTATUS pipewire_get_latency(void *args)
     }
     lat = stream->period_bytes / stream->frame_size;
     *params->latency = (lat * 10000000) / stream->info.rate + stream->def_period;
+    TRACE("stream %p latency %u ms.\n", stream, (unsigned)(*params->latency / 10000));
     pw_thread_loop_unlock(pw_loop_global);
     params->result = S_OK;
     return STATUS_SUCCESS;
@@ -2590,6 +2643,7 @@ static NTSTATUS pipewire_set_event_handle(void *args)
     struct pipewire_stream *stream = handle_get_stream(params->stream);
     HRESULT hr = S_OK;
 
+    TRACE("stream %p event %p.\n", stream, params->event);
     pw_thread_loop_lock(pw_loop_global);
     if (!stream_valid(stream))
         hr = AUDCLNT_E_DEVICE_INVALIDATED;
@@ -2612,6 +2666,7 @@ static NTSTATUS pipewire_set_sample_rate(void *args)
     HRESULT hr = S_OK;
     float ratio;
 
+    TRACE("stream %p rate %u.\n", stream, (unsigned)params->rate);
     pw_thread_loop_lock(pw_loop_global);
     if (!stream_valid(stream))
     {
@@ -2630,6 +2685,7 @@ static NTSTATUS pipewire_set_sample_rate(void *args)
      * also catches NaN). */
     if (!(params->rate >= 1.0f && params->rate <= 384000.0f))
     {
+        WARN("Unsupported sample rate %u.\n", (unsigned)params->rate);
         hr = E_OUTOFMEMORY;
         goto exit;
     }
@@ -2638,6 +2694,7 @@ static NTSTATUS pipewire_set_sample_rate(void *args)
     if (pw_stream_set_control(stream->pw, SPA_PROP_rate, 1, &ratio, 0) < 0)
     {
         /* needs PipeWire >= 1.2.6 and an active adaptive resampler */
+        WARN("pw_stream_set_control(rate) failed for stream %p.\n", stream);
         hr = E_NOTIMPL;
         goto exit;
     }
@@ -2684,6 +2741,7 @@ static NTSTATUS pipewire_get_loopback_capture_device(void *args)
     {
         if (!device_is_sink(device))
         {
+            WARN("loopback target %s is not a sink.\n", debugstr_a(device));
             params->result = E_FAIL;
             return STATUS_SUCCESS;
         }
@@ -2700,6 +2758,7 @@ static NTSTATUS pipewire_get_loopback_capture_device(void *args)
         return STATUS_SUCCESS;
     }
     memcpy(params->ret_device, sink, needed);
+    TRACE("loopback capture from sink %s.\n", debugstr_a(sink));
     params->result = S_OK;
     return STATUS_SUCCESS;
 }
