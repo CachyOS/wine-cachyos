@@ -101,7 +101,10 @@ struct pipewire_stream
     SIZE_T bufsize_frames, real_bufsize_bytes, period_bytes;
     /* render ring bookkeeping: lcl_offs/held track the application side,
      * pa_offs/pa_held track the process-callback reader (field names kept
-     * from the pulse.c transplant for diffability). */
+     * from the pulse.c transplant for diffability).  pa_held_bytes is
+     * SPSC-atomic (producer release_render_buffer release-adds, the RT
+     * process callback acquire-loads and subtracts); pa_offs_bytes stays
+     * plain, a bounded residual race the producer only hits on overflow. */
     SIZE_T lcl_offs_bytes, pa_offs_bytes;
     SIZE_T tmp_buffer_bytes, held_bytes, pa_held_bytes;
     BYTE *local_buffer, *tmp_buffer;
@@ -111,7 +114,9 @@ struct pipewire_stream
     /* capture staging ring: the analogue of PulseAudio's internal record
      * buffer.  The pw_stream process callback (a foreign pthread) appends
      * raw bytes here; the Wine timer thread slices period-sized ACPackets
-     * out of it with QPC timestamps. */
+     * out of it with QPC timestamps.  cap_held_bytes is SPSC-atomic (RT
+     * producer release-adds, pipewire_read acquire-loads and subtracts);
+     * cap_read_offs stays plain, raced only in the overrun-drop path. */
     BYTE *capture_ring;
     SIZE_T capture_ring_size, cap_read_offs, cap_held_bytes;
 
@@ -1494,7 +1499,7 @@ static void on_stream_process(void *data)
 
         if (stream->started)
         {
-            n = min(need_bytes, stream->pa_held_bytes);
+            n = min(need_bytes, __atomic_load_n(&stream->pa_held_bytes, __ATOMIC_ACQUIRE));
             copy_from_ring(d->data, stream->local_buffer, stream->real_bufsize_bytes,
                            stream->pa_offs_bytes, n);
             apply_volume(stream, d->data, n);
@@ -1504,7 +1509,7 @@ static void on_stream_process(void *data)
                 stream->underrun_count++;
             }
             stream->pa_offs_bytes = (stream->pa_offs_bytes + n) % stream->real_bufsize_bytes;
-            stream->pa_held_bytes -= n;
+            __atomic_sub_fetch(&stream->pa_held_bytes, n, __ATOMIC_RELEASE);
         }
         else
             silence_buffer(stream->info.format, d->data, need_bytes);
@@ -1521,18 +1526,19 @@ static void on_stream_process(void *data)
             UINT32 offs = min(d->chunk->offset, d->maxsize);
             UINT32 avail = min(d->chunk->size, d->maxsize - offs);
             const BYTE *src = (const BYTE *)d->data + offs;
-            SIZE_T n = avail;
+            SIZE_T n = avail, cap_held;
 
             if (n > stream->capture_ring_size)
             {
                 src += n - stream->capture_ring_size;
                 n = stream->capture_ring_size;
             }
-            if (stream->cap_held_bytes + n > stream->capture_ring_size)
+            cap_held = __atomic_load_n(&stream->cap_held_bytes, __ATOMIC_ACQUIRE);
+            if (cap_held + n > stream->capture_ring_size)
             {
-                SIZE_T drop = stream->cap_held_bytes + n - stream->capture_ring_size;
+                SIZE_T drop = cap_held + n - stream->capture_ring_size;
                 stream->cap_read_offs = (stream->cap_read_offs + drop) % stream->capture_ring_size;
-                stream->cap_held_bytes -= drop;
+                __atomic_sub_fetch(&stream->cap_held_bytes, drop, __ATOMIC_RELEASE);
                 stream->overrun_count++;
             }
             if (n)
@@ -1542,7 +1548,7 @@ static void on_stream_process(void *data)
                 memcpy(stream->capture_ring + woff, src, first);
                 if (n > first)
                     memcpy(stream->capture_ring, src + first, n - first);
-                stream->cap_held_bytes += n;
+                __atomic_add_fetch(&stream->cap_held_bytes, n, __ATOMIC_RELEASE);
             }
         }
     }
@@ -1907,7 +1913,7 @@ static NTSTATUS pipewire_release_stream(void *args)
  * timer thread with the loop lock held: ntdll (QPC) is legal here. */
 static void pipewire_read(struct pipewire_stream *stream)
 {
-    while (stream->cap_held_bytes >= stream->period_bytes)
+    while (__atomic_load_n(&stream->cap_held_bytes, __ATOMIC_ACQUIRE) >= stream->period_bytes)
     {
         ACPacket *p, *next;
         LARGE_INTEGER stamp, freq;
@@ -1937,7 +1943,7 @@ static void pipewire_read(struct pipewire_stream *stream)
         copy_from_ring(p->data, stream->capture_ring, stream->capture_ring_size,
                        stream->cap_read_offs, stream->period_bytes);
         stream->cap_read_offs = (stream->cap_read_offs + stream->period_bytes) % stream->capture_ring_size;
-        stream->cap_held_bytes -= stream->period_bytes;
+        __atomic_sub_fetch(&stream->cap_held_bytes, stream->period_bytes, __ATOMIC_RELEASE);
     }
 }
 
@@ -2220,14 +2226,16 @@ static NTSTATUS pipewire_reset(void *args)
     {
         stream->clock_lastpos = stream->clock_written = 0;
         stream->pa_offs_bytes = stream->lcl_offs_bytes = 0;
-        stream->held_bytes = stream->pa_held_bytes = 0;
+        stream->held_bytes = 0;
+        __atomic_store_n(&stream->pa_held_bytes, 0, __ATOMIC_RELEASE);
     }
     else
     {
         ACPacket *p;
         stream->clock_written += stream->held_bytes;
         stream->held_bytes = 0;
-        stream->cap_read_offs = stream->cap_held_bytes = 0;
+        stream->cap_read_offs = 0;
+        __atomic_store_n(&stream->cap_held_bytes, 0, __ATOMIC_RELEASE);
 
         if ((p = stream->locked_ptr))
         {
@@ -2400,12 +2408,11 @@ static NTSTATUS pipewire_release_render_buffer(void *args)
         pipewire_wrap_buffer(stream, buffer, written_bytes);
 
     stream->held_bytes += written_bytes;
-    stream->pa_held_bytes += written_bytes;
-    if (stream->pa_held_bytes > stream->real_bufsize_bytes)
+    if (__atomic_add_fetch(&stream->pa_held_bytes, written_bytes, __ATOMIC_RELEASE) > stream->real_bufsize_bytes)
     {
         WARN("%p PipeWire buffer overflow.\n", stream);
         stream->pa_offs_bytes = stream->lcl_offs_bytes;
-        stream->pa_held_bytes = stream->held_bytes;
+        __atomic_store_n(&stream->pa_held_bytes, stream->held_bytes, __ATOMIC_RELEASE);
     }
     stream->clock_written += written_bytes;
     stream->locked = 0;
@@ -2708,7 +2715,8 @@ static NTSTATUS pipewire_set_sample_rate(void *args)
 
     stream->clock_lastpos = stream->clock_written = 0;
     stream->pa_offs_bytes = stream->lcl_offs_bytes = 0;
-    stream->held_bytes = stream->pa_held_bytes = 0;
+    stream->held_bytes = 0;
+    __atomic_store_n(&stream->pa_held_bytes, 0, __ATOMIC_RELEASE);
     stream->period_bytes =
         stream->frame_size * muldiv(stream->mmdev_period_usec, params->rate, 1000000);
     stream->info.rate = params->rate;
