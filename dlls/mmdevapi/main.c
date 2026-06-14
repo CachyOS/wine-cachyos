@@ -126,7 +126,9 @@ static BOOL WINAPI init_driver(INIT_ONCE *once, void *param, void **context)
     HKEY key;
     WCHAR reg_list[256], *p, *next, *driver_list = default_list;
 
-    if(RegOpenKeyW(HKEY_CURRENT_USER, drv_keyW, &key) == ERROR_SUCCESS){
+    if(GetEnvironmentVariableW(L"WINE_AUDIO_DRIVER", reg_list, ARRAY_SIZE(reg_list)))
+        driver_list = reg_list;
+    else if(RegOpenKeyW(HKEY_CURRENT_USER, drv_keyW, &key) == ERROR_SUCCESS){
         DWORD size = sizeof(reg_list);
 
         if(RegQueryValueExW(key, L"Audio", 0, NULL, (BYTE*)reg_list, &size) == ERROR_SUCCESS){
