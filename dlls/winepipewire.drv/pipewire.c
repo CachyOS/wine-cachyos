@@ -1756,6 +1756,8 @@ static NTSTATUS pipewire_create_stream(void *args)
 
     stream->rate_connected = stream->info.rate;
 
+    list_init(&stream->packet_free_head);
+    list_init(&stream->packet_filled_head);
     if (stream->dataflow == eRender)
     {
         size = stream->real_bufsize_bytes = stream->bufsize_frames * 2 * stream->frame_size;
@@ -1782,8 +1784,6 @@ static NTSTATUS pipewire_create_stream(void *args)
             ACPacket *cur_packet = (ACPacket *)((char *)stream->local_buffer + stream->real_bufsize_bytes);
             BYTE *data = stream->local_buffer;
             silence_buffer(stream->info.format, stream->local_buffer, stream->real_bufsize_bytes);
-            list_init(&stream->packet_free_head);
-            list_init(&stream->packet_filled_head);
             for (i = 0; i < capture_packets; ++i, ++cur_packet)
             {
                 list_add_tail(&stream->packet_free_head, &cur_packet->entry);
