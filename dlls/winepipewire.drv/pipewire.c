@@ -1625,6 +1625,11 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
     pw_stream_add_listener(stream->pw, &stream->stream_listener, &stream_events, stream);
 
     params[0] = spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat, &stream->info);
+    if (!params[0])
+    {
+        WARN("spa_format_audio_raw_build overflowed for stream %p.\n", stream);
+        return AUDCLNT_E_ENDPOINT_CREATE_FAILED;
+    }
 
     if (pw_stream_connect(stream->pw,
                           stream->dataflow == eRender ? PW_DIRECTION_OUTPUT : PW_DIRECTION_INPUT,
