@@ -748,6 +748,14 @@ NTSTATUS WINAPI NtGdiDdDDIQueryAdapterInfo( D3DKMT_QUERYADAPTERINFO *desc )
             data->HwSchSupported = 1;
             data->HwSchEnabledByDefault = 1;
         }
+        /* on multi GPU systems nvidia streamline may not properly detect hardware scheduling support.
+         * However, enabling it by default for all configurations may be risky. */
+        else if ((e = getenv( "WINE_ENABLE_HARDWARE_SCHEDULING" )) && *e == '1')
+        {
+            data->HwSchEnabled = 1;
+            data->HwSchSupported = 1;
+            data->HwSchEnabledByDefault = 1;
+        }
 
         return STATUS_SUCCESS;
     }
