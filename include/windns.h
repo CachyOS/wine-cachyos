@@ -781,6 +781,44 @@ typedef struct _DNS_SERVICE_CANCEL
     void *reserved;
 } DNS_SERVICE_CANCEL, *PDNS_SERVICE_CANCEL;
 
+typedef struct _DNS_SERVICE_INSTANCE
+{
+    LPWSTR                         pszInstanceName;
+    LPWSTR                         pszHostName;
+    PIP4_ADDRESS                   ip4Address;
+    PIP6_ADDRESS                   ip6Address;
+    WORD                           wPort;
+    WORD                           wPriority;
+    WORD                           wWeight;
+    DWORD                          dwPropertyCount;
+    PWSTR                         *keys;
+    PWSTR                         *values;
+} DNS_SERVICE_INSTANCE, *PDNS_SERVICE_INSTANCE;
+
+typedef void WINAPI DNS_SERVICE_REGISTER_COMPLETE(DWORD, void *, PDNS_SERVICE_INSTANCE);
+typedef DNS_SERVICE_REGISTER_COMPLETE *PDNS_SERVICE_REGISTER_COMPLETE;
+
+typedef struct _DNS_SERVICE_REGISTER_REQUEST {
+    ULONG                          Version;
+    ULONG                          InterfaceIndex;
+    PDNS_SERVICE_INSTANCE          pServiceInstance;
+    PDNS_SERVICE_REGISTER_COMPLETE pRegisterCompletionCallback;
+    PVOID                          pQueryContext;
+    HANDLE                         hCredentials;
+    BOOL                           unicastEnabled;
+} DNS_SERVICE_REGISTER_REQUEST, *PDNS_SERVICE_REGISTER_REQUEST;
+
+typedef void WINAPI DNS_SERVICE_RESOLVE_COMPLETE(DWORD, void *, PDNS_SERVICE_INSTANCE);
+typedef DNS_SERVICE_RESOLVE_COMPLETE *PDNS_SERVICE_RESOLVE_COMPLETE;
+
+typedef struct _DNS_SERVICE_RESOLVE_REQUEST {
+    ULONG                          Version;
+    ULONG                          InterfaceIndex;
+    LPWSTR                         QueryName;
+    PDNS_SERVICE_RESOLVE_COMPLETE  pResolveCompletionCallback;
+    PVOID                          pQueryContext;
+} DNS_SERVICE_RESOLVE_REQUEST, *PDNS_SERVICE_RESOLVE_REQUEST;
+
 DNS_STATUS WINAPI DnsAcquireContextHandle_A(DWORD,PVOID,PHANDLE);
 DNS_STATUS WINAPI DnsAcquireContextHandle_W(DWORD,PVOID,PHANDLE);
 #define DnsAcquireContextHandle WINELIB_NAME_AW(DnsAcquireContextHandle_)
@@ -813,6 +851,14 @@ DNS_STATUS WINAPI DnsReplaceRecordSetW(PDNS_RECORDW,DWORD,HANDLE,PVOID,PVOID);
 DNS_STATUS WINAPI DnsReplaceRecordSetUTF8(PDNS_RECORDA,DWORD,HANDLE,PVOID,PVOID);
 #define DnsReplaceRecordSet WINELIB_NAME_AW(DnsReplaceRecordSet)
 DNS_STATUS WINAPI DnsServiceBrowse(PDNS_SERVICE_BROWSE_REQUEST, PDNS_SERVICE_CANCEL);
+DNS_STATUS WINAPI DnsServiceBrowseCancel(PDNS_SERVICE_CANCEL);
+PDNS_SERVICE_INSTANCE WINAPI DnsServiceConstructInstance(PCWSTR,PCWSTR,PIP4_ADDRESS,PIP6_ADDRESS,WORD,WORD,WORD,DWORD,PWSTR*,PWSTR*);
+VOID WINAPI DnsServiceFreeInstance(PDNS_SERVICE_INSTANCE);
+DNS_STATUS WINAPI DnsServiceRegister(PDNS_SERVICE_REGISTER_REQUEST, PDNS_SERVICE_CANCEL);
+DNS_STATUS WINAPI DnsServiceDeRegister(PDNS_SERVICE_REGISTER_REQUEST, PDNS_SERVICE_CANCEL);
+DNS_STATUS WINAPI DnsServiceRegisterCancel(PDNS_SERVICE_CANCEL);
+DNS_STATUS WINAPI DnsServiceResolve(PDNS_SERVICE_RESOLVE_REQUEST, PDNS_SERVICE_CANCEL);
+DNS_STATUS WINAPI DnsServiceResolveCancel(PDNS_SERVICE_CANCEL);
 DNS_STATUS WINAPI DnsValidateName_A(PCSTR,DNS_NAME_FORMAT);
 DNS_STATUS WINAPI DnsValidateName_W(PCWSTR, DNS_NAME_FORMAT);
 DNS_STATUS WINAPI DnsValidateName_UTF8(PCSTR,DNS_NAME_FORMAT);
