@@ -519,16 +519,25 @@ static void pipewire_set_plugin_dirs(void)
     if (existing)
     {
         if (spa_plugin_dir_usable(existing))
+        {
+            TRACE("keeping SPA_PLUGIN_DIR %s\n", existing);
             return;
-        TRACE("dropping wrong-architecture SPA_PLUGIN_DIR %s\n", existing);
+        }
+        WARN("inherited SPA_PLUGIN_DIR %s is not loadable by this process; re-deriving\n", existing);
         unsetenv("SPA_PLUGIN_DIR");
         unsetenv("PIPEWIRE_MODULE_DIR");
     }
 
     if (!dladdr((void *)pw_init, &info) || !info.dli_fname)
+    {
+        WARN("cannot locate the loaded libpipewire; leaving SPA_PLUGIN_DIR unset\n");
         return;
+    }
     if (!realpath(info.dli_fname, libdir))
+    {
+        WARN("cannot resolve libpipewire path %s; leaving SPA_PLUGIN_DIR unset\n", info.dli_fname);
         return;
+    }
     if (!(sep = strrchr(libdir, '/')))
         return;
     *sep = 0;
@@ -536,7 +545,7 @@ static void pipewire_set_plugin_dirs(void)
     snprintf(path, sizeof(path), "%s/spa-0.2/support/libspa-support.so", libdir);
     if (access(path, F_OK))
     {
-        TRACE("no SPA support plugin at %s, leaving SPA_PLUGIN_DIR unset\n", path);
+        WARN("no SPA support plugin at %s; leaving SPA_PLUGIN_DIR unset\n", path);
         return;
     }
 
