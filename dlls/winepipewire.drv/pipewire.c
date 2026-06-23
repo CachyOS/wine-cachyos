@@ -44,6 +44,7 @@
 #include <limits.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 #include <pipewire/pipewire.h>
 #include <pipewire/extensions/metadata.h>
@@ -485,19 +486,45 @@ static void free_device_lists(void)
  * Process attach / detach
  * ---------------------------------------------------------------------- */
 
+/* True when dir holds a SPA support plugin of this process's architecture. */
+static BOOL spa_plugin_dir_usable(const char *dir)
+{
+    char path[PATH_MAX + 64];
+    unsigned char ident[5];
+    int fd, n;
+
+    snprintf(path, sizeof(path), "%s/support/libspa-support.so", dir);
+    if ((fd = open(path, O_RDONLY)) < 0)
+        return FALSE;
+    n = read(fd, ident, sizeof(ident));
+    close(fd);
+    if (n != (int)sizeof(ident) || memcmp(ident, "\x7f""ELF", 4))
+        return FALSE;
+    return ident[4] == (sizeof(void *) == 8 ? 2 : 1); /* ELFCLASS64 : ELFCLASS32 */
+}
+
 /* Containers (Steam pressure-vessel) import libpipewire from the host but its
  * compiled-in SPA plugin path does not exist inside the container, so
  * pw_loop_new() fails with "can't make support.system handle".  The plugins
- * live in the same libdir as the loaded library and match its version, so
- * derive the path from the loaded object.  Only act when SPA_PLUGIN_DIR is
- * unset and the derived directory actually holds the support plugin. */
+ * live in the same libdir as the loaded library and match its architecture, so
+ * derive the path from the loaded object.  A different-architecture parent (a
+ * 32-bit launcher spawning a 64-bit game) also leaks its own SPA_PLUGIN_DIR
+ * through the environment; drop such an inherited value and re-derive ours. */
 static void pipewire_set_plugin_dirs(void)
 {
     Dl_info info;
     char libdir[PATH_MAX], path[PATH_MAX + 64], *sep;
+    const char *existing = getenv("SPA_PLUGIN_DIR");
 
-    if (getenv("SPA_PLUGIN_DIR"))
-        return;
+    if (existing)
+    {
+        if (spa_plugin_dir_usable(existing))
+            return;
+        TRACE("dropping wrong-architecture SPA_PLUGIN_DIR %s\n", existing);
+        unsetenv("SPA_PLUGIN_DIR");
+        unsetenv("PIPEWIRE_MODULE_DIR");
+    }
+
     if (!dladdr((void *)pw_init, &info) || !info.dli_fname)
         return;
     if (!realpath(info.dli_fname, libdir))
