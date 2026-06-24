@@ -132,6 +132,19 @@ typedef struct _PhysDevice {
     WCHAR *name;
     enum phys_device_bus_type bus_type;
     USHORT vendor_id, product_id;
+
+    /* ready vars */
+    BOOL ready;
+    pthread_mutex_t ready_mutex;
+    pthread_cond_t ready_cond;
+
+    /* probe vars */
+    pa_channel_map map;
+    pa_sample_spec ss;
+    unsigned int length;
+    int probe_status;
+
+    EDataFlow flow;
     EndpointFormFactor form;
     UINT channel_mask;
     UINT index;
@@ -144,9 +157,24 @@ typedef struct _PhysDevice {
 static pa_context *pulse_ctx;
 static pa_mainloop *pulse_ml;
 
+static pthread_mutex_t g_phys_mutex;
+static pthread_cond_t g_phys_cond = PTHREAD_COND_INITIALIZER;
 static struct list g_phys_speakers = LIST_INIT(g_phys_speakers);
 static struct list g_phys_sources = LIST_INIT(g_phys_sources);
+static struct list g_phys_speakers_added = LIST_INIT(g_phys_speakers_added);
+static struct list g_phys_sources_added = LIST_INIT(g_phys_sources_added);
+static struct list g_phys_speakers_removed = LIST_INIT(g_phys_speakers_removed);
+static struct list g_phys_sources_removed = LIST_INIT(g_phys_sources_removed);
+/* separate list for holding removed devices that were just added */
+/* to avoid race-condition/deadlock. */
+static struct list g_phys_added_removed = LIST_INIT(g_phys_added_removed);
 
+static BOOL pulse_ready;
+static int pulse_ready_count;
+static pthread_mutex_t pulse_ready_mutex;
+static pthread_cond_t pulse_ready_cond = PTHREAD_COND_INITIALIZER;
+
+static BOOL pulse_test_succeeded;
 static pthread_mutex_t pulse_mutex;
 static pthread_cond_t pulse_cond = PTHREAD_COND_INITIALIZER;
 
@@ -158,6 +186,16 @@ static BYTE *silence_buf;
 static NTSTATUS pulse_not_implemented(void *args)
 {
     return STATUS_SUCCESS;
+}
+
+static void g_phys_lock(void)
+{
+    pthread_mutex_lock(&g_phys_mutex);
+}
+
+static void g_phys_unlock(void)
+{
+    pthread_mutex_unlock(&g_phys_mutex);
 }
 
 static void pulse_lock(void)
@@ -180,6 +218,45 @@ static void pulse_broadcast(void)
     pthread_cond_broadcast(&pulse_cond);
 }
 
+static void pulse_dev_free(PhysDevice *dev)
+{
+    pthread_mutex_destroy(&dev->ready_mutex);
+    pthread_cond_destroy(&dev->ready_cond);
+    free(dev->name);
+    free(dev);
+}
+
+static void pulse_dev_wait_ready(PhysDevice *dev)
+{
+    if (dev->ready)
+        return;
+    pthread_mutex_lock(&dev->ready_mutex);
+    while (!dev->ready)
+        pthread_cond_wait(&dev->ready_cond, &dev->ready_mutex);
+    pthread_mutex_unlock(&dev->ready_mutex);
+}
+
+static void pulse_dev_set_ready(PhysDevice *dev)
+{
+    if (dev->ready)
+        return;
+    pthread_mutex_lock(&dev->ready_mutex);
+    if (dev->ready) {
+        pthread_mutex_unlock(&dev->ready_mutex);
+        return;
+    }
+    dev->ready = TRUE;
+    pthread_cond_broadcast(&dev->ready_cond);
+    pthread_mutex_unlock(&dev->ready_mutex);
+
+    pthread_mutex_lock(&pulse_ready_mutex);
+    if (!--pulse_ready_count) {
+        pulse_ready = TRUE;
+        pthread_cond_broadcast(&pulse_ready_cond);
+    }
+    pthread_mutex_unlock(&pulse_ready_mutex);
+}
+
 static struct pulse_stream *handle_get_stream(stream_handle h)
 {
     return (struct pulse_stream *)(UINT_PTR)h;
@@ -196,16 +273,26 @@ static void dump_attr(const pa_buffer_attr *attr)
 
 static void free_phys_device_lists(void)
 {
-    static struct list *const lists[] = { &g_phys_speakers, &g_phys_sources, NULL };
+    static struct list *const lists[] = {
+        &g_phys_speakers,
+        &g_phys_sources,
+        &g_phys_speakers_added,
+        &g_phys_sources_added,
+        &g_phys_speakers_removed,
+        &g_phys_sources_removed,
+        &g_phys_added_removed,
+        NULL
+    };
     struct list *const *list = lists;
     PhysDevice *dev, *dev_next;
 
+    g_phys_lock();
     do {
-        LIST_FOR_EACH_ENTRY_SAFE(dev, dev_next, *list, PhysDevice, entry) {
-            free(dev->name);
-            free(dev);
-        }
+        LIST_FOR_EACH_ENTRY_SAFE(dev, dev_next, *list, PhysDevice, entry)
+            pulse_dev_free(dev);
+        list_init(*list);
     } while (*(++list));
+    g_phys_unlock();
 }
 
 /* copied from kernelbase */
@@ -285,6 +372,12 @@ static NTSTATUS pulse_process_attach(void *args)
     if (pthread_mutex_init(&pulse_mutex, &attr) != 0)
         pthread_mutex_init(&pulse_mutex, NULL);
 
+    if (pthread_mutex_init(&pulse_ready_mutex, &attr) != 0)
+        pthread_mutex_init(&pulse_ready_mutex, NULL);
+
+    if (pthread_mutex_init(&g_phys_mutex, &attr) != 0)
+        pthread_mutex_init(&g_phys_mutex, NULL);
+
 #ifdef _WIN64
     if (NtCurrentTeb()->WowTebOffset)
     {
@@ -311,15 +404,37 @@ static NTSTATUS pulse_process_detach(void *args)
 
     free( silence_buf );
     silence_buf = NULL;
+
+    pthread_mutex_destroy(&pulse_mutex);
+    pthread_mutex_destroy(&pulse_ready_mutex);
+    pthread_mutex_destroy(&g_phys_mutex);
+
     return STATUS_SUCCESS;
 }
 
 static void pulse_main_loop_thread_cleanup(void *context)
 {
     TRACE("Main loop thread is being aborted.\n");
-
-    pulse_ml = NULL;
     pulse_broadcast();
+}
+
+static pa_mainloop *pulse_main_loop_new(void)
+{
+    if (pulse_ml)
+        return pulse_ml;
+    pulse_ml = pa_mainloop_new();
+    if (!pulse_ml)
+        return NULL;
+    pa_mainloop_set_poll_func(pulse_ml, pulse_poll_func, NULL);
+    return pulse_ml;
+}
+
+static void pulse_main_loop_free(void)
+{
+    if (!pulse_ml)
+        return;
+    pa_mainloop_free(pulse_ml);
+    pulse_ml = NULL;
 }
 
 static NTSTATUS pulse_main_loop(void *args)
@@ -327,78 +442,197 @@ static NTSTATUS pulse_main_loop(void *args)
     struct main_loop_params *params = args;
     int ret;
     pulse_lock();
-    pulse_ml = pa_mainloop_new();
-    pa_mainloop_set_poll_func(pulse_ml, pulse_poll_func, NULL);
+    if (!pulse_main_loop_new()) {
+        NtSetEvent(params->event, NULL);
+        pulse_unlock();
+        ERR("Failed to create main loop\n");
+        return STATUS_SUCCESS;
+    }
     NtSetEvent(params->event, NULL);
     pthread_cleanup_push(pulse_main_loop_thread_cleanup, NULL);
     pa_mainloop_run(pulse_ml, &ret);
     pthread_cleanup_pop(0);
-    pa_mainloop_free(pulse_ml);
+    pulse_main_loop_free();
     pulse_unlock();
+
+    pthread_cond_broadcast(&g_phys_cond);
+
     return STATUS_SUCCESS;
 }
 
-static NTSTATUS pulse_get_endpoint_ids(void *args)
+static BOOL pulse_get_endpoints_size_needed(struct list *list, size_t *needed, unsigned int size)
 {
-    struct get_endpoint_ids_params *params = args;
-    struct list *list = (params->flow == eRender) ? &g_phys_speakers : &g_phys_sources;
-    struct endpoint *endpoint = params->endpoints;
-    size_t len, name_len, needed;
-    unsigned int offset;
     PhysDevice *dev;
-
-    params->num = list_count(list);
-    offset = needed = params->num * sizeof(*params->endpoints);
+    size_t len, name_len;
 
     LIST_FOR_EACH_ENTRY(dev, list, PhysDevice, entry) {
         name_len = lstrlenW(dev->name) + 1;
         len = strlen(dev->pulse_name) + 1;
-        needed += name_len * sizeof(WCHAR) + ((len + 1) & ~1);
+        *needed += name_len * sizeof(WCHAR) + ((len + 1) & ~1);
 
-        if (needed <= params->size) {
-            endpoint->name = offset;
-            memcpy((char *)params->endpoints + offset, dev->name, name_len * sizeof(WCHAR));
-            offset += name_len * sizeof(WCHAR);
-            endpoint->device = offset;
-            memcpy((char *)params->endpoints + offset, dev->pulse_name, len);
-            offset += (len + 1) & ~1;
-            endpoint++;
+        if (*needed > size)
+            return FALSE;
+    }
+    return TRUE;
+}
+
+static void pulse_get_endpoints(struct list *list, struct endpoint **endpoint, unsigned int *offset, void *names)
+{
+    PhysDevice *dev;
+    size_t len, name_len;
+
+    LIST_FOR_EACH_ENTRY(dev, list, PhysDevice, entry) {
+        name_len = lstrlenW(dev->name) + 1;
+        len = strlen(dev->pulse_name) + 1;
+
+        (*endpoint)->name = *offset;
+        memcpy((char *)names + *offset, dev->name, name_len * sizeof(WCHAR));
+        *offset += name_len * sizeof(WCHAR);
+        (*endpoint)->device = *offset;
+        memcpy((char *)names + *offset, dev->pulse_name, len);
+        *offset += (len + 1) & ~1;
+        (*endpoint)++;
+    }
+}
+
+static void pulse_wait_devices(struct list *list)
+{
+    PhysDevice *dev;
+again:
+    LIST_FOR_EACH_ENTRY(dev, list, PhysDevice, entry) {
+        if (dev->ready)
+            continue;
+
+        g_phys_unlock();
+        pulse_dev_wait_ready(dev);
+        g_phys_lock();
+        goto again;
+    }
+}
+
+/* for winepulse, this function can be called in a separate thread from other functions. */
+/* this function cannot be called from multiple threads at the same time however. */
+/* for the list variable, all devices in it must be ready by the end of the lock. */
+static NTSTATUS pulse_get_endpoint_ids(void *args)
+{
+    struct get_endpoint_ids_params *params = args;
+    struct list *list;
+    struct list *list_added;
+    struct list *list_removed;
+    struct list *other_list_added;
+    struct list *other_list_removed;
+    struct endpoint *endpoint = params->endpoints;
+    size_t needed = 0;
+    unsigned int offset;
+    PhysDevice *dev, *dev_next;
+    BOOL delta = params->delta;
+
+    TRACE("flow %d, delta %d\n", (int)params->flow, (int)params->delta);
+
+    if (params->flow == eRender)
+    {
+        list = &g_phys_speakers;
+        list_added = &g_phys_speakers_added;
+        list_removed = &g_phys_speakers_removed;
+
+        other_list_added = &g_phys_sources_added;
+        other_list_removed = &g_phys_sources_removed;
+    }
+    else
+    {
+        list = &g_phys_sources;
+        list_added = &g_phys_sources_added;
+        list_removed = &g_phys_sources_removed;
+
+        other_list_added = &g_phys_speakers_added;
+        other_list_removed = &g_phys_speakers_removed;
+    }
+
+    params->num = params->num_removed = 0;
+
+    g_phys_lock();
+
+    pulse_wait_devices(&g_phys_added_removed);
+    LIST_FOR_EACH_ENTRY_SAFE(dev, dev_next, &g_phys_added_removed, PhysDevice, entry)
+        pulse_dev_free(dev);
+    list_init(&g_phys_added_removed);
+
+    if (delta)
+    {
+        params->more_data = TRUE;
+        for(;;) {
+            /* also check if we are still running */
+            if (!pulse_ml) {
+                params->more_data = FALSE;
+                goto done;
+            }
+            if (list_count(list_added) + list_count(list_removed))
+                break;
+            if (list_count(other_list_added) + list_count(other_list_removed))
+                goto done;
+            pthread_cond_wait(&g_phys_cond, &g_phys_mutex);
+        }
+
+        params->default_idx = -1;
+        pulse_wait_devices(list_added);
+        pulse_wait_devices(list_removed);
+
+        params->num = list_count(list_added);
+        params->num_removed = list_count(list_removed);
+        offset = needed = (params->num + params->num_removed) * sizeof(*params->endpoints);
+
+        if (!pulse_get_endpoints_size_needed(list_added, &needed, params->size))
+            goto done;
+        if (!pulse_get_endpoints_size_needed(list_removed, &needed, params->size))
+            goto done;
+
+        pulse_get_endpoints(list_added, &endpoint, &offset, params->endpoints);
+        pulse_get_endpoints(list_removed, &endpoint, &offset, params->endpoints);
+
+        LIST_FOR_EACH_ENTRY_SAFE(dev, dev_next, list_added, PhysDevice, entry) {
+            list_remove(&dev->entry);
+            list_add_tail(list, &dev->entry);
+        }
+        LIST_FOR_EACH_ENTRY_SAFE(dev, dev_next, list_removed, PhysDevice, entry) {
+            list_remove(&dev->entry);
+            pulse_dev_free(dev);
         }
     }
-    params->default_idx = 0;
+    else
+    {
+        pulse_wait_devices(list);
+        pulse_wait_devices(list_added);
+
+        params->default_idx = 0;
+        params->num = list_count(list) + list_count(list_added);
+        params->num_removed = 0;
+        offset = needed = params->num * sizeof(*params->endpoints);
+
+        if (!pulse_get_endpoints_size_needed(list, &needed, params->size))
+            goto done;
+        if (!pulse_get_endpoints_size_needed(list_added, &needed, params->size))
+            goto done;
+
+        pulse_get_endpoints(list, &endpoint, &offset, params->endpoints);
+        pulse_get_endpoints(list_added, &endpoint, &offset, params->endpoints);
+
+        LIST_FOR_EACH_ENTRY_SAFE(dev, dev_next, list_added, PhysDevice, entry) {
+            list_remove(&dev->entry);
+            list_add_tail(list, &dev->entry);
+        }
+    }
+
+done:
+    g_phys_unlock();
 
     if (needed > params->size) {
         params->size = needed;
         params->result = HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER);
-    } else
+    } else {
+        params->delta = TRUE;
         params->result = S_OK;
-    return STATUS_SUCCESS;
-}
-
-static void pulse_contextcallback(pa_context *c, void *userdata)
-{
-    switch (pa_context_get_state(c)) {
-        default:
-            FIXME("Unhandled state: %i\n", pa_context_get_state(c));
-            return;
-
-        case PA_CONTEXT_CONNECTING:
-        case PA_CONTEXT_UNCONNECTED:
-        case PA_CONTEXT_AUTHORIZING:
-        case PA_CONTEXT_SETTING_NAME:
-        case PA_CONTEXT_TERMINATED:
-            TRACE("State change to %i\n", pa_context_get_state(c));
-            return;
-
-        case PA_CONTEXT_READY:
-            TRACE("Ready\n");
-            break;
-
-        case PA_CONTEXT_FAILED:
-            WARN("Context failed: %s\n", pa_strerror(pa_context_errno(c)));
-            break;
     }
-    pulse_broadcast();
+    return STATUS_SUCCESS;
 }
 
 static void pulse_stream_state(pa_stream *s, void *user)
@@ -444,47 +678,6 @@ static void silence_buffer(pa_sample_format_t format, BYTE *buffer, UINT32 bytes
 static BOOL pulse_stream_valid(struct pulse_stream *stream)
 {
     return pa_stream_get_state(stream->stream) == PA_STREAM_READY;
-}
-
-static HRESULT pulse_connect(const char *name)
-{
-    pa_context_state_t state;
-
-    if (pulse_ctx && PA_CONTEXT_IS_GOOD(pa_context_get_state(pulse_ctx)))
-        return S_OK;
-    if (pulse_ctx)
-        pa_context_unref(pulse_ctx);
-
-    pulse_ctx = pa_context_new(pa_mainloop_get_api(pulse_ml), name);
-    setenv("PULSE_PROP_application.name", name, 1);
-    if (!pulse_ctx) {
-        ERR("Failed to create context\n");
-        return E_FAIL;
-    }
-
-    pa_context_set_state_callback(pulse_ctx, pulse_contextcallback, NULL);
-
-    TRACE("libpulse protocol version: %u. API Version %u\n", pa_context_get_protocol_version(pulse_ctx), PA_API_VERSION);
-    if (pa_context_connect(pulse_ctx, NULL, 0, NULL) < 0)
-        goto fail;
-
-    /* Wait for connection */
-    while ((state = pa_context_get_state(pulse_ctx)) != PA_CONTEXT_READY &&
-           state != PA_CONTEXT_FAILED && state != PA_CONTEXT_TERMINATED)
-        pulse_cond_wait();
-
-    if (state != PA_CONTEXT_READY)
-        goto fail;
-
-    TRACE("Connected to server %s with protocol version: %i.\n",
-        pa_context_get_server(pulse_ctx),
-        pa_context_get_server_protocol_version(pulse_ctx));
-    return S_OK;
-
-fail:
-    pa_context_unref(pulse_ctx);
-    pulse_ctx = NULL;
-    return E_FAIL;
 }
 
 static UINT pulse_channel_map_to_channel_mask(const pa_channel_map *map)
@@ -649,10 +842,10 @@ static GUID get_container_id(const char *sysfs_path)
     create_usb_dev_container_id(init_time, vid, pid, bus_num, dev_num, &tmp_guid);
 
 exit:
-    if (udev)
-        udev_unref(udev);
     if (audio_dev)
         udev_device_unref(audio_dev);
+    if (udev)
+        udev_unref(udev);
 
     TRACE("Returning %s.\n", debugstr_guid(&tmp_guid));
     return tmp_guid;
@@ -693,58 +886,6 @@ static void fill_device_info(PhysDevice *dev, pa_proplist *p)
 
     if ((buffer = pa_proplist_gets(p, "sysfs.path")))
         dev->container_id = get_container_id(buffer);
-}
-
-static void pulse_add_device(struct list *list, pa_proplist *proplist, int index, EndpointFormFactor form,
-                             UINT channel_mask, const char *pulse_name, const char *desc)
-{
-    size_t len = strlen(pulse_name);
-    PhysDevice *dev = malloc(FIELD_OFFSET(PhysDevice, pulse_name[len + 1]));
-
-    if (!dev)
-        return;
-
-    if (!(dev->name = get_device_name(desc, proplist))) {
-        free(dev);
-        return;
-    }
-    dev->form = form;
-    dev->index = index;
-    dev->channel_mask = channel_mask;
-    dev->def_period = 0;
-    dev->min_period = 0;
-    fill_device_info(dev, proplist);
-    memcpy(dev->pulse_name, pulse_name, len + 1);
-
-    list_add_tail(list, &dev->entry);
-
-    TRACE("%s\n", debugstr_w(dev->name));
-}
-
-static void pulse_phys_speakers_cb(pa_context *c, const pa_sink_info *i, int eol, void *userdata)
-{
-    struct list *speaker;
-    UINT channel_mask;
-
-    if (!i || !i->name || !i->name[0])
-        return;
-    channel_mask = pulse_channel_map_to_channel_mask(&i->channel_map);
-
-    /* For default PulseAudio render device, OR together all of the
-     * PKEY_AudioEndpoint_PhysicalSpeakers values of the sinks. */
-    speaker = list_head(&g_phys_speakers);
-    if (speaker)
-        LIST_ENTRY(speaker, PhysDevice, entry)->channel_mask |= channel_mask;
-
-    pulse_add_device(&g_phys_speakers, i->proplist, i->index, Speakers, channel_mask, i->name, i->description);
-}
-
-static void pulse_phys_sources_cb(pa_context *c, const pa_source_info *i, int eol, void *userdata)
-{
-    if (!i || !i->name || !i->name[0])
-        return;
-    pulse_add_device(&g_phys_sources, i->proplist, i->index,
-        (i->monitor_of_sink == PA_INVALID_INDEX) ? Microphone : LineLevel, 0, i->name, i->description);
 }
 
 /* For most hardware on Windows, users must choose a configuration with an even
@@ -830,80 +971,390 @@ static void convert_channel_map(const pa_channel_map *pa_map, WAVEFORMATEXTENSIB
     fmt->dwChannelMask = pa_mask;
 }
 
-static void pulse_probe_settings(int render, const char *pulse_name, WAVEFORMATEXTENSIBLE *fmt, REFERENCE_TIME *def_period, REFERENCE_TIME *min_period)
+static void pulse_stream_probe_cb(pa_stream *stream, void *user)
 {
-    WAVEFORMATEX *wfx = &fmt->Format;
+    pa_stream_state_t state = pa_stream_get_state(stream);
+    PhysDevice *dev = user;
+
+    if (dev->probe_status == PA_STREAM_CREATING) {
+        if (state != PA_STREAM_CREATING) {
+            dev->length = 0;
+            if (state == PA_STREAM_READY) {
+                dev->ss = *pa_stream_get_sample_spec(stream);
+                dev->map = *pa_stream_get_channel_map(stream);
+                if (dev->flow == eRender)
+                    dev->length = pa_stream_get_buffer_attr(stream)->minreq;
+                else
+                    dev->length = pa_stream_get_buffer_attr(stream)->fragsize;
+                pa_stream_disconnect(stream);
+                dev->probe_status = PA_STREAM_READY;
+                TRACE("probe next: %p\n", dev);
+            } else {
+                pa_stream_unref(stream);
+                dev->probe_status = -1;
+                pulse_dev_set_ready(dev);
+                TRACE("probe error: %p, %d\n", dev, state);
+            }
+        }
+    } else if (dev->probe_status == PA_STREAM_READY) {
+        if (state != PA_STREAM_READY) {
+            if (dev->length)
+                dev->def_period = dev->min_period = pa_bytes_to_usec(10 * dev->length, &dev->ss);
+
+            {
+                WAVEFORMATEX *wfx = &dev->fmt.Format;
+
+                wfx->wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+                wfx->cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
+
+                convert_channel_map(&dev->map, &dev->fmt);
+
+                wfx->wBitsPerSample = 8 * pa_sample_size_of_format(dev->ss.format);
+                wfx->nSamplesPerSec = dev->ss.rate;
+                wfx->nBlockAlign = wfx->nChannels * wfx->wBitsPerSample / 8;
+                wfx->nAvgBytesPerSec = wfx->nSamplesPerSec * wfx->nBlockAlign;
+
+                if (dev->ss.format != PA_SAMPLE_S24_32LE)
+                    dev->fmt.Samples.wValidBitsPerSample = wfx->wBitsPerSample;
+                else
+                    dev->fmt.Samples.wValidBitsPerSample = 24;
+            }
+
+            if (dev->ss.format == PA_SAMPLE_FLOAT32LE)
+                dev->fmt.SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
+            else
+                dev->fmt.SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
+
+            pa_stream_unref(stream);
+            dev->probe_status = -1;
+            pulse_dev_set_ready(dev);
+            TRACE("probe done: %p\n", dev);
+        }
+    }
+
+    pulse_broadcast();
+}
+
+static void pulse_probe_settings(PhysDevice *dev)
+{
+    char *pulse_name = dev->pulse_name;
     pa_stream *stream;
-    pa_channel_map map;
-    pa_sample_spec ss;
     pa_buffer_attr attr;
     int ret;
-    unsigned int length = 0;
 
     if (pulse_name && !pulse_name[0])
         pulse_name = NULL;
 
-    pa_channel_map_init_auto(&map, 2, PA_CHANNEL_MAP_ALSA);
-    ss.rate = 48000;
-    ss.format = PA_SAMPLE_FLOAT32LE;
-    ss.channels = map.channels;
+    pa_channel_map_init_auto(&dev->map, 2, PA_CHANNEL_MAP_ALSA);
+    dev->ss.rate = 48000;
+    dev->ss.format = PA_SAMPLE_FLOAT32LE;
+    dev->ss.channels = dev->map.channels;
 
     attr.maxlength = -1;
     attr.tlength = -1;
-    attr.minreq = attr.fragsize = pa_frame_size(&ss);
+    attr.minreq = attr.fragsize = pa_frame_size(&dev->ss);
     attr.prebuf = 0;
 
-    stream = pa_stream_new(pulse_ctx, "format test stream", &ss, &map);
-    if (stream)
-        pa_stream_set_state_callback(stream, pulse_stream_state, NULL);
+    stream = pa_stream_new(pulse_ctx, "format test stream", &dev->ss, &dev->map);
+    if (stream) {
+        dev->probe_status = PA_STREAM_CREATING;
+        pa_stream_set_state_callback(stream, pulse_stream_probe_cb, dev);
+    }
+
     if (!stream)
         ret = -1;
-    else if (render)
+    else if (dev->flow == eRender)
         ret = pa_stream_connect_playback(stream, pulse_name, &attr,
         PA_STREAM_START_CORKED|PA_STREAM_FIX_RATE|PA_STREAM_FIX_CHANNELS|PA_STREAM_EARLY_REQUESTS, NULL, NULL);
     else
         ret = pa_stream_connect_record(stream, pulse_name, &attr, PA_STREAM_START_CORKED|PA_STREAM_FIX_RATE|PA_STREAM_FIX_CHANNELS|PA_STREAM_EARLY_REQUESTS);
-    if (ret >= 0) {
-        while (pa_mainloop_iterate(pulse_ml, 1, &ret) >= 0 &&
-                pa_stream_get_state(stream) == PA_STREAM_CREATING)
-        {}
-        if (pa_stream_get_state(stream) == PA_STREAM_READY) {
-            ss = *pa_stream_get_sample_spec(stream);
-            map = *pa_stream_get_channel_map(stream);
-            if (render)
-                length = pa_stream_get_buffer_attr(stream)->minreq;
-            else
-                length = pa_stream_get_buffer_attr(stream)->fragsize;
-            pa_stream_disconnect(stream);
-            while (pa_mainloop_iterate(pulse_ml, 1, &ret) >= 0 &&
-                    pa_stream_get_state(stream) == PA_STREAM_READY)
-            {}
+
+    if (ret >= 0)
+        TRACE("probe start: %p\n", dev);
+    else {
+        if (stream)
+            pa_stream_unref(stream);
+        dev->probe_status = -1;
+        pulse_dev_set_ready(dev);
+        TRACE("probe failed: %p\n", dev);
+    }
+}
+
+static void pulse_add_device(EDataFlow flow, pa_proplist *proplist, int index, EndpointFormFactor form,
+                             UINT channel_mask, const char *pulse_name, const char *desc)
+{
+    struct list *list_added = flow == eRender ? &g_phys_speakers_added : &g_phys_sources_added;
+    size_t len = strlen(pulse_name);
+    PhysDevice *dev = malloc(FIELD_OFFSET(PhysDevice, pulse_name[len + 1]));
+
+    if (!dev)
+        return;
+
+    if (!(dev->name = get_device_name(desc, proplist))) {
+        free(dev);
+        return;
+    }
+    dev->flow = flow;
+    dev->form = form;
+    dev->index = index;
+    dev->channel_mask = channel_mask;
+    dev->def_period = 0;
+    dev->min_period = 0;
+    fill_device_info(dev, proplist);
+    memcpy(dev->pulse_name, pulse_name, len + 1);
+
+    /* ready vars */
+    dev->ready = FALSE;
+    pthread_mutex_init(&dev->ready_mutex, NULL);
+    pthread_cond_init(&dev->ready_cond, NULL);
+
+    pthread_mutex_lock(&pulse_ready_mutex);
+    ++pulse_ready_count;
+    pulse_ready = FALSE;
+    pthread_mutex_unlock(&pulse_ready_mutex);
+
+    pulse_probe_settings(dev);
+
+    g_phys_lock();
+    list_add_tail(list_added, &dev->entry);
+    pthread_cond_broadcast(&g_phys_cond);
+    g_phys_unlock();
+
+    TRACE("%s\n", debugstr_w(dev->name));
+}
+
+static void pulse_phys_speakers_cb(pa_context *c, const pa_sink_info *i, int eol, void *userdata)
+{
+    struct list *speaker;
+    UINT channel_mask;
+
+    if (!i || !i->name || !i->name[0])
+        return;
+    channel_mask = pulse_channel_map_to_channel_mask(&i->channel_map);
+
+    g_phys_lock();
+    /* For default PulseAudio render device, OR together all of the
+     * PKEY_AudioEndpoint_PhysicalSpeakers values of the sinks. */
+    speaker = list_head(&g_phys_speakers);
+    if (!speaker)
+        speaker = list_head(&g_phys_speakers_added);
+    if (speaker)
+        LIST_ENTRY(speaker, PhysDevice, entry)->channel_mask |= channel_mask;
+    g_phys_unlock();
+
+    pulse_add_device(eRender, i->proplist, i->index, Speakers, channel_mask, i->name, i->description);
+    pulse_broadcast();
+}
+
+static void pulse_phys_sources_cb(pa_context *c, const pa_source_info *i, int eol, void *userdata)
+{
+    if (!i || !i->name || !i->name[0])
+        return;
+    pulse_add_device(eCapture, i->proplist, i->index,
+        (i->monitor_of_sink == PA_INVALID_INDEX) ? Microphone : LineLevel, 0, i->name, i->description);
+    pulse_broadcast();
+}
+
+static void pulse_remove_device(EDataFlow flow, int index)
+{
+    struct list *list = flow == eRender ? &g_phys_speakers : &g_phys_sources;
+    struct list *list_added = flow == eRender ? &g_phys_speakers_added : &g_phys_sources_added;
+    PhysDevice *dev, *dev_next;
+
+    TRACE("%d\n", index);
+    g_phys_lock();
+    LIST_FOR_EACH_ENTRY_SAFE(dev, dev_next, list, PhysDevice, entry) {
+        if (dev->index == index) {
+            struct list *list_removed = flow == eRender ? &g_phys_speakers_removed : &g_phys_sources_removed;
+            list_remove(&dev->entry);
+            list_add_tail(list_removed, &dev->entry);
+            pthread_cond_broadcast(&g_phys_cond);
+            g_phys_unlock();
+            return;
         }
     }
+    LIST_FOR_EACH_ENTRY_SAFE(dev, dev_next, list_added, PhysDevice, entry) {
+        if (dev->index == index) {
+            list_remove(&dev->entry);
+            list_add_tail(&g_phys_added_removed, &dev->entry);
+            g_phys_unlock();
+            return;
+        }
+    }
+    g_phys_unlock();
+}
 
-    if (stream)
-        pa_stream_unref(stream);
+static void pulse_remove_all_devices(EDataFlow flow)
+{
+    struct list *list = flow == eRender ? &g_phys_speakers : &g_phys_sources;
+    struct list *list_added = flow == eRender ? &g_phys_speakers_added : &g_phys_sources_added;
+    struct list *list_removed = flow == eRender ? &g_phys_speakers_removed : &g_phys_sources_removed;
+    PhysDevice *dev, *dev_next;
 
-    if (length)
-        *def_period = *min_period = pa_bytes_to_usec(10 * length, &ss);
+    g_phys_lock();
+    LIST_FOR_EACH_ENTRY_SAFE(dev, dev_next, list, PhysDevice, entry) {
+        list_remove(&dev->entry);
+        list_add_tail(list_removed, &dev->entry);
+    }
+    LIST_FOR_EACH_ENTRY_SAFE(dev, dev_next, list_added, PhysDevice, entry) {
+        list_remove(&dev->entry);
+        list_add_tail(&g_phys_added_removed, &dev->entry);
+    }
+    pthread_cond_broadcast(&g_phys_cond);
+    g_phys_unlock();
+}
 
-    wfx->wFormatTag = WAVE_FORMAT_EXTENSIBLE;
-    wfx->cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
+static void pulse_subscribecallback(pa_context *c, pa_subscription_event_type_t t, uint32_t index, void *userdata)
+{
+    pa_operation *o;
+    switch (t & PA_SUBSCRIPTION_EVENT_FACILITY_MASK) {
+        case PA_SUBSCRIPTION_EVENT_SINK:
+            if ((t & PA_SUBSCRIPTION_EVENT_TYPE_MASK) == PA_SUBSCRIPTION_EVENT_NEW) {
+                o = pa_context_get_sink_info_by_index(c, index, pulse_phys_speakers_cb, userdata);
+                if (o)
+                    pa_operation_unref(o);
+            } else if ((t & PA_SUBSCRIPTION_EVENT_TYPE_MASK) == PA_SUBSCRIPTION_EVENT_REMOVE) {
+                pulse_remove_device(eRender, index);
+            }
+            break;
 
-    convert_channel_map(&map, fmt);
+        case PA_SUBSCRIPTION_EVENT_SOURCE:
+            if ((t & PA_SUBSCRIPTION_EVENT_TYPE_MASK) == PA_SUBSCRIPTION_EVENT_NEW) {
+                o = pa_context_get_source_info_by_index(c, index, pulse_phys_sources_cb, userdata);
+                if (o)
+                    pa_operation_unref(o);
+            } else if ((t & PA_SUBSCRIPTION_EVENT_TYPE_MASK) == PA_SUBSCRIPTION_EVENT_REMOVE) {
+                pulse_remove_device(eCapture, index);
+            }
+            break;
+    }
+    pulse_broadcast();
+}
 
-    wfx->wBitsPerSample = 8 * pa_sample_size_of_format(ss.format);
-    wfx->nSamplesPerSec = ss.rate;
-    wfx->nBlockAlign = wfx->nChannels * wfx->wBitsPerSample / 8;
-    wfx->nAvgBytesPerSec = wfx->nSamplesPerSec * wfx->nBlockAlign;
-    if (ss.format != PA_SAMPLE_S24_32LE)
-        fmt->Samples.wValidBitsPerSample = wfx->wBitsPerSample;
-    else
-        fmt->Samples.wValidBitsPerSample = 24;
-    if (ss.format == PA_SAMPLE_FLOAT32LE)
-        fmt->SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
-    else
-        fmt->SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
+static void pulse_contextcallback(pa_context *c, void *userdata)
+{
+    pa_operation *o;
+    switch (pa_context_get_state(c)) {
+        default:
+            FIXME("Unhandled state: %i\n", pa_context_get_state(c));
+            return;
+
+        case PA_CONTEXT_CONNECTING:
+        case PA_CONTEXT_UNCONNECTED:
+        case PA_CONTEXT_AUTHORIZING:
+        case PA_CONTEXT_SETTING_NAME:
+        case PA_CONTEXT_TERMINATED:
+            TRACE("State change to %i\n", pa_context_get_state(c));
+            return;
+
+        case PA_CONTEXT_READY:
+            TRACE("Ready\n");
+
+            pulse_remove_all_devices(eRender);
+            pulse_remove_all_devices(eCapture);
+
+            /* Burnout Paradise Remastered expects device name to have a space. */
+            pulse_add_device(eRender, NULL, 0, Speakers, 0, "", "PulseAudio Output");
+            pulse_add_device(eCapture, NULL, 0, Microphone, 0, "", "PulseAudio Input");
+
+            o = pa_context_get_sink_info_list(c, &pulse_phys_speakers_cb, NULL);
+            if (o)
+                pa_operation_unref(o);
+            o = pa_context_get_source_info_list(c, &pulse_phys_sources_cb, NULL);
+            if (o)
+                pa_operation_unref(o);
+
+            pa_context_set_subscribe_callback(c, pulse_subscribecallback, userdata);
+            o = pa_context_subscribe(
+                c,
+                (pa_subscription_mask_t)(PA_SUBSCRIPTION_MASK_SINK | PA_SUBSCRIPTION_MASK_SOURCE),
+                NULL,
+                userdata);
+            if (o)
+                pa_operation_unref(o);
+
+            break;
+
+        case PA_CONTEXT_FAILED:
+            WARN("Context failed: %s\n", pa_strerror(pa_context_errno(c)));
+            break;
+    }
+    pulse_broadcast();
+}
+
+#define PULSE_PROP_APP_NAME_ENV "PULSE_PROP_application.name"
+
+static void pulse_set_name_cb(pa_context *c, int success, void *userdata)
+{
+    if (userdata){
+        if (success) {
+            const char *name = userdata;
+            setenv(PULSE_PROP_APP_NAME_ENV, name, 1);
+        }
+        free(userdata);
+    }
+    pulse_broadcast();
+}
+
+static HRESULT pulse_connect_ctx(const char *name)
+{
+    if (pulse_ctx && PA_CONTEXT_IS_GOOD(pa_context_get_state(pulse_ctx))) {
+        pa_operation *o;
+        o = pa_context_set_name(pulse_ctx, name, pulse_set_name_cb, strdup(name));
+        if (o) {
+            pa_operation_unref(o);
+        }
+        return S_OK;
+    }
+    if (pulse_ctx)
+        pa_context_unref(pulse_ctx);
+
+    pulse_ctx = pa_context_new(pa_mainloop_get_api(pulse_ml), name);
+    setenv(PULSE_PROP_APP_NAME_ENV, name, 1);
+    if (!pulse_ctx) {
+        ERR("Failed to create context\n");
+        return E_FAIL;
+    }
+
+    pa_context_set_state_callback(pulse_ctx, pulse_contextcallback, NULL);
+
+    TRACE("libpulse protocol version: %u. API Version %u\n", pa_context_get_protocol_version(pulse_ctx), PA_API_VERSION);
+    if (pa_context_connect(pulse_ctx, NULL, 0, NULL) < 0)
+        goto fail;
+
+    return S_OK;
+
+fail:
+    pa_context_unref(pulse_ctx);
+    pulse_ctx = NULL;
+    return E_FAIL;
+}
+
+static HRESULT pulse_connect(const char *name)
+{
+    pa_context_state_t state;
+    HRESULT hr;
+    hr = pulse_connect_ctx(name);
+    if (FAILED(hr))
+        return hr;
+
+    /* Wait for connection */
+    while ((state = pa_context_get_state(pulse_ctx)) != PA_CONTEXT_READY &&
+           state != PA_CONTEXT_FAILED && state != PA_CONTEXT_TERMINATED)
+        pulse_cond_wait();
+
+    if (state != PA_CONTEXT_READY) {
+        TRACE("Server ready failed.\n");
+        pa_context_unref(pulse_ctx);
+        pulse_ctx = NULL;
+        return E_FAIL;
+    }
+
+    TRACE("Connected to server %s with protocol version: %i.\n",
+        pa_context_get_server(pulse_ctx),
+        pa_context_get_server_protocol_version(pulse_ctx));
+
+    return S_OK;
 }
 
 /* some poorly-behaved applications call audio functions during DllMain, so we
@@ -913,34 +1364,41 @@ static void pulse_probe_settings(int render, const char *pulse_name, WAVEFORMATE
 static NTSTATUS pulse_test_connect(void *args)
 {
     struct test_connect_params *params = args;
-    PhysDevice *dev;
-    pa_operation *o;
     int ret;
     char *name = wstr_to_str(params->name);
+    HRESULT hr;
 
     pulse_lock();
-    pulse_ml = pa_mainloop_new();
-
-    pa_mainloop_set_poll_func(pulse_ml, pulse_poll_func, NULL);
-
-    pulse_ctx = pa_context_new(pa_mainloop_get_api(pulse_ml), name);
-
-    free(name);
-
-    if (!pulse_ctx) {
-        ERR("Failed to create context\n");
-        pa_mainloop_free(pulse_ml);
-        pulse_ml = NULL;
+    if (pulse_test_succeeded) {
         pulse_unlock();
+        WARN("Pulse is already running.");
+        params->priority = Priority_Preferred;
+        return STATUS_SUCCESS;
+    }
+
+    if (pulse_ml) {
+        pulse_unlock();
+        ERR("Main loop already present.\n");
         params->priority = Priority_Unavailable;
         return STATUS_SUCCESS;
     }
 
-    pa_context_set_state_callback(pulse_ctx, pulse_contextcallback, NULL);
+    if (!pulse_main_loop_new()) {
+        pulse_unlock();
+        ERR("Failed to create main loop\n");
+        params->priority = Priority_Unavailable;
+        return STATUS_SUCCESS;
+    }
 
-    TRACE("libpulse protocol version: %u. API Version %u\n", pa_context_get_protocol_version(pulse_ctx), PA_API_VERSION);
-    if (pa_context_connect(pulse_ctx, NULL, 0, NULL) < 0)
-        goto fail;
+    hr = pulse_connect_ctx(name);
+    free(name);
+    if (FAILED(hr)) {
+        pulse_main_loop_free();
+        pulse_unlock();
+        ERR("Failed to create context\n");
+        params->priority = Priority_Unavailable;
+        return STATUS_SUCCESS;
+    }
 
     /* Wait for connection */
     while (pa_mainloop_iterate(pulse_ml, 1, &ret) >= 0) {
@@ -960,53 +1418,24 @@ static NTSTATUS pulse_test_connect(void *args)
         pa_context_get_server(pulse_ctx),
         pa_context_get_server_protocol_version(pulse_ctx));
 
-    free_phys_device_lists();
-    list_init(&g_phys_speakers);
-    list_init(&g_phys_sources);
-
-    /* Burnout Paradise Remastered expects device name to have a space. */
-    pulse_add_device(&g_phys_speakers, NULL, 0, Speakers, 0, "", "PulseAudio Output");
-    pulse_add_device(&g_phys_sources, NULL, 0, Microphone, 0, "", "PulseAudio Input");
-
-    o = pa_context_get_sink_info_list(pulse_ctx, &pulse_phys_speakers_cb, NULL);
-    if (o) {
-        while (pa_mainloop_iterate(pulse_ml, 1, &ret) >= 0 &&
-                pa_operation_get_state(o) == PA_OPERATION_RUNNING)
-        {}
-        pa_operation_unref(o);
+    pulse_ready = FALSE;
+    while (pa_mainloop_iterate(pulse_ml, 1, &ret) >= 0 && !pulse_ready) {}
+    if (!pulse_ready) {
+        WARN("PulseAudio device enum error (device info likely incomplete).\n");
+        goto fail;
     }
-
-    o = pa_context_get_source_info_list(pulse_ctx, &pulse_phys_sources_cb, NULL);
-    if (o) {
-        while (pa_mainloop_iterate(pulse_ml, 1, &ret) >= 0 &&
-                pa_operation_get_state(o) == PA_OPERATION_RUNNING)
-        {}
-        pa_operation_unref(o);
-    }
-
-    LIST_FOR_EACH_ENTRY(dev, &g_phys_speakers, PhysDevice, entry) {
-        pulse_probe_settings(1, dev->pulse_name, &dev->fmt, &dev->def_period, &dev->min_period);
-    }
-
-    LIST_FOR_EACH_ENTRY(dev, &g_phys_sources, PhysDevice, entry) {
-        pulse_probe_settings(0, dev->pulse_name, &dev->fmt, &dev->def_period, &dev->min_period);
-    }
-
-    pa_context_unref(pulse_ctx);
-    pulse_ctx = NULL;
-    pa_mainloop_free(pulse_ml);
-    pulse_ml = NULL;
+    /* keep pulse_ml and pulse_ctx for subscribe notification */
 
     pulse_unlock();
-
+    pulse_test_succeeded = TRUE;
     params->priority = Priority_Preferred;
     return STATUS_SUCCESS;
 
 fail:
+    free_phys_device_lists();
     pa_context_unref(pulse_ctx);
     pulse_ctx = NULL;
-    pa_mainloop_free(pulse_ml);
-    pulse_ml = NULL;
+    pulse_main_loop_free();
     pulse_unlock();
     params->priority = Priority_Unavailable;
     return STATUS_SUCCESS;
@@ -1232,6 +1661,7 @@ static HRESULT get_device_period_helper(EDataFlow flow, const char *pulse_name, 
         return E_POINTER;
     }
 
+    g_phys_lock();
     LIST_FOR_EACH_ENTRY(dev, list, PhysDevice, entry) {
         if (strcmp(pulse_name, dev->pulse_name))
             continue;
@@ -1240,8 +1670,11 @@ static HRESULT get_device_period_helper(EDataFlow flow, const char *pulse_name, 
             *def = dev->def_period;
         if (min)
             *min = dev->min_period;
+
+        g_phys_unlock();
         return S_OK;
     }
+    g_phys_unlock();
 
     return E_FAIL;
 }
@@ -2466,15 +2899,17 @@ static NTSTATUS pulse_get_mix_format(void *args)
     struct list *list = (params->flow == eRender) ? &g_phys_speakers : &g_phys_sources;
     PhysDevice *dev;
 
+    g_phys_lock();
     LIST_FOR_EACH_ENTRY(dev, list, PhysDevice, entry) {
         if (strcmp(params->device, dev->pulse_name))
             continue;
 
         *params->fmt = dev->fmt;
+        g_phys_unlock();
         params->result = S_OK;
-
         return STATUS_SUCCESS;
     }
+    g_phys_unlock();
 
     params->result = E_FAIL;
     return STATUS_SUCCESS;
@@ -2776,17 +3211,22 @@ static NTSTATUS pulse_get_prop_value(void *args)
     struct list *list = (params->flow == eRender) ? &g_phys_speakers : &g_phys_sources;
     PhysDevice *dev;
 
+    g_phys_lock();
     LIST_FOR_EACH_ENTRY(dev, list, PhysDevice, entry) {
         if (strcmp(params->device, dev->pulse_name))
             continue;
         if (IsEqualPropertyKey(*params->prop, devicepath_key)) {
             get_device_path(dev, params);
+
+            g_phys_unlock();
             return STATUS_SUCCESS;
         } else if (IsEqualGUID(&params->prop->fmtid, &PKEY_AudioEndpoint_GUID)) {
             switch (params->prop->pid) {
             case 0:   /* FormFactor */
                 params->value->vt = VT_UI4;
                 params->value->ulVal = dev->form;
+
+                g_phys_unlock();
                 params->result = S_OK;
                 return STATUS_SUCCESS;
             case 3:   /* PhysicalSpeakers */
@@ -2794,6 +3234,8 @@ static NTSTATUS pulse_get_prop_value(void *args)
                     goto fail;
                 params->value->vt = VT_UI4;
                 params->value->ulVal = dev->channel_mask;
+
+                g_phys_unlock();
                 params->result = S_OK;
                 return STATUS_SUCCESS;
             }
@@ -2808,14 +3250,17 @@ static NTSTATUS pulse_get_prop_value(void *args)
                 params->result = S_OK;
             }
 
+            g_phys_unlock();
             return STATUS_SUCCESS;
         }
 
+        g_phys_unlock();
         params->result = E_NOTIMPL;
         return STATUS_SUCCESS;
     }
 
 fail:
+    g_phys_unlock();
     params->result = E_FAIL;
     return STATUS_SUCCESS;
 }
