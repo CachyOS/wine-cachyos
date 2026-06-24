@@ -1935,12 +1935,26 @@ end:
     return ret;
 }
 
+DEFINE_GUID(DEVINTERFACE_AUDIO_RENDER, 0xe6327cad,0xdcec,0x4949,0xae,0x8a,0x99,0x1e,0x97,0x6a,0x79,0xd2);
+DEFINE_GUID(DEVINTERFACE_AUDIO_CAPTURE, 0x2eef81be,0x33fa,0x4800,0x96,0x70,0x1c,0xd4,0x74,0x97,0x2c,0x3f);
+
 static void SETUPDI_AddDeviceInterfaces(struct device *device, HKEY key,
     const GUID *guid, DWORD flags)
 {
     DWORD i, len;
     WCHAR subKeyName[MAX_PATH];
     LONG l = ERROR_SUCCESS;
+
+    /* Fake entries instead of a real driver. See mmdevapi/devenum.c */
+    const GUID *SKIP_PRESENT_CHECK[] = {&DEVINTERFACE_AUDIO_RENDER, &DEVINTERFACE_AUDIO_CAPTURE, NULL};
+    bool skip_present_check = false;
+
+    for (i = 0; SKIP_PRESENT_CHECK[i] ; i++)
+        if (IsEqualGUID(SKIP_PRESENT_CHECK[i], guid))
+        {
+            skip_present_check = true;
+            break;
+        }
 
     for (i = 0; !l; i++)
     {
@@ -1960,8 +1974,24 @@ static void SETUPDI_AddDeviceInterfaces(struct device *device, HKEY key,
                     WCHAR symbolicLink[MAX_PATH];
                     DWORD dataType;
 
-                    if (!(flags & DIGCF_PRESENT) || is_linked(subKey))
+                    if (!(flags & DIGCF_PRESENT) || is_linked(subKey) || skip_present_check)
                     {
+                        if (skip_present_check)
+                        {
+                            DWORD linked = 1;
+                            HKEY control_key;
+
+                            if (!RegCreateKeyW(subKey, L"Control", &control_key))
+                            {
+                                if (RegSetValueExW(control_key, L"Linked", 0, REG_DWORD, (BYTE *)&linked, sizeof(DWORD)))
+                                    WARN("Set \"Linked\" registry entry failed");
+
+                                RegCloseKey(control_key);
+                            }
+                            else
+                                WARN("Create \"Control\" registry key failed");
+                        }
+
                         iface = SETUPDI_CreateDeviceInterface(device, guid, subKeyName + 1);
 
                         len = sizeof(symbolicLink);
