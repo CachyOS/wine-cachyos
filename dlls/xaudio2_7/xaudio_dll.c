@@ -1778,7 +1778,7 @@ static HRESULT WINAPI IXAudio2Impl_CreateMasteringVoice(IXAudio2 *iface,
     TRACE("device id %s, category %#x\n", debugstr_w(deviceId), streamCategory);
 
     FAudio_CreateMasteringVoice8(This->faudio, &This->mst.faudio_voice, inputChannels,
-            inputSampleRate, flags, NULL /* TODO: (uint16_t*)deviceId */,
+            inputSampleRate, flags, (uint16_t*)deviceId,
             This->mst.effect_chain, (FAudioStreamCategory)streamCategory);
 #else
     TRACE("device index %u\n", index);
