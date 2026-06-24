@@ -130,6 +130,8 @@ uint32_t FAudioCOMConstructWithCustomAllocatorEXT(
 #ifndef FAUDIO_DISABLE_DEBUGCONFIGURATION
 	FAudio_SetDebugConfiguration(*ppFAudio, &debugInit, NULL);
 #endif /* FAUDIO_DISABLE_DEBUGCONFIGURATION */
+	(*ppFAudio)->platformLock = FAudio_PlatformCreateMutex();
+	LOG_MUTEX_CREATE((*ppFAudio), (*ppFAudio)->platformLock)
 	(*ppFAudio)->sourceLock = FAudio_PlatformCreateMutex();
 	LOG_MUTEX_CREATE((*ppFAudio), (*ppFAudio)->sourceLock)
 	(*ppFAudio)->submixLock = FAudio_PlatformCreateMutex();
@@ -182,6 +184,8 @@ uint32_t FAudio_Release(FAudio *audio)
 		audio->pFree(audio->decodeCache);
 		audio->pFree(audio->resampleCache);
 		audio->pFree(audio->effectChainCache);
+		LOG_MUTEX_DESTROY(audio, audio->platformLock)
+		FAudio_PlatformDestroyMutex(audio->platformLock);
 		LOG_MUTEX_DESTROY(audio, audio->sourceLock)
 		FAudio_PlatformDestroyMutex(audio->sourceLock);
 		LOG_MUTEX_DESTROY(audio, audio->submixLock)
@@ -768,6 +772,9 @@ static uint32_t CreateMasteringVoiceImpl(
 		&DATAFORMAT_SUBTYPE_IEEE_FLOAT
 	);
 
+	FAudio_PlatformLockMutex(audio->platformLock);
+	LOG_MUTEX_LOCK(audio, audio->platformLock)
+
 	/* Platform Device */
 	FAudio_PlatformInit(
 		audio,
@@ -782,6 +789,9 @@ static uint32_t CreateMasteringVoiceImpl(
 	{
 		FAudioVoice_DestroyVoice(*ppMasteringVoice);
 		*ppMasteringVoice = NULL;
+
+		FAudio_PlatformUnlockMutex(audio->platformLock);
+		LOG_MUTEX_UNLOCK(audio, audio->platformLock)
 
 		/* Not the best code, but it's probably true? */
 		return FAUDIO_E_DEVICE_INVALIDATED;
@@ -798,6 +808,11 @@ static uint32_t CreateMasteringVoiceImpl(
 			(*ppMasteringVoice)->master.inputChannels
 		);
 	}
+
+	FAudio_PlatformAudioThread(audio->platform);
+
+	FAudio_PlatformUnlockMutex(audio->platformLock);
+	LOG_MUTEX_UNLOCK(audio, audio->platformLock)
 
 	return 0;
 }
@@ -2431,11 +2446,15 @@ static void destroy_voice(FAudioVoice *voice)
 	}
 	else if (voice->type == FAUDIO_VOICE_MASTER)
 	{
+		FAudio_PlatformLockMutex(voice->audio->platformLock);
+		LOG_MUTEX_LOCK(voice->audio, voice->audio->platformLock)
 		if (voice->audio->platform != NULL)
 		{
 			FAudio_PlatformQuit(voice->audio->platform);
 			voice->audio->platform = NULL;
 		}
+		FAudio_PlatformUnlockMutex(voice->audio->platformLock);
+		LOG_MUTEX_UNLOCK(voice->audio, voice->audio->platformLock)
 		if (voice->master.effectCache != NULL)
 		{
 			voice->audio->pFree(voice->master.effectCache);
@@ -2582,11 +2601,11 @@ uint32_t FAudioSourceVoice_Start(
 		return 0;
 	}
 
-
 	FAudio_assert(voice->type == FAUDIO_VOICE_SOURCE);
 
 	FAudio_assert(Flags == 0);
 	voice->src.active = 1;
+
 	LOG_API_EXIT(voice->audio)
 	return 0;
 }
@@ -2631,6 +2650,7 @@ uint32_t FAudioSourceVoice_SubmitSourceBuffer(
 	uint32_t adpcmMask, *adpcmByteCount;
 	uint32_t playBegin, playLength, loopBegin, loopLength, bufferLength;
 	FAudioBufferEntry *entry, *list;
+	uint32_t status = 0;
 
 	LOG_API_ENTER(voice->audio)
 	LOG_INFO(
@@ -2654,6 +2674,17 @@ uint32_t FAudioSourceVoice_SubmitSourceBuffer(
 					 voice->src.format->wFormatTag == FAUDIO_FORMAT_EXTENSIBLE))) ||
 			(voice->src.wmadec == NULL && (pBufferWMA == NULL && voice->src.format->wFormatTag != FAUDIO_FORMAT_XMAUDIO2))	);
 #endif /* HAVE_WMADEC */
+
+	FAudio_PlatformLockMutex(voice->audio->platformLock);
+	LOG_MUTEX_LOCK(voice->audio, voice->audio->platformLock)
+	if (voice->audio->platform)
+		status = FAudio_PlatformStatus(voice->audio->platform);
+	FAudio_PlatformUnlockMutex(voice->audio->platformLock);
+	LOG_MUTEX_UNLOCK(voice->audio, voice->audio->platformLock)
+	if (status) {
+		LOG_API_EXIT(voice->audio)
+		return status;
+	}
 
 	/* Start off with whatever they just sent us... */
 	playBegin = pBuffer->PlayBegin;

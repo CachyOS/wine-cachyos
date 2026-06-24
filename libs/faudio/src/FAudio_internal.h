@@ -462,6 +462,7 @@ struct FAudio
 
 	/* Platform opaque pointer */
 	void *platform;
+	FAudioMutex platformLock;
 };
 
 struct FAudioVoice
@@ -801,6 +802,8 @@ void FAudio_PlatformInit(
 	uint32_t *updateSize,
 	void** platformDevice
 );
+void FAudio_PlatformAudioThread(void* platformDevice);
+uint32_t FAudio_PlatformStatus(void* platformDevice);
 void FAudio_PlatformQuit(void* platformDevice);
 
 uint32_t FAudio_PlatformGetDeviceCount(void);
