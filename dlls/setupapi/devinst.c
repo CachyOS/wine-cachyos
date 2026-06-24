@@ -3400,7 +3400,16 @@ BOOL WINAPI SetupDiGetDeviceRegistryPropertyA(HDEVINFO devinfo,
     if (Property < ARRAY_SIZE(PropertyMap) && PropertyMap[Property].nameA)
     {
         DWORD size = PropertyBufferSize;
-        LONG l = RegQueryValueExA(device->key, PropertyMap[Property].nameA,
+        LONG l;
+
+        /* Despite GUID returned as REG_SZ, it's always wide string on Windows. */
+        if (PropertyMap[Property].devPropType == DEVPROP_TYPE_GUID)
+            return SetupDiGetDeviceRegistryPropertyW(
+                devinfo, device_data, Property, PropertyRegDataType,
+                PropertyBuffer, PropertyBufferSize, RequiredSize
+            );
+
+        l = RegQueryValueExA(device->key, PropertyMap[Property].nameA,
                 NULL, PropertyRegDataType, PropertyBuffer, &size);
 
         if (l == ERROR_FILE_NOT_FOUND)
@@ -3414,6 +3423,7 @@ BOOL WINAPI SetupDiGetDeviceRegistryPropertyA(HDEVINFO devinfo,
         if (RequiredSize)
             *RequiredSize = size;
     }
+
     return ret;
 }
 
@@ -3455,7 +3465,12 @@ BOOL WINAPI SetupDiGetDeviceRegistryPropertyW(HDEVINFO devinfo,
             SetLastError(l);
         if (RequiredSize)
             *RequiredSize = size;
+
+        /* Death Stranding Director's Cut expect the containerId string to be all lower case. */
+        if (ret && PropertyMap[Property].devPropType == DEVPROP_TYPE_GUID)
+            _wcslwr((LPWSTR)PropertyBuffer);
     }
+
     return ret;
 }
 
