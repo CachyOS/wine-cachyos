@@ -2040,6 +2040,7 @@ end:
 
 DEFINE_GUID(DEVINTERFACE_AUDIO_RENDER, 0xe6327cad,0xdcec,0x4949,0xae,0x8a,0x99,0x1e,0x97,0x6a,0x79,0xd2);
 DEFINE_GUID(DEVINTERFACE_AUDIO_CAPTURE, 0x2eef81be,0x33fa,0x4800,0x96,0x70,0x1c,0xd4,0x74,0x97,0x2c,0x3f);
+DEFINE_GUID(AM_KSCATEGORY_AUDIO, 0x6994ad04,0x93ef,0x11d0,0xa3,0xcc,0x00,0xa0,0xc9,0x22,0x31,0x96);
 
 static void SETUPDI_AddDeviceInterfaces(struct device *device, HKEY key,
     const GUID *guid, DWORD flags)
@@ -2049,7 +2050,7 @@ static void SETUPDI_AddDeviceInterfaces(struct device *device, HKEY key,
     LONG l = ERROR_SUCCESS;
 
     /* Fake entries instead of a real driver. See mmdevapi/devenum.c */
-    const GUID *SKIP_PRESENT_CHECK[] = {&DEVINTERFACE_AUDIO_RENDER, &DEVINTERFACE_AUDIO_CAPTURE, NULL};
+    const GUID *SKIP_PRESENT_CHECK[] = {&DEVINTERFACE_AUDIO_RENDER, &DEVINTERFACE_AUDIO_CAPTURE, &AM_KSCATEGORY_AUDIO, NULL};
     bool skip_present_check = false;
 
     for (i = 0; SKIP_PRESENT_CHECK[i] ; i++)
