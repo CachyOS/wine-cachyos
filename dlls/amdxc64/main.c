@@ -60,11 +60,60 @@ static void check_fsr4_supported(ID3D12Device *device, BOOL *fp8, BOOL *p_wmma)
     ID3D12DeviceExt3_Release(ext);
 }
 
+static BOOL is_rdna2(ID3D12Device *device)
+{
+    ID3D12DXVKInteropDevice *interop;
+    VkInstance instance;
+    VkDevice vk_device;
+    VkPhysicalDevice phys_device;
+    VkPhysicalDeviceProperties2 prop = {0};
+    VkPhysicalDeviceDriverProperties driver_prop = {0};
+    const char **extensions = NULL;
+    UINT extension_count = 0;
+    BOOL ret = FALSE;
+
+    if (FAILED(ID3D12Device_QueryInterface(device, &IID_ID3D12DXVKInteropDevice, (void **)&interop)))
+        return FALSE;
+
+    if (FAILED(ID3D12DXVKInteropDevice_GetVulkanHandles(interop, &instance, &phys_device, &vk_device)))
+        goto fail;
+
+    prop.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    prop.pNext = &driver_prop;
+    driver_prop.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES;
+
+    vkGetPhysicalDeviceProperties2(phys_device, &prop);
+
+    if (prop.properties.vendorID != 0x1002) goto fail;
+    /* Do not enable by default on iGPUs. They are not powerful enough.
+     * Still can be enabled manually through FSR4_UPGRADE=1. */
+    if (prop.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) goto fail;
+
+    if (FAILED(ID3D12DXVKInteropDevice_GetDeviceExtensions(interop, &extension_count, NULL)))
+        goto fail;
+
+    extensions = malloc(sizeof(*extensions) * extension_count);
+
+    if (FAILED(ID3D12DXVKInteropDevice_GetDeviceExtensions(interop, &extension_count, extensions)))
+        goto fail;
+
+    for (UINT i = 0; i < extension_count; i++)
+    {
+        if (!strcmp("VK_KHR_fragment_shading_rate", extensions[i])) ret = TRUE;
+    }
+
+fail:
+    if (extensions) free(extensions);
+    ID3D12DXVKInteropDevice_Release(interop);
+
+    return ret;
+}
+
 struct AMDFSR4FFX
 {
     IAmdExtFfxApi IAmdExtFfxApi_iface;
     LONG ref;
-    BOOL fp8_supported;
+    BOOL fp8_supported, rdna2;
 };
 
 static struct AMDFSR4FFX* impl_from_IAmdExtFfxApi(IAmdExtFfxApi* iface)
@@ -153,6 +202,9 @@ HRESULT STDMETHODCALLTYPE AMDFSR4FFX_UpdateFfxApiProvider(IAmdExtFfxApi *iface, 
         unk_data->unk[2] = 1;
 
     fsr4 = (env = getenv("FSR4_UPGRADE")) && !strcmp(env, "1");
+    if (!fsr4 && !this->rdna2) return E_NOTIMPL;
+    /* explicitly disabled */
+    if (env && !fsr4) return E_NOTIMPL;
 
     if (!(amdffx = LoadLibraryA("amdxcffx64")))
     {
@@ -542,6 +594,7 @@ HRESULT CDECL AmdExtD3DCreateInterface(IUnknown *outer, REFIID iid, void **obj)
         struct AMDFSR4FFX* ffx = calloc(1, sizeof(struct AMDFSR4FFX));
         ffx->IAmdExtFfxApi_iface.lpVtbl = &AMDFSR4FFX_vtable;
         ffx->ref = 1;
+        ffx->rdna2 = is_rdna2((ID3D12Device *)outer);
         check_fsr4_supported((ID3D12Device *)outer, &ffx->fp8_supported, NULL);
         *obj = &ffx->IAmdExtFfxApi_iface;
         return S_OK;
