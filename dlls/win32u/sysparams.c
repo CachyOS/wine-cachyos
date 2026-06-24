@@ -1813,7 +1813,7 @@ static void add_gpu( const char *name, const struct pci_id *pci_id, const GUID *
     KEY_VALUE_PARTIAL_INFORMATION *value = (void *)buffer;
     struct gpu_info *vulkan_gpu = NULL, *opengl_gpu = NULL;
     ULONGLONG memory = 0;
-    struct gpu *gpu;
+    struct gpu *gpu, *temp;
     unsigned int i;
     HKEY hkey, subkey;
     DWORD len;
@@ -1891,6 +1891,22 @@ static void add_gpu( const char *name, const struct pci_id *pci_id, const GUID *
     }
 
     NtClose( hkey );
+
+    /* fixup LUID conflicts, hard cap at 10 iterations */
+    for (i = 0; i < 10; i++)
+    {
+        LIST_FOR_EACH_ENTRY( temp, &gpus, struct gpu, entry )
+        {
+            if (temp->luid.HighPart == gpu->luid.HighPart &&
+                temp->luid.LowPart == gpu->luid.LowPart)
+            {
+                NtAllocateLocallyUniqueId( &gpu->luid );
+                ERR( "New LUID %08x%08x\n", gpu->luid.HighPart, gpu->luid.LowPart );
+                continue;
+            }
+        }
+        break;
+    }
 
     if (!memory && vulkan_gpu) memory = vulkan_gpu->memory;
     if (!memory && opengl_gpu) memory = opengl_gpu->memory;
