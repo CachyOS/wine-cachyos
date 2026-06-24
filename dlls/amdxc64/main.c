@@ -138,15 +138,12 @@ HRESULT STDMETHODCALLTYPE AMDFSR4FFX_UpdateFfxApiProvider(IAmdExtFfxApi *iface, 
     struct AMDFSR4FFX *this = impl_from_IAmdExtFfxApi(iface);
     struct ffxExternalProvider *data = _data;
     /* required to expose MLFG support */
-    struct unk_data unk_data[1] =
-    {
-        {{0, 1, 0, 0}, NULL}
-    };
+    struct unk_data unk_data[1] = {{{0, 1, 0, 0}, NULL}};
     const char *env;
     updateffxapi_pfn_ex pfn_ex;
     updateffxapi_pfn pfn;
     HMODULE amdffx;
-    BOOL fsr4, fsr3;
+    BOOL fsr4;
 
     TRACE("%p %p %u\n", iface, data, size);
 
@@ -156,52 +153,48 @@ HRESULT STDMETHODCALLTYPE AMDFSR4FFX_UpdateFfxApiProvider(IAmdExtFfxApi *iface, 
         unk_data->unk[2] = 1;
 
     fsr4 = (env = getenv("FSR4_UPGRADE")) && !strcmp(env, "1");
-    fsr3 = (env = getenv("FSR3_UPGRADE")) && !strcmp(env, "1");
 
-    if (fsr4 || fsr3)
+    if (!(amdffx = LoadLibraryA("amdxcffx64")))
     {
-        amdffx = LoadLibraryA("amdxcffx64");
-        if (!amdffx)
+        ERR("Failed to load FSR4 dll (amdxcffx64)!\n");
+        return E_NOINTERFACE;
+    }
+
+    pfn_ex = (updateffxapi_pfn_ex)GetProcAddress(amdffx, "UpdateFfxApiProviderEx");
+    pfn = (updateffxapi_pfn)GetProcAddress(amdffx, "UpdateFfxApiProvider");
+
+    if (pfn_ex)
+    {
+        HRESULT ret = pfn_ex(data, size, unk_data);
+
+        TRACE("status: %lx\n", ret);
+        dump_provider(data);
+
+        return ret;
+    }
+
+    if (pfn)
+    {
+        HRESULT ret;
+
+        /* ensure user doesn't do dumb things on legacy amdxcffx64 */
+        if (!this->fp8_supported)
         {
-            ERR("Failed to load FSR4 dll (amdxcffx64)!\n");
+            ERR("FSR4 not supported on this system!\n");
             return E_NOINTERFACE;
         }
 
-        pfn_ex = (updateffxapi_pfn_ex)GetProcAddress(amdffx, "UpdateFfxApiProviderEx");
-        pfn = (updateffxapi_pfn)GetProcAddress(amdffx, "UpdateFfxApiProvider");
+        if (!fsr4) return E_NOINTERFACE;
 
-        if (pfn_ex)
-        {
-            HRESULT ret = pfn_ex(data, size, unk_data);
+        ret = pfn(data, size);
 
-            TRACE("status: %lx\n", ret);
-            dump_provider(data);
+        TRACE("status: %lx\n", ret);
+        dump_provider(data);
 
-            return ret;
-        }
-        else if (pfn)
-        {
-            HRESULT ret;
-
-            /* ensure user doesn't do dumb things on legacy amdxcffx64 */
-            if (!this->fp8_supported)
-            {
-                ERR("FSR4 not supported on this system!\n");
-                return E_NOINTERFACE;
-            }
-
-            if (!fsr4) return E_NOINTERFACE;
-
-            ret = pfn(data, size);
-
-            TRACE("status: %lx\n", ret);
-            dump_provider(data);
-
-            return ret;
-        }
-        else ERR("UpdateFfxApiProvider[Ex] symbol not found!\n");
+        return ret;
     }
 
+    ERR("UpdateFfxApiProvider[Ex] symbol not found!\n");
     return E_NOINTERFACE;
 }
 
