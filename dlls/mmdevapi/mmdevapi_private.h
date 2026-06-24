@@ -130,6 +130,7 @@ extern HRESULT load_devices_from_reg(void);
 extern HRESULT load_driver_devices(EDataFlow flow);
 
 extern void main_loop_stop(void);
+extern void stop_update_thread(void);
 
 extern const WCHAR drv_keyW[];
 

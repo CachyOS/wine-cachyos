@@ -49,6 +49,15 @@ struct get_endpoint_ids_params
     HRESULT result;
     unsigned int num;
     unsigned int default_idx;
+
+    /* delta update support. */
+    /* should be set to FALSE on initial calls, */
+    /* then check return value for driver support. */
+    BOOL delta;
+    unsigned int num_removed;
+    /* will return TRUE for endpoints of the other flow
+       in addition to the one specified. */
+    BOOL more_data;
 };
 
 struct create_stream_params
