@@ -220,6 +220,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
                 }
             }
             main_loop_stop();
+            stop_update_thread();
 
             if (!lpvReserved)
                 MMDevEnum_Free();
