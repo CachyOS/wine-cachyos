@@ -47,13 +47,6 @@ static CRITICAL_SECTION faudio_cs = { NULL, -1, 0, 0, 0, 0 };
 static IMMDeviceEnumerator *device_enumerator;
 static HRESULT init_hr = -1;
 
-struct FAudioWin32PlatformData
-{
-	IAudioClient *client;
-	HANDLE audioThread;
-	HANDLE stopEvent;
-};
-
 struct FAudioAudioClientThreadArgs
 {
 	WAVEFORMATEXTENSIBLE format;
@@ -61,6 +54,17 @@ struct FAudioAudioClientThreadArgs
 	HANDLE events[2];
 	FAudio *audio;
 	UINT updateSize;
+};
+
+struct FAudioWin32PlatformData
+{
+	struct FAudioAudioClientThreadArgs *args;
+	FAudio *audio;
+	IAudioClient *client;
+	HANDLE audioThread;
+	HANDLE stopEvent;
+	CRITICAL_SECTION threadCs;
+	REFERENCE_TIME duration;
 };
 
 void FAudio_Log(char const *msg)
@@ -73,9 +77,17 @@ static HRESULT (WINAPI *my_SetThreadDescription)(HANDLE, PCWSTR) = NULL;
 
 static void FAudio_resolve_SetThreadDescription(void)
 {
-	kernelbase = LoadLibraryA("kernelbase.dll");
-	if (!kernelbase)
+	EnterCriticalSection(&faudio_cs);
+	if (my_SetThreadDescription) {
+		LeaveCriticalSection(&faudio_cs);
 		return;
+	}
+
+	kernelbase = LoadLibraryA("kernelbase.dll");
+	if (!kernelbase) {
+		LeaveCriticalSection(&faudio_cs);
+		return;
+	}
 
 	my_SetThreadDescription = (HRESULT (WINAPI *)(HANDLE, PCWSTR)) GetProcAddress(kernelbase, "SetThreadDescription");
 	if (!my_SetThreadDescription)
@@ -83,12 +95,16 @@ static void FAudio_resolve_SetThreadDescription(void)
 		FreeLibrary(kernelbase);
 		kernelbase = NULL;
 	}
+	LeaveCriticalSection(&faudio_cs);
 }
 
 static void FAudio_set_thread_name(char const *name)
 {
 	int ret;
 	WCHAR *nameW;
+
+	if (!my_SetThreadDescription)
+		FAudio_resolve_SetThreadDescription();
 
 	if (!my_SetThreadDescription)
 		return;
@@ -207,6 +223,8 @@ static DWORD WINAPI FAudio_AudioClientThread(void *user)
 fail_release:
 	IAudioRenderClient_Release(render_client);
 fail_free:
+	CloseHandle(args->events[0]);
+	IAudioClient_Release(args->client);
 	FAudio_free(args);
 	return 0;
 }
@@ -350,6 +368,16 @@ static HRESULT FAudio_OpenDevice(uint32_t deviceIndex, const uint16_t *deviceId,
 		);
 	}
 
+	if (deviceIndex == 0) {
+		/* Default device. */
+		return IMMDeviceEnumerator_GetDefaultAudioEndpoint(
+			device_enumerator,
+			eRender,
+			eConsole,
+			device
+		);
+	}
+
 	hr = IMMDeviceEnumerator_EnumAudioEndpoints(
 		device_enumerator,
 		eRender,
@@ -369,10 +397,7 @@ static HRESULT FAudio_OpenDevice(uint32_t deviceIndex, const uint16_t *deviceId,
 		return hr;
 	}
 
-	if (deviceIndex == 0) {
-		/* Default device. */
-		actualIndex = defaultDeviceIndex;
-	} else if (deviceIndex == defaultDeviceIndex) {
+	if (deviceIndex == defaultDeviceIndex) {
 		/* Open the device at index 0 instead of the "correct" one. */
 		actualIndex = 0;
 	} else {
@@ -392,6 +417,93 @@ static HRESULT FAudio_OpenDevice(uint32_t deviceIndex, const uint16_t *deviceId,
 	return hr;
 }
 
+uint32_t FAudio_PlatformStatus(void* platformDevice) {
+	struct FAudioWin32PlatformData *data = platformDevice;
+	uint32_t status = 0;
+	DWORD threadStatus = 0;
+	EnterCriticalSection(&data->threadCs);
+	if (
+		!data->args ||
+		(
+			data->audioThread &&
+			(!GetExitCodeThread(data->audioThread, &threadStatus) || threadStatus != STILL_ACTIVE)
+		)
+	)
+		status = FAUDIO_E_DEVICE_INVALIDATED;
+	LeaveCriticalSection(&data->threadCs);
+	return status;
+}
+
+void FAudio_PlatformAudioThread(void* platformDevice) {
+	HRESULT hr;
+	struct FAudioWin32PlatformData *data = platformDevice;
+	struct FAudioAudioClientThreadArgs *args = data->args;
+
+	HANDLE audioEvent = NULL;
+
+	EnterCriticalSection(&data->threadCs);
+	if (!data->args || data->audioThread) {
+		LeaveCriticalSection(&data->threadCs);
+		return;
+	}
+
+	audioEvent = CreateEventW(NULL, FALSE, FALSE, NULL);
+	if (!audioEvent)
+		/* Failed to create FAudio thread buffer event! */
+		goto fail_args;
+
+	data->stopEvent = CreateEventW(NULL, FALSE, FALSE, NULL);
+	if (!data->stopEvent)
+		/* Failed to create FAudio thread stop event! */
+		goto fail_close_audio_evt;
+
+	args->client = data->client;
+	args->events[0] = audioEvent;
+	args->events[1] = data->stopEvent;
+	args->audio = data->audio;
+
+	hr = IAudioClient_Initialize(
+		data->client,
+		AUDCLNT_SHAREMODE_SHARED,
+		AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
+		data->duration * 3,
+		0,
+		&args->format.Format,
+		&GUID_NULL
+	);
+	if (FAILED(hr))
+		/* Failed to initialize audio client! */
+		goto fail_close_stop_evt;
+
+	hr = IAudioClient_SetEventHandle(data->client, audioEvent);
+	if (FAILED(hr))
+		/* Failed to set audio client event! */
+		goto fail_close_stop_evt;
+
+
+	data->audioThread = CreateThread(NULL, 0, &FAudio_AudioClientThread, args, 0, NULL);
+	if (!data->audioThread)
+		/* Failed to create audio client thread! */
+		goto fail_close_stop_evt;
+
+	data->client = NULL;
+	LeaveCriticalSection(&data->threadCs);
+	return;
+
+fail_close_stop_evt:
+	CloseHandle(data->stopEvent);
+	data->stopEvent = NULL;
+fail_close_audio_evt:
+	CloseHandle(audioEvent);
+fail_args:
+	IAudioClient_Release(data->client);
+	data->client = NULL;
+	FAudio_free(data->args);
+	data->args = NULL;
+	LeaveCriticalSection(&data->threadCs);
+	return;
+}
+
 void FAudio_PlatformInit(
 	FAudio *audio,
 	uint32_t flags,
@@ -406,7 +518,6 @@ void FAudio_PlatformInit(
 	REFERENCE_TIME duration;
 	IMMDevice *device = NULL;
 	HRESULT hr;
-	HANDLE audioEvent = NULL;
 	BOOL has_sse2 = IsProcessorFeaturePresent(PF_XMMI64_INSTRUCTIONS_AVAILABLE);
 #if defined(__aarch64__) || defined(_M_ARM64) || defined(__arm64ec__) || defined(_M_ARM64EC)
 	BOOL has_neon = TRUE;
@@ -416,7 +527,6 @@ void FAudio_PlatformInit(
 	BOOL has_neon = FALSE;
 #endif
 	FAudio_INTERNAL_InitSIMDFunctions(has_sse2, has_neon);
-	FAudio_resolve_SetThreadDescription();
 
 	FAudio_PlatformAddRef();
 
@@ -452,20 +562,10 @@ void FAudio_PlatformInit(
 		);
 	}
 
-	audioEvent = CreateEventW(NULL, FALSE, FALSE, NULL);
-	if (!audioEvent)
-		/* Failed to create FAudio thread buffer event! */
-		goto fail_free_data;
-
-	data->stopEvent = CreateEventW(NULL, FALSE, FALSE, NULL);
-	if (!data->stopEvent)
-		/* Failed to create FAudio thread stop event! */
-		goto fail_close_audio_evt;
-
 	hr = FAudio_OpenDevice(deviceIndex, deviceId, &device);
 	if (!device)
 		/* Failed to get audio device! */
-		goto fail_close_stop_evt;
+		goto fail_free_data;
 
 	hr = IMMDevice_Activate(
 		device,
@@ -481,24 +581,6 @@ void FAudio_PlatformInit(
 
 	if (flags & FAUDIO_1024_QUANTUM) duration = 213333;
 	else duration = 100000;
-
-	hr = IAudioClient_Initialize(
-		data->client,
-		AUDCLNT_SHAREMODE_SHARED,
-		AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
-		duration * 3,
-		0,
-		&args->format.Format,
-		&GUID_NULL
-	);
-	if (FAILED(hr))
-		/* Failed to initialize audio client! */
-		goto fail_audio;
-
-	hr = IAudioClient_SetEventHandle(data->client, audioEvent);
-	if (FAILED(hr))
-		/* Failed to set audio client event! */
-		goto fail_audio;
 
 	mixFormat->Format.wFormatTag = args->format.Format.wFormatTag;
 	mixFormat->Format.nChannels = args->format.Format.nChannels;
@@ -523,17 +605,12 @@ void FAudio_PlatformInit(
 		mixFormat->Format.cbSize = sizeof(FAudioWaveFormatEx);
 	}
 
-	args->client = data->client;
-	args->events[0] = audioEvent;
-	args->events[1] = data->stopEvent;
-	args->audio = audio;
+	data->audio = audio;
+	data->args = args;
+	InitializeCriticalSection(&data->threadCs);
+
 	if (flags & FAUDIO_1024_QUANTUM) args->updateSize = (UINT)(args->format.Format.nSamplesPerSec / (1000.0 / (64.0 / 3.0)));
 	else args->updateSize = args->format.Format.nSamplesPerSec / 100;
-
-	data->audioThread = CreateThread(NULL, 0, &FAudio_AudioClientThread, args, 0, NULL);
-	if (!data->audioThread)
-		/* Failed to create audio client thread! */
-		goto fail_audio;
 
 	*updateSize = args->updateSize;
 	*platformDevice = data;
@@ -543,10 +620,6 @@ fail_audio:
 	IAudioClient_Release(data->client);
 fail_device:
 	IMMDevice_Release(device);
-fail_close_stop_evt:
-	CloseHandle(data->stopEvent);
-fail_close_audio_evt:
-	CloseHandle(audioEvent);
 fail_free_data:
 	FAudio_free(data);
 fail_free_args:
@@ -560,9 +633,25 @@ void FAudio_PlatformQuit(void* platformDevice)
 {
 	struct FAudioWin32PlatformData *data = platformDevice;
 
-	SetEvent(data->stopEvent);
-	WaitForSingleObject(data->audioThread, INFINITE);
-	if (data->client) IAudioClient_Release(data->client);
+	EnterCriticalSection(&data->threadCs);
+	if (data->audioThread) {
+		if (data->stopEvent)
+			SetEvent(data->stopEvent);
+		WaitForSingleObject(data->audioThread, INFINITE);
+		CloseHandle(data->audioThread);
+		data->audioThread = NULL;
+	}
+	LeaveCriticalSection(&data->threadCs);
+	DeleteCriticalSection(&data->threadCs);
+	if (data->stopEvent) {
+		CloseHandle(data->stopEvent);
+		data->stopEvent = NULL;
+	}
+	if (data->client) {
+		IAudioClient_Release(data->client);
+		data->client = NULL;
+	}
+	FAudio_free(data);
 	if (kernelbase)
 	{
 		my_SetThreadDescription = NULL;
@@ -690,15 +779,6 @@ uint32_t FAudio_PlatformGetDeviceDetails(
 		/* Free the default device. */
 		IMMDevice_Release(device);
 		device = NULL;
-	}
-	else
-	{
-		count = FAudio_PlatformGetDeviceCount();
-		if (index >= count)
-		{
-			ret = FAUDIO_E_INVALID_CALL;
-			goto fail_release;
-		}
 	}
 
 	hr = FAudio_OpenDevice(index, deviceId, &device);
