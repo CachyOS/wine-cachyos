@@ -2389,10 +2389,12 @@ static NTSTATUS pulse_is_format_supported(void *args)
     struct is_format_supported_params *params = args;
 
     /* This driver does not support exclusive mode. */
-    if (params->share == AUDCLNT_SHAREMODE_EXCLUSIVE)
+    if (params->share == AUDCLNT_SHAREMODE_EXCLUSIVE) {
+        WARN("Exclusive mode requested but winepulse.drv does not support exclusive mode.\n");
         params->result = AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED;
-    else
+    } else {
         params->result = S_OK;
+    }
 
     return STATUS_SUCCESS;
 }
