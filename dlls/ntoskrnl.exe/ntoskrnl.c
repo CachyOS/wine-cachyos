@@ -2729,6 +2729,28 @@ HANDLE WINAPI PsGetThreadProcessId( PETHREAD thread )
     return thread->kthread.id.UniqueProcess;
 }
 
+/*********************************************************************
+ *           PsGetContextThread    (NTOSKRNL.@)
+ */
+NTSTATUS WINAPI PsGetContextThread(PETHREAD thread, CONTEXT *context)
+{
+    NTSTATUS status;
+    HANDLE h;
+
+    TRACE("%p %p\n", thread, context);
+
+    if ((status = ObOpenObjectByPointer(thread, 0, NULL, THREAD_ALL_ACCESS, NULL, KernelMode, &h)))
+    {
+        WARN("Error opening thread object, status %#lx.\n", status);
+        return status;
+    }
+
+    status = NtGetContextThread(h, context);
+    NtClose(h);
+
+    return status;
+}
+
 /***********************************************************************
  *           KeInsertQueue   (NTOSKRNL.EXE.@)
  */
