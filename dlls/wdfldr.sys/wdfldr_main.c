@@ -28,38 +28,9 @@
 #include "wine/list.h"
 #include "wine/debug.h"
 
+#include "wdfldr_private.h"
+
 WINE_DEFAULT_DEBUG_CHANNEL(wdfldr);
-
-typedef struct _WDF_VERSION {
-    ULONG Major;
-    ULONG Minor;
-    ULONG Build;
-} WDF_VERSION;
-
-typedef struct _WDF_BIND_INFO {
-    ULONG Size;
-    WCHAR *Component;
-    WDF_VERSION Version;
-    ULONG FuncCount;
-    void **FuncTable;
-    void *Module;
-} WDF_BIND_INFO, *PWDF_BIND_INFO;
-
-typedef struct _WDF_COMPONENT_GLOBALS {
-    ULONG Size;
-    void *DriverObject;
-    void *RegistryPath;
-    void *FuncTable;
-    ULONG Reserved[16];
-} WDF_COMPONENT_GLOBALS, *PWDF_COMPONENT_GLOBALS;
-
-typedef struct _WDFLDR_CLIENT_INFO {
-    struct list entry;
-    DRIVER_OBJECT *driver;
-    UNICODE_STRING registry_path;
-    WDF_COMPONENT_GLOBALS globals;
-    void *func_table;
-} WDFLDR_CLIENT_INFO;
 
 static struct list client_list = LIST_INIT(client_list);
 static CRITICAL_SECTION client_cs;
@@ -95,7 +66,7 @@ static void WINAPI wdf_stub_void_noop(void *arg)
     TRACE("stub called with %p\n", arg);
 }
 
-NTSTATUS WINAPI WdfVersionBind(DRIVER_OBJECT *driver, UNICODE_STRING *reg_path, 
+NTSTATUS WINAPI WdfVersionBind(DRIVER_OBJECT *driver, UNICODE_STRING *reg_path,
                                 WDF_BIND_INFO *bind_info, PWDF_COMPONENT_GLOBALS *component_globals)
 {
     WDFLDR_CLIENT_INFO *client_info;
@@ -128,7 +99,7 @@ NTSTATUS WINAPI WdfVersionBind(DRIVER_OBJECT *driver, UNICODE_STRING *reg_path,
 
     client_info->registry_path.Length = reg_path->Length;
     client_info->registry_path.MaximumLength = reg_path->Length + sizeof(WCHAR);
-    if (!(client_info->registry_path.Buffer = HeapAlloc(GetProcessHeap(), 0, 
+    if (!(client_info->registry_path.Buffer = HeapAlloc(GetProcessHeap(), 0,
                                                          client_info->registry_path.MaximumLength)))
     {
         HeapFree(GetProcessHeap(), 0, client_info);
@@ -142,7 +113,7 @@ NTSTATUS WINAPI WdfVersionBind(DRIVER_OBJECT *driver, UNICODE_STRING *reg_path,
 
     if (bind_info->FuncCount > 0)
     {
-        if (!(client_info->func_table = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, 
+        if (!(client_info->func_table = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
                                                    bind_info->FuncCount * sizeof(void*))))
         {
             HeapFree(GetProcessHeap(), 0, client_info->registry_path.Buffer);
@@ -150,7 +121,7 @@ NTSTATUS WINAPI WdfVersionBind(DRIVER_OBJECT *driver, UNICODE_STRING *reg_path,
             status = STATUS_NO_MEMORY;
             goto done;
         }
-        
+
         /* populate index 201 (WdfDriverMiniportUnload) */
         if (bind_info->FuncCount > 201)
         {
@@ -169,7 +140,7 @@ NTSTATUS WINAPI WdfVersionBind(DRIVER_OBJECT *driver, UNICODE_STRING *reg_path,
     client_info->globals.FuncTable = client_info->func_table;
 
     *component_globals = &client_info->globals;
-    
+
     list_add_tail(&client_list, &client_info->entry);
     TRACE("driver %p bound successfully \n", driver);
 
@@ -178,7 +149,7 @@ done:
     return status;
 }
 
-NTSTATUS WINAPI WdfVersionUnbind(UNICODE_STRING *reg_path, WDF_BIND_INFO *bind_info, 
+NTSTATUS WINAPI WdfVersionUnbind(UNICODE_STRING *reg_path, WDF_BIND_INFO *bind_info,
                                   WDF_COMPONENT_GLOBALS *component_globals)
 {
     FIXME("%s %p %p stub!\n", debugstr_us(reg_path), bind_info, component_globals);
