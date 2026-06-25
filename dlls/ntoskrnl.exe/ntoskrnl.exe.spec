@@ -929,7 +929,7 @@
 @ stdcall PsGetProcessCreateTimeQuadPart(ptr)
 @ stub PsGetProcessDebugPort
 @ stub PsGetProcessExitProcessCalled
-@ stub PsGetProcessExitStatus
+@ stdcall PsGetProcessExitStatus(ptr)
 @ stub PsGetProcessExitTime
 @ stdcall PsGetProcessId(ptr)
 @ stdcall PsGetProcessImageFileName(ptr)
