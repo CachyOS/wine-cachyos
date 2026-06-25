@@ -911,7 +911,7 @@
 @ stdcall PsDereferencePrimaryToken(ptr)
 @ stub PsDisableImpersonation
 @ stub PsEstablishWin32Callouts
-@ stub PsGetContextThread
+@ stdcall PsGetContextThread(ptr ptr long)
 @ stdcall PsGetCurrentProcess() IoGetCurrentProcess
 @ stdcall PsGetCurrentProcessId()
 @ stdcall PsGetCurrentProcessSessionId()

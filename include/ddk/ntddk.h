@@ -295,6 +295,7 @@ NTSTATUS  WINAPI KeExpandKernelStackAndCallout(PEXPAND_STACK_CALLOUT,void*,SIZE_
 void      WINAPI KeSetTargetProcessorDpc(PRKDPC,CCHAR);
 PHYSICAL_MEMORY_RANGE * WINAPI MmGetPhysicalMemoryRanges(void);
 BOOLEAN   WINAPI MmIsAddressValid(void *);
+NTSTATUS  WINAPI PsGetContextThread(PETHREAD,CONTEXT*,KPROCESSOR_MODE);
 LONGLONG  WINAPI PsGetProcessCreateTimeQuadPart(PEPROCESS);
 HANDLE    WINAPI PsGetProcessId(PEPROCESS);
 const char * WINAPI PsGetProcessImageFileName(PEPROCESS);
