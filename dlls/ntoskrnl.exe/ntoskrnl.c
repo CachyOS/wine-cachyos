@@ -3071,6 +3071,32 @@ PHYSICAL_ADDRESS WINAPI MmGetPhysicalAddress(void *virtual_address)
 }
 
 /***********************************************************************
+ *           MmGetPhysicalMemoryRanges   (NTOSKRNL.EXE.@)
+ */
+PHYSICAL_MEMORY_RANGE *WINAPI MmGetPhysicalMemoryRanges(void)
+{
+    PHYSICAL_MEMORY_RANGE *range;
+    SYSTEM_BASIC_INFORMATION info;
+
+    /* Ex2 version of this function allocates memory on non paged pool
+     * FIXME: Does this one do the same? */
+    if (!(range = ExAllocatePool(NonPagedPool, sizeof(*range))))
+        return NULL;
+
+    NtQuerySystemInformation(SystemBasicInformation, &info, sizeof(info), NULL);
+
+    /* this is a page number (probably?) */
+    range->BaseAddress.QuadPart = info.MmLowestPhysicalPage;
+    range->NumberOfBytes.QuadPart = info.MmNumberOfPhysicalPages;
+
+    /* then convert to bytes, page number is the higher bits */
+    range->BaseAddress.QuadPart *= info.PageSize;
+    range->NumberOfBytes.QuadPart *= info.PageSize;
+
+    return range;
+}
+
+/***********************************************************************
  *           MmGetVirtualForPhysical   (NTOSKRNL.EXE.@)
  */
 void *WINAPI MmGetVirtualForPhysical(PHYSICAL_ADDRESS addr)

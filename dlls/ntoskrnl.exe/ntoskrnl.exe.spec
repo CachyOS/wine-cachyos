@@ -728,7 +728,7 @@
 @ stdcall MmFreeNonCachedMemory(ptr long)
 @ stub MmFreePagesFromMdl
 @ stdcall MmGetPhysicalAddress(ptr)
-@ stub MmGetPhysicalMemoryRanges
+@ stdcall MmGetPhysicalMemoryRanges()
 @ stdcall MmGetSystemRoutineAddress(ptr)
 @ stdcall MmGetVirtualForPhysical(int64)
 @ stub MmGrowKernelStack
