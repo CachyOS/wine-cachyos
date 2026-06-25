@@ -2616,6 +2616,31 @@ const char *WINAPI PsGetProcessImageFileName( PEPROCESS process )
     return process->imageName;
 }
 
+/*********************************************************************
+ *           PsGetProcessExitStatus    (NTOSKRNL.@)
+ */
+NTSTATUS WINAPI PsGetProcessExitStatus( PEPROCESS process )
+{
+    NTSTATUS status;
+    HANDLE h;
+    PROCESS_BASIC_INFORMATION info;
+
+    TRACE("%p\n", process);
+
+    if ((status = ObOpenObjectByPointer(process, 0, NULL, PROCESS_ALL_ACCESS, NULL, KernelMode, &h)))
+    {
+        WARN("Error opening process object, status %#lx.\n", status);
+        return STATUS_NOT_FOUND;
+    }
+
+    status = NtQueryInformationProcess(h, ProcessBasicInformation, &info, sizeof(info), NULL);
+    NtClose(h);
+
+    if (status) return STATUS_NOT_FOUND;
+
+    return info.ExitStatus;
+}
+
 static void *create_thread_object( HANDLE handle )
 {
     THREAD_BASIC_INFORMATION info;
