@@ -797,6 +797,11 @@ NTSTATUS WINAPI NtGdiDdDDIQueryAdapterInfo( D3DKMT_QUERYADAPTERINFO *desc )
 
         free( prop );
 
+        /* FSR4-I8 on iGPU will not work that well due to performance reasons.
+         * Disable out of the box, can be enabled with FSR4_UPGRADE=1 */
+        if (properties2.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU)
+            rdna2 = FALSE;
+
         if (properties2.properties.vendorID == 0x1002 && desc->PrivateDriverDataSize == 0x260)
         {
             int *data = desc->pPrivateDriverData;
@@ -806,7 +811,7 @@ NTSTATUS WINAPI NtGdiDdDDIQueryAdapterInfo( D3DKMT_QUERYADAPTERINFO *desc )
                 data[0xc] = 0x98; /* APU/GPU Family */
                 data[0xd] = 0x51; /* Revision/which GPU it is in that family */
             }
-            else if (rdna2)
+            else if (rdna2 || ((e = getenv("FSR4_UPGRADE")) && *e == '1'))
             {
                 /* Navi31 */
                 data[0xc] = 0x91; /* APU/GPU Family */
@@ -814,7 +819,7 @@ NTSTATUS WINAPI NtGdiDdDDIQueryAdapterInfo( D3DKMT_QUERYADAPTERINFO *desc )
             }
             else
             {
-                ERR("GPU does not support FSR4 FP8 or I8! Please report a bug if this is inaccurate!\n");
+                WARN("Not recommended to use FSR-I8, Use FSR4_UPGRADE=1 for FSR4-I8!\n");
                 return STATUS_NOT_IMPLEMENTED;
             }
 
