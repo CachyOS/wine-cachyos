@@ -2517,8 +2517,11 @@ static void *create_process_object( HANDLE handle )
     NtQueryInformationProcess( handle, ProcessTimes, &process->times, sizeof(process->times), NULL );
     get_process_image_file_name( handle, process );
 
-    status = NtQueryInformationProcess( handle, ProcessWow64Information, &process->peb32, sizeof(process->peb32), 0);
+    status = NtQueryInformationProcess( handle, ProcessWow64Information, &process->peb32, sizeof(process->peb32), NULL );
     if (status) process->peb32 = NULL;
+
+    NtQueryInformationProcess( handle, ProcessDebugPort, &process->debug_port, sizeof(process->debug_port), NULL );
+    if (status) process->debug_port = 0;
 
     return process;
 }
@@ -2614,6 +2617,15 @@ const char *WINAPI PsGetProcessImageFileName( PEPROCESS process )
 {
     TRACE("%p -> %s\n", process, debugstr_a(process->image_name));
     return process->image_name;
+}
+
+/*********************************************************************
+ *           PsGetProcessDebugPort    (NTOSKRNL.@)
+ */
+DWORD_PTR WINAPI PsGetProcessDebugPort( PEPROCESS process )
+{
+    TRACE("%p\n", process);
+    return process->debug_port;
 }
 
 /*********************************************************************
