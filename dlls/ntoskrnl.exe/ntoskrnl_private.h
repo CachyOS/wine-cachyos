@@ -57,6 +57,7 @@ struct _EPROCESS
     PROCESS_BASIC_INFORMATION info;
     KERNEL_USER_TIMES times;
     PEB32 *peb32;
+    DWORD_PTR debug_port;
     ULONG session_id;
     char imageName[16];
 };
