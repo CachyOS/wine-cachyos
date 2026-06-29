@@ -2480,6 +2480,7 @@ static void *create_process_object( HANDLE handle )
 {
     char *p;
     ULONG len;
+    NTSTATUS status;
     PEPROCESS process;
     ANSI_STRING fullImageNameA;
     UNICODE_STRING *fullImageNameW = NULL;
@@ -2518,7 +2519,8 @@ static void *create_process_object( HANDLE handle )
         free(fullImageNameW);
     }
 
-    IsWow64Process( handle, &process->wow64 );
+    status = NtQueryInformationProcess( handle, ProcessWow64Information, &process->peb32, sizeof(process->peb32), 0);
+    if (status) process->peb32 = NULL;
 
     return process;
 }
@@ -4693,10 +4695,10 @@ NTSTATUS WINAPI DbgQueryDebugFilterState(ULONG component, ULONG level)
 /*********************************************************************
  *           PsGetProcessWow64Process    (NTOSKRNL.@)
  */
-PVOID WINAPI PsGetProcessWow64Process(PEPROCESS process)
+PEB32 * WINAPI PsGetProcessWow64Process(PEPROCESS process)
 {
-    FIXME("stub: %p\n", process);
-    return NULL;
+    TRACE("%p\n", process);
+    return process->peb32;
 }
 
 /*********************************************************************
@@ -4795,7 +4797,7 @@ PEPROCESS WINAPI IoGetRequestorProcess(IRP *irp)
 BOOLEAN WINAPI IoIs32bitProcess(IRP *irp)
 {
     TRACE("irp %p.\n", irp);
-    return irp->Tail.Overlay.Thread->kthread.process->wow64;
+    return !!irp->Tail.Overlay.Thread->kthread.process->peb32;
 }
 #endif
 
