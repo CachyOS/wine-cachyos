@@ -87,6 +87,13 @@ enum wayland_surface_role
     WAYLAND_SURFACE_ROLE_SUBSURFACE,
 };
 
+enum wayland_surface_ensure_type
+{
+    WAYLAND_SURFACE_NOT_ENSURED = 0,
+    WAYLAND_SURFACE_ENSURED_FLUSH,
+    WAYLAND_SURFACE_ENSURED_DUMMY_BUFFER,
+};
+
 struct wayland_keyboard
 {
     struct wl_keyboard *wl_keyboard;
@@ -296,6 +303,7 @@ struct wayland_surface
 
     struct wayland_surface_config pending, requested, processing, current;
     BOOL resizing;
+    enum wayland_surface_ensure_type ensured_contents;
     struct wayland_window_config window;
     int content_width, content_height;
     HCURSOR hcursor;
@@ -337,7 +345,6 @@ RECT map_rect_from_surface(struct wayland_surface *surface, RECT rect);
 POINT map_point_from_surface(struct wayland_surface *surface, POINT point);
 struct wayland_client_surface *wayland_client_surface_create(HWND hwnd);
 void wayland_client_surface_attach(struct wayland_client_surface *client, HWND toplevel);
-void wayland_surface_ensure_contents(struct wayland_surface *surface);
 void wayland_surface_set_title(struct wayland_surface *surface, LPCWSTR title);
 void wayland_surface_assign_icon(struct wayland_surface *surface);
 void wayland_surface_set_icon_buffer(struct wayland_surface *surface, UINT type, const ICONINFO *ii);
