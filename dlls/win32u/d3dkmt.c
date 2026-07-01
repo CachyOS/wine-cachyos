@@ -771,10 +771,6 @@ NTSTATUS WINAPI NtGdiDdDDIQueryAdapterInfo( D3DKMT_QUERYADAPTERINFO *desc )
 
         TRACE("size %x\n", desc->PrivateDriverDataSize);
 
-        /* if this function is not implemented amdxcffx64 falls back to FSR3 upgrades */
-        if ((e = getenv("FSR3_UPGRADE")) && *e == '1')
-            return STATUS_NOT_IMPLEMENTED;
-
         if (!(adapter = get_d3dkmt_object( desc->hAdapter, D3DKMT_ADAPTER ))) return STATUS_INVALID_PARAMETER;
         if (!(physical_device = adapter->physical_device)) return STATUS_INVALID_PARAMETER;
         instance = physical_device->instance;
