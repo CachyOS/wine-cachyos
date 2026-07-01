@@ -462,19 +462,12 @@ HRESULT STDMETHODCALLTYPE AmdExtD3DDevice8_GetWaveMatrixProperties(IAmdExtD3DDev
             AMD_EXT_WMMA_TYPE_FP32, AMD_EXT_WMMA_TYPE_FP32, FALSE
         }
     };
-    const char *e;
 
     TRACE("%p %p %p\n", iface, pCount, pProperties);
 
     if (!pCount) return E_INVALIDARG;
 
     if (!this->fp8_supported)
-    {
-        *pCount = 0;
-        return S_OK;
-    }
-
-    if ((e = getenv("FSR3_UPGRADE")) && !strcmp(e, "1"))
     {
         *pCount = 0;
         return S_OK;
