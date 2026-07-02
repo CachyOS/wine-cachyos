@@ -1381,6 +1381,12 @@ static void wayland_client_surface_detach(struct client_surface *client)
     }
 }
 
+static BOOL is_client_visible(HWND hwnd)
+{
+    RECT dummy;
+    return NtUserIsWindowVisible(hwnd) || NtUserGetPresentRect(hwnd, &dummy, -1);
+}
+
 static void wayland_client_surface_update(struct client_surface *client)
 {
     struct wayland_client_surface *surface = impl_from_client_surface(client);
@@ -1391,7 +1397,7 @@ static void wayland_client_surface_update(struct client_surface *client)
 
     if (!(data = wayland_win_data_get(hwnd))) return;
 
-    if (toplevel && NtUserIsWindowVisible(hwnd))
+    if (toplevel && is_client_visible(hwnd))
         wayland_client_surface_attach(surface, toplevel);
     else
         wayland_client_surface_attach(surface, NULL);
@@ -1417,16 +1423,20 @@ static const struct wl_buffer_listener dummy_buffer_listener =
  * Ensure that the wayland surface has up-to-date contents, by committing
  * a dummy buffer if necessary.
  */
-static void wayland_surface_ensure_contents(struct wayland_surface *surface, BOOL fullscreen)
+static void wayland_surface_ensure_contents(struct wayland_surface *surface)
 {
-    enum wl_shm_format format = fullscreen ? WL_SHM_FORMAT_XRGB8888 : WL_SHM_FORMAT_ARGB8888;
     enum wayland_surface_ensure_type needs_contents = WAYLAND_SURFACE_NOT_ENSURED;
     HWND hwnd = surface->hwnd;
-    const RECT *window = &surface->window.rect;
+    RECT *window = &surface->window.rect, dummy;
     int width = window->right - window->left;
     int height = window->bottom - window->top;
+    enum wl_shm_format format;
+    BOOL fullscreen;
     struct wayland_shm_buffer *dummy_shm_buffer;
     HRGN damage;
+
+    fullscreen = NtUserGetPresentRect(hwnd, &dummy, 0);
+    format = fullscreen ? WL_SHM_FORMAT_XRGB8888 : WL_SHM_FORMAT_ARGB8888;
 
     /* overwrite the window contents with a transparent buffer for a few reasons:
      * 1. fullscreen window black background
@@ -1490,7 +1500,7 @@ static void wayland_client_surface_present(struct client_surface *client, HDC hd
 
     if ((wayland_surface = data->wayland_surface))
     {
-        wayland_surface_ensure_contents(wayland_surface, data->is_fullscreen);
+        wayland_surface_ensure_contents(wayland_surface);
 
         /* Handle any processed configure request, to ensure the related
          * surface state is applied by the compositor. */
@@ -1505,6 +1515,34 @@ static void wayland_client_surface_present(struct client_surface *client, HDC hd
     wayland_win_data_release(data);
 
     set_client_surface(hwnd, surface);
+}
+
+void set_client_surface(HWND hwnd, struct wayland_client_surface *new_client)
+{
+    HWND toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
+    struct wayland_client_surface *old_client;
+    struct wayland_win_data *data;
+
+    /* ownership is shared with the callers, the last caller to release
+     * its reference will also destroy it and clear our pointer. */
+
+    if (!(data = wayland_win_data_get(hwnd))) return;
+
+    if (new_client != data->client_surface)
+    {
+        if ((old_client = data->client_surface))
+            wayland_client_surface_attach(old_client, NULL);
+
+        if ((data->client_surface = new_client))
+        {
+            if (toplevel && is_client_visible(hwnd))
+                wayland_client_surface_attach(new_client, toplevel);
+            else
+                wayland_client_surface_attach(new_client, NULL);
+        }
+    }
+
+    wayland_win_data_release(data);
 }
 
 static const struct client_surface_funcs wayland_client_surface_funcs =
