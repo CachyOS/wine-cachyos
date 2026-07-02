@@ -957,7 +957,8 @@ BOOL is_window_visible( HWND hwnd )
     {
         for (i = 0; list[i+1]; i++)
             if (!(get_window_long( list[i], GWL_STYLE ) & WS_VISIBLE)) break;
-        retval = !list[i+1] && (list[i] == get_desktop_window());  /* top message window isn't visible */
+        /* top message window isn't visible */
+        retval = !list[i+1];
     }
     free( list );
     return retval;
@@ -986,7 +987,8 @@ BOOL is_window_drawable( HWND hwnd, BOOL icon )
         for (i = 0; list[i+1]; i++)
             if ((get_window_long( list[i], GWL_STYLE ) & (WS_VISIBLE|WS_MINIMIZE)) != WS_VISIBLE)
                 break;
-        retval = !list[i+1] && (list[i] == get_desktop_window());  /* top message window isn't visible */
+        /* top message window isn't visible */
+        retval = !list[i+1];
     }
     free( list );
     return retval;
