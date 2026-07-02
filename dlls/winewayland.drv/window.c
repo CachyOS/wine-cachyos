@@ -200,7 +200,7 @@ static BOOL wayland_win_data_create_wayland_surface(struct wayland_win_data *dat
     if (!(surface = data->wayland_surface) || !surface->window.visible)
         visible = visible && layer_set;
 
-    if (!visible) role = WAYLAND_SURFACE_ROLE_NONE;
+    if (!visible || IsRectEmpty(&data->rects.visible)) role = WAYLAND_SURFACE_ROLE_NONE;
     else if (owner_surface) role = WAYLAND_SURFACE_ROLE_POPUP;
     else role = WAYLAND_SURFACE_ROLE_TOPLEVEL;
 
