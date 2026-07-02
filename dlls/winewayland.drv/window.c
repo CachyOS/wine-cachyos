@@ -919,34 +919,6 @@ BOOL WAYLAND_GetWindowStyleMasks(HWND hwnd, UINT style, UINT ex_style, UINT *sty
     return ret;
 }
 
-void set_client_surface(HWND hwnd, struct wayland_client_surface *new_client)
-{
-    HWND toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
-    struct wayland_client_surface *old_client;
-    struct wayland_win_data *data;
-
-    /* ownership is shared with the callers, the last caller to release
-     * its reference will also destroy it and clear our pointer. */
-
-    if (!(data = wayland_win_data_get(hwnd))) return;
-
-    if (new_client != data->client_surface)
-    {
-        if ((old_client = data->client_surface))
-            wayland_client_surface_attach(old_client, NULL);
-
-        if ((data->client_surface = new_client))
-        {
-            if (toplevel && NtUserIsWindowVisible(hwnd))
-                wayland_client_surface_attach(new_client, toplevel);
-            else
-                wayland_client_surface_attach(new_client, NULL);
-        }
-    }
-
-    wayland_win_data_release(data);
-}
-
 BOOL set_window_surface_contents(HWND hwnd, struct wayland_shm_buffer *shm_buffer, HRGN damage_region)
 {
     struct wayland_surface *wayland_surface;
