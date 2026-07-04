@@ -68,6 +68,10 @@ static UINT quit_event = -1;
 static struct list event_queue = LIST_INIT(event_queue);
 static struct list device_list = LIST_INIT(device_list);
 
+/* Bound one drain pass so an event source that is continuously faster than
+ * its consumer cannot monopolize the winebus thread indefinitely. */
+#define SDL_EVENT_DRAIN_LIMIT 256
+
 #define MAKE_FUNCPTR(f) static typeof(f) * p##f = NULL
 MAKE_FUNCPTR(SDL_GetError);
 MAKE_FUNCPTR(SDL_Init);
@@ -79,6 +83,7 @@ MAKE_FUNCPTR(SDL_JoystickInstanceID);
 MAKE_FUNCPTR(SDL_JoystickName);
 MAKE_FUNCPTR(SDL_JoystickNumAxes);
 MAKE_FUNCPTR(SDL_JoystickOpen);
+MAKE_FUNCPTR(SDL_PollEvent);
 MAKE_FUNCPTR(SDL_WaitEventTimeout);
 MAKE_FUNCPTR(SDL_JoystickNumButtons);
 MAKE_FUNCPTR(SDL_JoystickNumBalls);
@@ -839,7 +844,7 @@ static BOOL set_report_from_joystick_event(struct sdl_device *impl, SDL_Event *e
             SDL_JoyAxisEvent *ie = &event->jaxis;
 
             if (!hid_device_set_abs_axis(iface, ie->axis, ie->value)) break;
-            bus_event_queue_input_report(&event_queue, iface, state->report_buf, state->report_len);
+            bus_event_queue_coalesced_input_report(&event_queue, iface, state->report_buf, state->report_len);
             break;
         }
         case SDL_JOYBALLMOTION:
@@ -917,7 +922,7 @@ static BOOL set_report_from_controller_event(struct sdl_device *impl, SDL_Event 
                 ie->value = -ie->value - 1; /* match XUSB / GIP protocol */
 
             hid_device_set_abs_axis(iface, ie->axis, ie->value);
-            bus_event_queue_input_report(&event_queue, iface, state->report_buf, state->report_len);
+            bus_event_queue_coalesced_input_report(&event_queue, iface, state->report_buf, state->report_len);
             break;
         }
         default:
@@ -1128,6 +1133,7 @@ NTSTATUS sdl_bus_init(void *args)
     LOAD_FUNCPTR(SDL_JoystickName);
     LOAD_FUNCPTR(SDL_JoystickNumAxes);
     LOAD_FUNCPTR(SDL_JoystickOpen);
+    LOAD_FUNCPTR(SDL_PollEvent);
     LOAD_FUNCPTR(SDL_WaitEventTimeout);
     LOAD_FUNCPTR(SDL_JoystickNumButtons);
     LOAD_FUNCPTR(SDL_JoystickNumBalls);
@@ -1230,6 +1236,7 @@ NTSTATUS sdl_bus_wait(void *args)
 {
     struct bus_event *result = args;
     SDL_Event event;
+    unsigned int drained;
 
     /* cleanup previously returned event */
     bus_event_cleanup(result);
@@ -1237,7 +1244,17 @@ NTSTATUS sdl_bus_wait(void *args)
     do
     {
         if (bus_event_queue_pop(&event_queue, result)) return STATUS_PENDING;
-        if (pSDL_WaitEventTimeout(&event, 10) != 0) process_device_event(&event);
+        if (pSDL_WaitEventTimeout(&event, 10) != 0)
+        {
+            process_device_event(&event);
+
+            /* High-report-rate controllers can produce several axis events
+             * before winebus consumes one report. Drain SDL's pending events
+             * so axis states can be coalesced instead of replayed stale. */
+            for (drained = 0; event.type != quit_event && drained < SDL_EVENT_DRAIN_LIMIT &&
+                 pSDL_PollEvent(&event); ++drained)
+                process_device_event(&event);
+        }
         else check_all_devices_effects_state();
     } while (event.type != quit_event);
 
