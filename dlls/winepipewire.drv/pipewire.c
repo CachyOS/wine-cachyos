@@ -1841,9 +1841,6 @@ static NTSTATUS pipewire_create_stream(void *args)
         }
     }
 
-    *params->channel_count = stream->info.channels;
-    *params->stream = (stream_handle)(UINT_PTR)stream;
-
 exit:
     if (FAILED(params->result = hr))
     {
@@ -1867,7 +1864,11 @@ exit:
     }
 
     if (SUCCEEDED(hr))
+    {
+        *params->channel_count = stream->info.channels;
+        *params->stream = (stream_handle)(UINT_PTR)stream;
         TRACE("created stream %p, %u channels.\n", stream, stream->info.channels);
+    }
     else
         WARN("failed: %#x.\n", (unsigned)hr);
     pw_thread_loop_unlock(pw_loop_global);
