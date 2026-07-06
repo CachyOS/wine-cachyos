@@ -731,6 +731,7 @@ struct probe
     char default_source[256];
     uint32_t clock_rate;
     uint32_t min_quantum;
+    BOOL core_error;
 };
 
 static void on_probe_node_param(void *data, int seq, uint32_t id, uint32_t index,
@@ -906,14 +907,28 @@ static void on_probe_core_done(void *data, uint32_t id, int seq)
         pw_thread_loop_signal(p->loop, false);
 }
 
+static void on_probe_core_error(void *data, uint32_t id, int seq, int res, const char *message)
+{
+    /* Runs on the PipeWire loop thread: pw API only, no ntdll/Wine calls. */
+    struct probe *p = data;
+    if (id == PW_ID_CORE)
+    {
+        p->core_error = TRUE;
+        pw_thread_loop_signal(p->loop, false);
+    }
+}
+
 static const struct pw_core_events probe_core_events = {
     PW_VERSION_CORE_EVENTS,
     .done = on_probe_core_done,
+    .error = on_probe_core_error,
 };
 
 /* Round-trip the core; must be called with the loop lock held. */
 static void probe_roundtrip(struct probe *p)
 {
+    if (p->core_error)
+        return;
     p->sync_seq = pw_core_sync(p->core, PW_ID_CORE, p->sync_seq);
     pw_thread_loop_timed_wait(p->loop, 2);
 }
@@ -1097,6 +1112,12 @@ static NTSTATUS pipewire_test_connect(void *args)
     pw_thread_loop_stop(p.loop);
     pw_context_destroy(p.context);
     pw_thread_loop_destroy(p.loop);
+
+    if (p.core_error && list_empty(&p.nodes))
+    {
+        WARN("PipeWire core reported an error during the probe\n");
+        return STATUS_SUCCESS;
+    }
 
     /* The pw loop is fully stopped: safe to do Wine string conversion. */
     build_device_cache(&p);
