@@ -67,6 +67,8 @@
 
 #include "../mmdevapi/unixlib.h"
 
+#include "mult.h"
+
 WINE_DEFAULT_DEBUG_CHANNEL(pipewire);
 
 #define PW_CHANNELS_MAX 64
@@ -241,6 +243,8 @@ static UINT spa_format_bytes(enum spa_audio_format f)
     {
     case SPA_AUDIO_FORMAT_U8:
     case SPA_AUDIO_FORMAT_S8:
+    case SPA_AUDIO_FORMAT_ULAW:
+    case SPA_AUDIO_FORMAT_ALAW:
         return 1;
     case SPA_AUDIO_FORMAT_S16_LE:
         return 2;
@@ -1395,6 +1399,22 @@ static HRESULT pipewire_info_from_waveformat(struct pipewire_stream *stream, con
         info->format = spafmt;
         return S_OK;
     }
+    case WAVE_FORMAT_ALAW:
+    case WAVE_FORMAT_MULAW:
+        if (fmt->wBitsPerSample != 8)
+        {
+            FIXME("Unsupported bpp %u for LAW\n", fmt->wBitsPerSample);
+            return AUDCLNT_E_UNSUPPORTED_FORMAT;
+        }
+        if (fmt->nChannels != 1 && fmt->nChannels != 2)
+        {
+            FIXME("Unsupported channels %u for LAW\n", fmt->nChannels);
+            return AUDCLNT_E_UNSUPPORTED_FORMAT;
+        }
+        spafmt = fmt->wFormatTag == WAVE_FORMAT_MULAW ? SPA_AUDIO_FORMAT_ULAW : SPA_AUDIO_FORMAT_ALAW;
+        info->channels = fmt->nChannels;
+        mask = get_channel_mask(fmt->nChannels);
+        break;
     default:
         WARN("Unhandled tag %x\n", fmt->wFormatTag);
         return AUDCLNT_E_UNSUPPORTED_FORMAT;
@@ -1518,6 +1538,28 @@ static void apply_volume(const struct pipewire_stream *stream, BYTE *buffer, UIN
         {
             for (i = 0; i < channels; i++)
                 p[i] = (int)((p[i] - 128) * vol[i]) + 128;
+            p += i;
+        } while ((BYTE *)p != end);
+        break;
+    }
+    case SPA_AUDIO_FORMAT_ALAW:
+    {
+        UINT8 *p = (UINT8 *)buffer;
+        do
+        {
+            for (i = 0; i < channels; i++)
+                p[i] = mult_alaw_sample(p[i], vol[i]);
+            p += i;
+        } while ((BYTE *)p != end);
+        break;
+    }
+    case SPA_AUDIO_FORMAT_ULAW:
+    {
+        UINT8 *p = (UINT8 *)buffer;
+        do
+        {
+            for (i = 0; i < channels; i++)
+                p[i] = mult_ulaw_sample(p[i], vol[i]);
             p += i;
         } while ((BYTE *)p != end);
         break;
