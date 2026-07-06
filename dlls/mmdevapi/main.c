@@ -123,10 +123,12 @@ static BOOL WINAPI init_driver(INIT_ONCE *once, void *param, void **context)
 {
     static WCHAR default_list[] = L"pipewire,pulse,alsa,oss,coreaudio";
     DriverFuncs driver;
+    DWORD env_len;
     HKEY key;
     WCHAR reg_list[256], *p, *next, *driver_list = default_list;
 
-    if(GetEnvironmentVariableW(L"WINE_AUDIO_DRIVER", reg_list, ARRAY_SIZE(reg_list)))
+    env_len = GetEnvironmentVariableW(L"WINE_AUDIO_DRIVER", reg_list, ARRAY_SIZE(reg_list));
+    if(env_len && env_len < ARRAY_SIZE(reg_list))
         driver_list = reg_list;
     else if(RegOpenKeyW(HKEY_CURRENT_USER, drv_keyW, &key) == ERROR_SUCCESS){
         DWORD size = sizeof(reg_list);
