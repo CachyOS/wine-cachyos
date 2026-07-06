@@ -1064,7 +1064,13 @@ static NTSTATUS pipewire_test_connect(void *args)
         return STATUS_SUCCESS;
     }
 
-    pw_thread_loop_start(p.loop);
+    if (pw_thread_loop_start(p.loop) < 0)
+    {
+        ERR("Failed to start PipeWire probe loop\n");
+        pw_context_destroy(p.context);
+        pw_thread_loop_destroy(p.loop);
+        return STATUS_SUCCESS;
+    }
     pw_thread_loop_lock(p.loop);
 
     if (!(p.core = pw_context_connect(p.context, NULL, 0)))
