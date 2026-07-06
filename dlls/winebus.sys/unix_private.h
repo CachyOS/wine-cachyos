@@ -240,6 +240,8 @@ extern BOOL bus_event_queue_device_removed(struct list *queue, struct unix_devic
 extern BOOL bus_event_queue_device_created(struct list *queue, struct unix_device *device, struct device_desc *desc);
 extern BOOL bus_event_queue_input_report(struct list *queue, struct unix_device *device,
                                          BYTE *report, USHORT length);
+extern BOOL bus_event_queue_coalesced_input_report(struct list *queue, struct unix_device *device,
+                                                   BYTE *report, USHORT length);
 extern BOOL bus_event_queue_pop(struct list *queue, struct bus_event *event);
 
 extern BOOL hid_device_begin_report_descriptor(struct unix_device *iface, const USAGE_AND_PAGE *device_usage);
