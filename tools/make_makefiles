@@ -365,7 +365,7 @@ sub update_makefiles(@)
         }
         elsif (defined($make{"UNIXLIB"}))
         {
-            die "UNIXLIB should not be defined in $file" unless $file =~ /^dlls\/.*\.drv\/Makefile.kin$/;
+            die "UNIXLIB should not be defined in $file" unless $file =~ /^dlls\/.*\.drv\/Makefile\.in$/;
         }
         push @lines, "WINE_CONFIG_MAKEFILE($dir)\n";
     }
