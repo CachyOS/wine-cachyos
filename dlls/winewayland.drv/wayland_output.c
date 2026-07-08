@@ -675,6 +675,8 @@ BOOL wayland_output_create(uint32_t id, uint32_t version)
     if (process_wayland.wp_color_manager_v1)
         wayland_output_use_image_description(output);
 
+    output->ref = 1;
+
     pthread_mutex_lock(&process_wayland.output_mutex);
     wl_list_insert(process_wayland.output_list.prev, &output->link);
     pthread_mutex_unlock(&process_wayland.output_mutex);
@@ -682,7 +684,7 @@ BOOL wayland_output_create(uint32_t id, uint32_t version)
     return TRUE;
 
 err:
-    if (output) wayland_output_destroy(output);
+    if (output) wayland_output_release(output);
     return FALSE;
 }
 
@@ -693,15 +695,34 @@ static void wayland_output_state_deinit(struct wayland_output_state *state)
 }
 
 /**********************************************************************
- *          wayland_output_destroy
+ *          wayland_output_remove
  *
- *  Destroys a wayland_output.
+ *  Drops ref of wayland output from the output list, and updates display devices.
  */
-void wayland_output_destroy(struct wayland_output *output)
+void wayland_output_remove(struct wayland_output *output)
 {
     pthread_mutex_lock(&process_wayland.output_mutex);
     wl_list_remove(&output->link);
     pthread_mutex_unlock(&process_wayland.output_mutex);
+
+    wayland_output_release(output);
+
+    maybe_init_display_devices();
+}
+
+void wayland_output_add_ref(struct wayland_output *output)
+{
+    InterlockedIncrement(&output->ref);
+}
+
+/**********************************************************************
+ *          wayland_output_destroy
+ *
+ *  Destroys a wayland_output.
+ */
+void wayland_output_release(struct wayland_output *output)
+{
+    if (InterlockedDecrement(&output->ref)) return;
 
     wayland_output_state_deinit(&output->pending);
     wayland_output_state_deinit(&output->current);
@@ -715,8 +736,6 @@ void wayland_output_destroy(struct wayland_output *output)
         zxdg_output_v1_destroy(output->zxdg_output_v1);
     wl_output_destroy(output->wl_output);
     free(output);
-
-    maybe_init_display_devices();
 }
 
 /**********************************************************************
