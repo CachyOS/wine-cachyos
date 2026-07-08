@@ -690,6 +690,8 @@ static void media_type_try_copy_attr(IMFMediaType *dst, IMFMediaType *src, const
 /* also present in mf/topology_loader.c pipeline */
 static HRESULT update_media_type_from_upstream(IMFMediaType *media_type, IMFMediaType *upstream_type, BOOL advanced)
 {
+    UINT32 bits_per_sample, channels, samples_per_second;
+    GUID subtype;
     HRESULT hr = S_OK;
 
     /* propagate common video attributes */
@@ -721,6 +723,21 @@ static HRESULT update_media_type_from_upstream(IMFMediaType *media_type, IMFMedi
     media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_CHANNEL_MASK, &hr);
     media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_SAMPLES_PER_BLOCK, &hr);
     media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_VALID_BITS_PER_SAMPLE, &hr);
+
+    /* block alignment and byte rate may be inherited from the compressed upstream type;
+     * for pcm / float recompute them from the decoded format instead */
+    if (SUCCEEDED(hr) && SUCCEEDED(IMFMediaType_GetGUID(media_type, &MF_MT_SUBTYPE, &subtype))
+            && (IsEqualGUID(&subtype, &MFAudioFormat_PCM) || IsEqualGUID(&subtype, &MFAudioFormat_Float))
+            && SUCCEEDED(IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_BITS_PER_SAMPLE, &bits_per_sample))
+            && SUCCEEDED(IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_NUM_CHANNELS, &channels))
+            && SUCCEEDED(IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_SAMPLES_PER_SECOND, &samples_per_second)))
+    {
+        UINT32 block_alignment = bits_per_sample * channels / 8;
+
+        hr = IMFMediaType_SetUINT32(media_type, &MF_MT_AUDIO_BLOCK_ALIGNMENT, block_alignment);
+        if (SUCCEEDED(hr))
+            hr = IMFMediaType_SetUINT32(media_type, &MF_MT_AUDIO_AVG_BYTES_PER_SECOND, block_alignment * samples_per_second);
+    }
 
     return hr;
 }
