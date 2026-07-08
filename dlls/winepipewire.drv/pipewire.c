@@ -220,6 +220,19 @@ static char *wstr_to_str(const WCHAR *wstr)
     return str;
 }
 
+/* Validate before UTF-8 conversion; non-ASCII names must not depend on char signedness. */
+static char *app_name_from_wstr(const WCHAR *appname)
+{
+    const WCHAR *w;
+
+    if (!appname)
+        return NULL;
+    for (w = appname; *w; w++)
+        if (*w > ' ')
+            return wstr_to_str(appname);
+    return NULL;
+}
+
 static WCHAR *utf8_to_wstr(const char *s)
 {
     size_t len = strlen(s);
@@ -603,8 +616,11 @@ static const struct pw_core_events core_events = {
 };
 
 /* Called with the loop lock held. */
-static HRESULT pipewire_connect(void)
+static HRESULT pipewire_connect(const WCHAR *appname)
 {
+    struct pw_properties *props = NULL;
+    char *app;
+
     if (pw_core_global && !core_dead)
         return S_OK;
 
@@ -620,7 +636,12 @@ static HRESULT pipewire_connect(void)
     }
     core_dead = FALSE;
 
-    if (!(pw_core_global = pw_context_connect(pw_ctx, NULL, 0)))
+    if ((app = app_name_from_wstr(appname)))
+    {
+        props = pw_properties_new(PW_KEY_APP_NAME, app, NULL);
+        free(app);
+    }
+    if (!(pw_core_global = pw_context_connect(pw_ctx, props, 0)))
     {
         WARN("pw_context_connect failed\n");
         return AUDCLNT_E_ENDPOINT_CREATE_FAILED;
@@ -1709,12 +1730,12 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
     if (!props)
         return AUDCLNT_E_ENDPOINT_CREATE_FAILED;
 
-    if (appname && (app = wstr_to_str(appname)))
+    app = app_name_from_wstr(appname);
+    if (app)
     {
         pw_properties_set(props, PW_KEY_APP_NAME, app);
         pw_properties_set(props, PW_KEY_NODE_NAME, app);
         pw_properties_set(props, PW_KEY_NODE_DESCRIPTION, app);
-        free(app);
     }
     else
         pw_properties_set(props, PW_KEY_NODE_NAME, "winepipewire");
@@ -1726,7 +1747,8 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
          (device && device[0] && device_is_sink(device))))
         pw_properties_set(props, PW_KEY_STREAM_CAPTURE_SINK, "true");
 
-    stream->pw = pw_stream_new(pw_core_global, "winepipewire", props);
+    stream->pw = pw_stream_new(pw_core_global, app ? app : "winepipewire", props);
+    free(app);
     if (!stream->pw)
     {
         WARN("pw_stream_new failed.\n");
@@ -1807,7 +1829,7 @@ static NTSTATUS pipewire_create_stream(void *args)
 
     pw_thread_loop_lock(pw_loop_global);
 
-    if (FAILED(hr = pipewire_connect()))
+    if (FAILED(hr = pipewire_connect(params->name)))
     {
         params->result = hr;
         pw_thread_loop_unlock(pw_loop_global);
