@@ -198,8 +198,9 @@ HRESULT STDMETHODCALLTYPE AMDFSR4FFX_UpdateFfxApiProvider(IAmdExtFfxApi *iface, 
 
     if (!data) return E_INVALIDARG;
 
-    if ((env = getenv("MLFG_UPGRADE")) && !strcmp(env, "1"))
-        unk_data->unk[2] = 1;
+    env = getenv("MLFG_UPGRADE");
+    if (this->fp8_supported || (env && !strcmp(env, "1")))
+        unk_data->unk[2] = !env || strcmp(env, "0");
 
     fsr4 = (env = getenv("FSR4_UPGRADE")) && !strcmp(env, "1");
     if (!fsr4 && !this->rdna2) return E_NOTIMPL;
