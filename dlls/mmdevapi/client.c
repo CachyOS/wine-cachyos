@@ -212,9 +212,15 @@ static HRESULT stream_release(stream_handle stream)
 
 static BOOL query_productname(void *data, LANGANDCODEPAGE *lang, LPVOID *buffer, UINT *len)
 {
-    WCHAR pn[37];
+    WCHAR pn[37], *name;
+
     swprintf(pn, ARRAY_SIZE(pn), L"\\StringFileInfo\\%04x%04x\\ProductName", lang->wLanguage, lang->wCodePage);
-    return VerQueryValueW(data, pn, buffer, len) && *len;
+    if (!VerQueryValueW(data, pn, buffer, len) || !*len)
+        return FALSE;
+    for (name = *buffer; *name; name++)
+        if (*name > ' ')
+            return TRUE;
+    return FALSE;
 }
 
 WCHAR *get_application_name(void)
