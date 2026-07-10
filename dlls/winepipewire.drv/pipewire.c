@@ -103,11 +103,8 @@ struct pipewire_stream
     BOOL started;
     SIZE_T bufsize_frames, real_bufsize_bytes, period_bytes;
     /* render ring bookkeeping: lcl_offs/held track the application side,
-     * pa_offs/pa_held track the process-callback reader (field names kept
-     * from the pulse.c transplant for diffability).  pa_held_bytes is
-     * SPSC-atomic (producer release_render_buffer release-adds, the RT
-     * process callback acquire-loads and subtracts); pa_offs_bytes stays
-     * plain, a bounded residual race the producer only hits on overflow. */
+     * pa_offs/pa_held track the process callback reader. pa_held_bytes
+     * publishes bytes with release/acquire; pa_offs_bytes only needs atomicity. */
     SIZE_T lcl_offs_bytes, pa_offs_bytes;
     SIZE_T tmp_buffer_bytes, held_bytes, pa_held_bytes;
     BYTE *local_buffer, *tmp_buffer;
@@ -1617,6 +1614,7 @@ static void on_stream_process(void *data)
     {
         UINT32 maxsize = d->maxsize;
         UINT32 req_frames, need_bytes, n;
+        SIZE_T pa_offs;
 
         req_frames = b->requested ? (UINT32)b->requested : maxsize / stream->frame_size;
         if (req_frames * stream->frame_size > maxsize)
@@ -1626,15 +1624,16 @@ static void on_stream_process(void *data)
         if (stream->started)
         {
             n = min(need_bytes, __atomic_load_n(&stream->pa_held_bytes, __ATOMIC_ACQUIRE));
-            copy_from_ring(d->data, stream->local_buffer, stream->real_bufsize_bytes,
-                           stream->pa_offs_bytes, n);
+            pa_offs = __atomic_load_n(&stream->pa_offs_bytes, __ATOMIC_RELAXED);
+            copy_from_ring(d->data, stream->local_buffer, stream->real_bufsize_bytes, pa_offs, n);
             apply_volume(stream, d->data, n);
             if (n < need_bytes)
             {
                 silence_buffer(stream->info.format, (BYTE *)d->data + n, need_bytes - n);
                 stream->underrun_count++;
             }
-            stream->pa_offs_bytes = (stream->pa_offs_bytes + n) % stream->real_bufsize_bytes;
+            pa_offs = (pa_offs + n) % stream->real_bufsize_bytes;
+            __atomic_store_n(&stream->pa_offs_bytes, pa_offs, __ATOMIC_RELAXED);
             __atomic_sub_fetch(&stream->pa_held_bytes, n, __ATOMIC_RELEASE);
         }
         else
@@ -1720,6 +1719,7 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
     const struct spa_pod *params[1];
     uint32_t period_frames = stream->period_bytes / stream->frame_size;
     enum pw_stream_state st;
+    enum pw_stream_flags flags;
     char *app;
     int tries;
 
@@ -1764,12 +1764,14 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
         return AUDCLNT_E_ENDPOINT_CREATE_FAILED;
     }
 
+    flags = PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS | PW_STREAM_FLAG_INACTIVE;
+
+    if (stream->dataflow == eRender)
+        flags |= PW_STREAM_FLAG_RT_PROCESS;
+
     if (pw_stream_connect(stream->pw,
                           stream->dataflow == eRender ? PW_DIRECTION_OUTPUT : PW_DIRECTION_INPUT,
-                          PW_ID_ANY,
-                          PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS |
-                          PW_STREAM_FLAG_INACTIVE,
-                          params, 1) < 0)
+                          PW_ID_ANY, flags, params, 1) < 0)
     {
         WARN("pw_stream_connect failed.\n");
         return AUDCLNT_E_ENDPOINT_CREATE_FAILED;
@@ -2353,7 +2355,8 @@ static NTSTATUS pipewire_reset(void *args)
     if (stream->dataflow == eRender)
     {
         stream->clock_lastpos = stream->clock_written = 0;
-        stream->pa_offs_bytes = stream->lcl_offs_bytes = 0;
+        stream->lcl_offs_bytes = 0;
+        __atomic_store_n(&stream->pa_offs_bytes, 0, __ATOMIC_RELAXED);
         stream->held_bytes = 0;
         __atomic_store_n(&stream->pa_held_bytes, 0, __ATOMIC_RELEASE);
     }
@@ -2539,7 +2542,7 @@ static NTSTATUS pipewire_release_render_buffer(void *args)
     if (__atomic_add_fetch(&stream->pa_held_bytes, written_bytes, __ATOMIC_RELEASE) > stream->real_bufsize_bytes)
     {
         WARN("%p PipeWire buffer overflow.\n", stream);
-        stream->pa_offs_bytes = stream->lcl_offs_bytes;
+        __atomic_store_n(&stream->pa_offs_bytes, stream->lcl_offs_bytes, __ATOMIC_RELAXED);
         __atomic_store_n(&stream->pa_held_bytes, stream->held_bytes, __ATOMIC_RELEASE);
     }
     stream->clock_written += written_bytes;
@@ -2842,7 +2845,8 @@ static NTSTATUS pipewire_set_sample_rate(void *args)
     pw_stream_flush(stream->pw, false);
 
     stream->clock_lastpos = stream->clock_written = 0;
-    stream->pa_offs_bytes = stream->lcl_offs_bytes = 0;
+    stream->lcl_offs_bytes = 0;
+    __atomic_store_n(&stream->pa_offs_bytes, 0, __ATOMIC_RELAXED);
     stream->held_bytes = 0;
     __atomic_store_n(&stream->pa_held_bytes, 0, __ATOMIC_RELEASE);
     stream->period_bytes =
