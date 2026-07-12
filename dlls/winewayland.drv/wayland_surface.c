@@ -970,6 +970,8 @@ static BOOL wayland_surface_reconfigure_xdg(struct wayland_surface *surface, REC
     {
         surface->current = surface->requested;
         memset(&surface->requested, 0, sizeof(surface->requested));
+        /* clear stale processing config since the requested one is always newer */
+        memset(&surface->processing, 0, sizeof(surface->processing));
         xdg_surface_ack_configure(surface->xdg_surface, surface->current.serial);
     }
     else if (!surface->current.serial ||
