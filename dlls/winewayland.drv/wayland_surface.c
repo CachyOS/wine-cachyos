@@ -1434,7 +1434,7 @@ static const struct wl_buffer_listener dummy_buffer_listener =
  * Ensure that the wayland surface has up-to-date contents, by committing
  * a dummy buffer if necessary.
  */
-static void wayland_surface_ensure_contents(struct wayland_surface *surface)
+static BOOL wayland_surface_ensure_contents(struct wayland_surface *surface)
 {
     enum wayland_surface_ensure_type needs_contents = WAYLAND_SURFACE_NOT_ENSURED;
     HWND hwnd = surface->hwnd;
@@ -1465,39 +1465,38 @@ static void wayland_surface_ensure_contents(struct wayland_surface *surface)
 
     switch (needs_contents)
     {
-    case WAYLAND_SURFACE_ENSURED_FLUSH:
-        NtUserExposeWindowSurface(hwnd, 0, NULL, 0);
-        /* fallthrough */
-    case WAYLAND_SURFACE_NOT_ENSURED:
-        return;
-    case WAYLAND_SURFACE_ENSURED_DUMMY_BUFFER:
-        break;
+    case WAYLAND_SURFACE_ENSURED_FLUSH: return TRUE;
+    case WAYLAND_SURFACE_NOT_ENSURED: return FALSE;
+    case WAYLAND_SURFACE_ENSURED_DUMMY_BUFFER: break;
     }
 
     if (!wayland_surface_reconfigure(surface))
     {
         WARN("Failed to reconfigure surface %p\n", surface);
-        return;
+        return FALSE;
     }
 
     if (!(dummy_shm_buffer = wayland_shm_buffer_create(width, height, format)))
     {
         ERR("Failed to create dummy buffer\n");
-        return;
+        return FALSE;
+    }
+
+    if (!(damage = NtGdiCreateRectRgn(0, 0, width, height)))
+    {
+        wayland_shm_buffer_unref(dummy_shm_buffer);
+        return FALSE;
     }
 
     wl_buffer_add_listener(dummy_shm_buffer->wl_buffer, &dummy_buffer_listener,
                            dummy_shm_buffer);
-    if (!(damage = NtGdiCreateRectRgn(0, 0, width, height)))
-    {
-        wayland_shm_buffer_unref(dummy_shm_buffer);
-        return;
-    }
 
     wayland_surface_attach_shm(surface, dummy_shm_buffer, damage);
     wl_surface_commit(surface->wl_surface);
     surface->ensured_contents = WAYLAND_SURFACE_ENSURED_DUMMY_BUFFER;
     NtGdiDeleteObjectApp(damage);
+
+    return FALSE;
 }
 
 static void wayland_client_surface_present(struct client_surface *client, HDC hdc)
@@ -1506,12 +1505,13 @@ static void wayland_client_surface_present(struct client_surface *client, HDC hd
     HWND hwnd = client->hwnd, toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
     struct wayland_surface *wayland_surface;
     struct wayland_win_data *data;
+    BOOL expose = FALSE;
 
     if (!(data = wayland_win_data_get(toplevel))) return;
 
     if ((wayland_surface = data->wayland_surface))
     {
-        wayland_surface_ensure_contents(wayland_surface);
+        expose = wayland_surface_ensure_contents(wayland_surface);
 
         /* Handle any processed configure request, to ensure the related
          * surface state is applied by the compositor. */
@@ -1525,6 +1525,7 @@ static void wayland_client_surface_present(struct client_surface *client, HDC hd
 
     wayland_win_data_release(data);
 
+    if (expose) NtUserExposeWindowSurface(hwnd, 0, NULL, 0);
     set_client_surface(hwnd, surface);
 }
 
