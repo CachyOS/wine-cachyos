@@ -3448,7 +3448,7 @@ HANDLE WINAPI PsGetCurrentProcessId(void)
  */
 ULONG WINAPI PsGetCurrentProcessSessionId(void)
 {
-    return PsGetCurrentProcess()->info.PebBaseAddress->SessionId;
+    return PsGetCurrentProcess()->session_id;
 }
 
 /***********************************************************************
