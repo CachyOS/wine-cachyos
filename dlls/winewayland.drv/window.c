@@ -140,14 +140,15 @@ static void wayland_win_data_get_config(struct wayland_win_data *data,
                                         struct wayland_window_config *conf)
 {
     enum wayland_surface_config_state window_state = 0;
-    DWORD style;
+    DWORD style, exstyle;
 
     conf->rect = data->rects.visible;
     conf->window_rect = data->rects.window;
     conf->client_rect = data->rects.client;
     style = NtUserGetWindowLongW(data->hwnd, GWL_STYLE);
+    exstyle = NtUserGetWindowLongW(data->hwnd, GWL_EXSTYLE);
 
-    TRACE("window=%s style=%#x\n", wine_dbgstr_rect(&conf->rect), style);
+    TRACE("window=%s style=%#x exstyle=%#x\n", wine_dbgstr_rect(&conf->rect), style, exstyle);
 
     conf->minimized = FALSE;
 
