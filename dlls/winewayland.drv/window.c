@@ -273,6 +273,10 @@ static void wayland_surface_update_state_toplevel(struct wayland_surface *surfac
           processing_config ? "processing" : "current",
           processing_config ? surface->processing.state : surface->current.state);
 
+    /* update the parent here as well to ensure that its not stale if the owner is updated
+     * with no new contents comitted or state change */
+    wayland_surface_update_toplevel_parent(surface);
+
     /* If we are not processing a compositor requested config, use the
      * window state to determine and update the Wayland state. */
     if (!processing_config)

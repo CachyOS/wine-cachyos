@@ -374,6 +374,7 @@ struct wayland_surface
     enum wayland_surface_role role;
 
     struct xdg_surface *xdg_surface;
+    HWND owner_hwnd;
 
     union
     {
@@ -387,7 +388,6 @@ struct wayland_surface
         struct
         {
             struct xdg_popup *xdg_popup;
-            HWND owner_hwnd;
         };
     };
     struct wp_alpha_modifier_surface_v1 *wp_alpha_modifier_surface_v1;
@@ -435,6 +435,7 @@ void wayland_surface_attach_shm(struct wayland_surface *surface,
 BOOL wayland_surface_reconfigure(struct wayland_surface *surface);
 BOOL wayland_surface_config_is_compatible(struct wayland_surface_config *conf, RECT rect,
                                           enum wayland_surface_config_state state);
+void wayland_surface_update_toplevel_parent(struct wayland_surface *surface);
 RECT map_rect_to_surface(struct wayland_surface *surface, RECT rect);
 POINT map_point_to_surface(struct wayland_surface *surface, POINT point);
 RECT map_rect_from_surface(struct wayland_surface *surface, RECT rect);
