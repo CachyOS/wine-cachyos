@@ -2774,8 +2774,12 @@ static NTSTATUS pipewire_set_volumes(void *args)
     struct pipewire_stream *stream = handle_get_stream(params->stream);
     unsigned int i;
 
-    for (i = 0; i < stream->info.channels; i++)
-        stream->vol[i] = params->volumes[i] * params->master_volume * params->session_volumes[i];
+    pw_thread_loop_lock(pw_loop_global);
+    if (stream_valid(stream))
+        for (i = 0; i < stream->info.channels; i++)
+            stream->vol[i] = params->volumes[i] * params->master_volume *
+                             params->session_volumes[i];
+    pw_thread_loop_unlock(pw_loop_global);
     return STATUS_SUCCESS;
 }
 
