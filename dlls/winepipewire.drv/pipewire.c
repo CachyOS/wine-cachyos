@@ -1607,7 +1607,8 @@ static void on_stream_process(void *data)
     if (!(b = pw_stream_dequeue_buffer(stream->pw)))
         return;
     buf = b->buffer;
-    if (!buf->n_datas || !(d = &buf->datas[0])->data)
+    if (!buf || !buf->n_datas || !buf->datas ||
+        !(d = &buf->datas[0])->data || !d->chunk)
     {
         pw_stream_queue_buffer(stream->pw, b);
         return;
@@ -1618,9 +1619,10 @@ static void on_stream_process(void *data)
         UINT32 maxsize = d->maxsize;
         UINT32 req_frames, need_bytes, n;
 
-        req_frames = b->requested ? (UINT32)b->requested : maxsize / stream->frame_size;
-        if (req_frames * stream->frame_size > maxsize)
+        if (!b->requested || b->requested > maxsize / stream->frame_size)
             req_frames = maxsize / stream->frame_size;
+        else
+            req_frames = (UINT32)b->requested;
         need_bytes = req_frames * stream->frame_size;
 
         if (stream->started)
