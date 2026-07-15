@@ -2243,9 +2243,9 @@ static LRESULT handle_internal_message( HWND hwnd, UINT msg, WPARAM wparam, LPAR
     }
     case WM_WINE_WINDOW_STATE_CHANGED:
     {
-        UINT state_cmd, swp_flags;
+        UINT state_cmd = 0, swp_flags = 0;
         RECT window_rect;
-        HWND foreground;
+        HWND foreground = 0;
 
         if (!user_driver->pGetWindowStateUpdates( hwnd, &state_cmd, &swp_flags, &window_rect, &foreground )) return 0;
         window_rect = map_rect_raw_to_virt( window_rect, get_thread_dpi() );
