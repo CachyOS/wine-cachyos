@@ -325,6 +325,7 @@ struct wayland_surface *wayland_surface_create(HWND hwnd)
     }
 
     surface->window.scale = 1.0;
+    surface->comitted.scale = 0.0;
     surface->ensured_contents = WAYLAND_SURFACE_NOT_ENSURED;
 
     return surface;
@@ -712,6 +713,9 @@ void wayland_surface_clear_role(struct wayland_surface *surface)
     memset(&surface->requested, 0, sizeof(surface->requested));
     memset(&surface->processing, 0, sizeof(surface->processing));
     memset(&surface->current, 0, sizeof(surface->current));
+
+    memset(&surface->comitted, 0, sizeof(surface->comitted));
+    surface->comitted.scale = 0.0;
 
     /* Ensure no buffer is attached, otherwise future role assignments may fail. */
     wl_surface_attach(surface->wl_surface, NULL, 0, 0);

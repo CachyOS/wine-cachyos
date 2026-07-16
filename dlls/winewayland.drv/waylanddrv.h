@@ -417,7 +417,7 @@ struct wayland_surface
     struct wayland_surface_config pending, requested, processing, current;
     BOOL resizing;
     enum wayland_surface_ensure_type ensured_contents;
-    struct wayland_window_config window;
+    struct wayland_window_config window, comitted;
     int content_width, content_height;
     HCURSOR hcursor;
 };

@@ -327,10 +327,12 @@ static void wayland_surface_update_state_toplevel(struct wayland_surface *surfac
         skip_fullscreen:
             if (output) wayland_output_release(output);
         }
-        if (surface->window.minimized)
+        if (surface->window.minimized && !surface->comitted.minimized)
         {
             xdg_toplevel_set_minimized(surface->xdg_toplevel);
         }
+
+        surface->comitted.minimized = surface->window.minimized;
 
         /* reset the size hint since we don't want to poison the next configure event with it */
         xdg_toplevel_set_min_size(surface->xdg_toplevel, 0, 0);
