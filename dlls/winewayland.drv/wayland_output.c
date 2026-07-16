@@ -237,6 +237,10 @@ static void wayland_output_done(struct wayland_output *output)
         output->current.logical_h = output->current.current_mode->height;
     }
 
+    /* update the process output info array since pUpdateDisplayDevices
+     * is only called on desktop window process */
+    output_info_array_update();
+
     pthread_mutex_unlock(&process_wayland.output_mutex);
 
     TRACE("name=%s logical=%d,%d+%dx%d hdr=%u\n",
@@ -703,6 +707,7 @@ void wayland_output_remove(struct wayland_output *output)
 {
     pthread_mutex_lock(&process_wayland.output_mutex);
     wl_list_remove(&output->link);
+    output_info_array_update();
     pthread_mutex_unlock(&process_wayland.output_mutex);
 
     wayland_output_release(output);
@@ -736,6 +741,50 @@ void wayland_output_release(struct wayland_output *output)
         zxdg_output_v1_destroy(output->zxdg_output_v1);
     wl_output_destroy(output->wl_output);
     free(output);
+}
+
+/**********************************************************************
+ *          wayland_output_for_rect
+ */
+struct wayland_output *wayland_output_for_rect(const RECT *window_rect)
+{
+    struct wayland_output *best = NULL;
+    struct output_info *output_info;
+    HMONITOR target = NtUserMonitorFromRect(window_rect, 0);
+
+    TRACE("window %s\n", wine_dbgstr_rect(window_rect));
+
+    if (!target) return NULL;
+
+    pthread_mutex_lock(&process_wayland.output_mutex);
+
+    wl_array_for_each(output_info, &process_wayland.output_info_array)
+    {
+        RECT rect;
+        SetRect(&rect, 0, 0,
+                output_info->output->current_mode->width,
+                output_info->output->current_mode->height);
+        OffsetRect(&rect, output_info->x, output_info->y);
+
+        TRACE("output %s: %s\n",
+              debugstr_a(output_info->output->name),
+              wine_dbgstr_rect(&rect));
+
+        if (NtUserMonitorFromRect(&rect, 0) == target)
+        {
+            best = CONTAINING_RECORD(output_info->output,
+                                     struct wayland_output,
+                                     current);
+            wayland_output_add_ref(best);
+            break;
+        }
+    }
+
+    pthread_mutex_unlock(&process_wayland.output_mutex);
+
+    if (!best) WARN("Could not find output for rect %s!\n", wine_dbgstr_rect(window_rect));
+
+    return best;
 }
 
 /**********************************************************************
