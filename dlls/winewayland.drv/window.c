@@ -303,16 +303,15 @@ static void wayland_surface_update_state_toplevel(struct wayland_surface *surfac
         }
         if (surface->window.state & WAYLAND_SURFACE_CONFIG_STATE_FULLSCREEN)
         {
-            struct wayland_output *wayland_output;
-            struct wl_output *output = NULL;
-            pthread_mutex_lock(&process_wayland.output_mutex);
+            struct wayland_output *output;
+            struct wl_output *wl_output = NULL;
 
-            if ((wayland_output = wayland_output_for_rect(rect)))
-                output = wayland_output->wl_output;
+            if ((output = wayland_output_for_rect(rect)))
+                wl_output = output->wl_output;
 
             if (surface->current.state & WAYLAND_SURFACE_CONFIG_STATE_FULLSCREEN)
             {
-                if (surface->requested_output != output)
+                if (surface->requested_output != wl_output)
                 {
                     xdg_toplevel_unset_fullscreen(surface->xdg_toplevel);
                     wl_display_flush(process_wayland.wl_display);
@@ -321,12 +320,12 @@ static void wayland_surface_update_state_toplevel(struct wayland_surface *surfac
                     goto skip_fullscreen;
             }
 
-            xdg_toplevel_set_fullscreen(surface->xdg_toplevel, output);
+            xdg_toplevel_set_fullscreen(surface->xdg_toplevel, wl_output);
             wayland_surface_shortcut_control(surface, TRUE);
-            surface->requested_output = output;
+            surface->requested_output = wl_output;
 
-            skip_fullscreen:
-            pthread_mutex_unlock(&process_wayland.output_mutex);
+        skip_fullscreen:
+            if (output) wayland_output_release(output);
         }
         if (surface->window.minimized)
         {

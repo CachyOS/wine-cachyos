@@ -265,7 +265,8 @@ struct wayland
     struct wayland_text_input text_input;
     struct wayland_data_device data_device;
     struct wl_list output_list;
-    /* Protects the output_list and the wayland_output.current states. */
+    struct wl_array output_info_array;
+    /* Protects the output_list, output_info_array, and the wayland_output.current states. */
     pthread_mutex_t output_mutex;
     LONG input_serial;
     BOOL supports_pq;
@@ -326,6 +327,12 @@ struct wayland_output
     unsigned int pending_flags;
     LONG ref;
     struct wayland_output_state pending, current;
+};
+
+struct output_info
+{
+    int x, y;
+    struct wayland_output_state *output;
 };
 
 struct wayland_surface_config
@@ -398,7 +405,7 @@ struct wayland_surface
             struct xdg_toplevel *xdg_toplevel;
             struct xdg_toplevel_icon_v1 *xdg_toplevel_icon;
             struct zxdg_toplevel_decoration_v1 *zxdg_toplevel_decoration_v1;
-            struct wl_output *requested_output;
+            const struct wl_output *requested_output;
         };
         struct
         {
@@ -432,6 +439,7 @@ void wayland_output_remove(struct wayland_output *output);
 void wayland_output_use_xdg_extension(struct wayland_output *output);
 void wayland_output_use_image_description(struct wayland_output *output);
 struct wayland_output *wayland_output_for_rect(const RECT *rect);
+void output_info_array_update(void);
 void wayland_color_manager_init(void);
 
 /**********************************************************************
