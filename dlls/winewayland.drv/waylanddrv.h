@@ -70,6 +70,7 @@ struct xkb_compose_table;
  *          Globals
  */
 
+extern char *process_activate_token;
 extern char *process_name;
 extern struct wayland process_wayland;
 
@@ -471,7 +472,7 @@ void wayland_surface_set_title(struct wayland_surface *surface, LPCWSTR title);
 void wayland_surface_assign_icon(struct wayland_surface *surface);
 void wayland_surface_set_icon_buffer(struct wayland_surface *surface, UINT type, const ICONINFO *ii);
 void wayland_surface_set_opacity(struct wayland_surface *surface, BYTE alpha, UINT flags);
-void wayland_surface_activate(struct wayland_surface *surface);
+void wayland_surface_activate(struct wayland_surface *surface, BOOL serial);
 void wayland_surface_shortcut_control(struct wayland_surface *surface, BOOL inhibit);
 
 static inline BOOL wayland_surface_is_toplevel(struct wayland_surface *surface)
@@ -602,6 +603,7 @@ RGNDATA *get_region_data(HRGN region);
  *          USER driver functions
  */
 
+void WAYLAND_ActivateWindow(HWND hwnd, HWND previous);
 LRESULT WAYLAND_ClipboardWindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
 BOOL WAYLAND_ClipCursor(const RECT *clip, BOOL reset);
 LRESULT WAYLAND_DesktopWindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
