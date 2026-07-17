@@ -1040,6 +1040,7 @@ found:
             L"WINEBOOTSTRAPMODE",
             L"PROTON_DISABLE_HIDRAW",
             L"PROTON_ENABLE_HIDRAW",
+            L"PROTON_DUALSENSE_EDGE_AS_DUALSENSE",
             L"FEX_APP_DATA_LOCATION",
             L"FEX_APP_CONFIG_LOCATION",
             L"FEX_APP_CONFIG",
