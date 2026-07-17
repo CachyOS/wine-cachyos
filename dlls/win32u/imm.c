@@ -221,6 +221,9 @@ UINT WINAPI NtUserAssociateInputContext( HWND hwnd, HIMC ctx, ULONG flags )
     }
 
     release_win_ptr( win );
+
+    user_driver->pSetIMEEnabled( hwnd, ctx != NULL );
+
     return ret;
 }
 

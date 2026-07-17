@@ -2243,9 +2243,9 @@ static LRESULT handle_internal_message( HWND hwnd, UINT msg, WPARAM wparam, LPAR
     }
     case WM_WINE_WINDOW_STATE_CHANGED:
     {
-        UINT state_cmd, swp_flags;
-        RECT window_rect;
-        HWND foreground;
+        UINT state_cmd = 0, swp_flags = 0;
+        RECT window_rect = {0};
+        HWND foreground = 0;
 
         if (!user_driver->pGetWindowStateUpdates( hwnd, &state_cmd, &swp_flags, &window_rect, &foreground )) return 0;
         window_rect = map_rect_raw_to_virt( window_rect, get_thread_dpi() );
@@ -2256,8 +2256,8 @@ static LRESULT handle_internal_message( HWND hwnd, UINT msg, WPARAM wparam, LPAR
         case SC_RESTORE:
             if (HIWORD(state_cmd)) NtUserSetActiveWindow( hwnd );
 
-            /* make the win32 window restore to the current host window config */
-            set_window_normal_placement( hwnd, window_rect );
+            /* make the win32 window restore to the current host window config, if present */
+            if (!IsRectEmpty( &window_rect )) set_window_normal_placement( hwnd, window_rect );
 
             /* fallthrough */
         default:
@@ -3986,28 +3986,30 @@ NTSTATUS send_hardware_message( HWND hwnd, UINT flags, const INPUT *input, LPARA
             req->input.mouse.info  = input->mi.dwExtraInfo;
             break;
         case INPUT_KEYBOARD:
-            if (input->ki.dwFlags & KEYEVENTF_SCANCODE)
-            {
-                UINT scan = input->ki.wScan;
-                /* TODO: Use the keyboard layout of the target hwnd, once
-                 * NtUserGetKeyboardLayout supports non-current threads. */
-                HKL layout = NtUserGetKeyboardLayout( 0 );
-                if (flags & SEND_HWMSG_INJECTED)
-                {
-                    scan = scan & 0xff;
-                    if (input->ki.dwFlags & KEYEVENTF_EXTENDEDKEY) scan |= 0xe000;
-                }
-                req->input.kbd.vkey = map_scan_to_kbd_vkey( scan, layout );
-                req->input.kbd.scan = input->ki.wScan & 0xff;
-            }
-            else
-            {
-                req->input.kbd.vkey = input->ki.wVk;
-                req->input.kbd.scan = input->ki.wScan;
-            }
-            req->input.kbd.flags = input->ki.dwFlags & ~KEYEVENTF_SCANCODE;
+            req->input.kbd.vkey  = input->ki.wVk;
+            req->input.kbd.scan  = input->ki.wScan;
+            req->input.kbd.flags = input->ki.dwFlags;
             req->input.kbd.time  = input->ki.time;
             req->input.kbd.info  = input->ki.dwExtraInfo;
+
+            /* Handle the scancode resolution before sending data to wineserver, as it doesn't
+             * have access to keyboard layout tables and needs the vkey to start hook chain.
+             */
+            if (req->input.kbd.flags & KEYEVENTF_SCANCODE)
+            {
+                UINT scan = input->ki.wScan, dummy;
+                HKL layout = NtUserGetKeyboardLayout(NtUserGetWindowThread( hwnd, NULL ));
+
+                if (flags & SEND_HWMSG_INJECTED) scan = scan & 0xff;
+                if (req->input.kbd.flags & KEYEVENTF_EXTENDEDKEY) scan |= 0xe000;
+
+                req->input.kbd.vkey = map_scan_to_kbd_vkey( scan, layout, (flags & SEND_HWMSG_INJECTED) ? &dummy : &scan );
+                if (scan & ~0xff) req->input.kbd.flags |= KEYEVENTF_EXTENDEDKEY;
+                else req->input.kbd.flags &= ~KEYEVENTF_EXTENDEDKEY;
+
+                req->input.kbd.scan = scan & 0xff;
+                req->input.kbd.flags &= ~KEYEVENTF_SCANCODE;
+            }
             break;
         case INPUT_HARDWARE:
             req->input.hw.msg    = input->hi.uMsg;

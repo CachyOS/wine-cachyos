@@ -1249,6 +1249,10 @@ static void set_initial_wm_hints( Display *display, Window window )
         const char *app_id = getenv("SteamAppId");
         char proton_app_class[128];
 
+        if(!app_id || !*app_id) {
+            app_id = getenv("WINE_WMCLASS");
+        }
+
         if(app_id && *app_id){
             snprintf(proton_app_class, sizeof(proton_app_class), "steam_app_%s", app_id);
             class_hints->res_name = proton_app_class;
@@ -2090,9 +2094,6 @@ BOOL X11DRV_GetWindowStateUpdates( HWND hwnd, UINT *state_cmd, UINT *swp_flags, 
     struct x11drv_thread_data *thread_data = x11drv_thread_data();
     struct x11drv_win_data *data;
     HWND old_foreground;
-
-    *state_cmd = *swp_flags = 0;
-    *foreground = 0;
 
     if (!(old_foreground = NtUserGetForegroundWindow())) old_foreground = NtUserGetDesktopWindow();
     if (!is_virtual_desktop() && NtUserGetWindowThread( old_foreground, NULL ) == GetCurrentThreadId() &&

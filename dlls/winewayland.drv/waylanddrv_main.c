@@ -25,21 +25,27 @@
 #include "config.h"
 
 #include <stdlib.h>
+#include <errno.h>
 
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
 
 #include "waylanddrv.h"
 
+WINE_DEFAULT_DEBUG_CHANNEL(waylanddrv);
+
 char *process_name = NULL;
 
 static const struct user_driver_funcs waylanddrv_funcs =
 {
+    .pActivateWindow = WAYLAND_ActivateWindow,
     .pClipboardWindowProc = WAYLAND_ClipboardWindowProc,
     .pClipCursor = WAYLAND_ClipCursor,
     .pDesktopWindowProc = WAYLAND_DesktopWindowProc,
     .pDestroyWindow = WAYLAND_DestroyWindow,
+    .pFlashWindowEx = WAYLAND_FlashWindowEx,
     .pSetIMECompositionRect = WAYLAND_SetIMECompositionRect,
+    .pSetIMEEnabled = WAYLAND_SetIMEEnabled,
     .pKbdLayerDescriptor = WAYLAND_KbdLayerDescriptor,
     .pReleaseKbdTables = WAYLAND_ReleaseKbdTables,
     .pSetCursor = WAYLAND_SetCursor,
@@ -49,11 +55,15 @@ static const struct user_driver_funcs waylanddrv_funcs =
     .pSetWindowStyle = WAYLAND_SetWindowStyle,
     .pSetWindowText = WAYLAND_SetWindowText,
     .pSysCommand = WAYLAND_SysCommand,
+    .pUpdateLayeredWindow = WAYLAND_UpdateLayeredWindow,
     .pUpdateDisplayDevices = WAYLAND_UpdateDisplayDevices,
     .pWindowMessage = WAYLAND_WindowMessage,
     .pWindowPosChanged = WAYLAND_WindowPosChanged,
     .pWindowPosChanging = WAYLAND_WindowPosChanging,
     .pCreateWindowSurface = WAYLAND_CreateWindowSurface,
+    .pGetWindowStyleMasks = WAYLAND_GetWindowStyleMasks,
+    .pGetWindowStateUpdates = WAYLAND_GetWindowStateUpdates,
+    .pHasWindowManager = WAYLAND_HasWindowManager,
     .pVulkanInit = WAYLAND_VulkanInit,
     .pOpenGLInit = WAYLAND_OpenGLInit,
 };
@@ -105,11 +115,27 @@ err:
 
 static NTSTATUS waylanddrv_unix_read_events(void *arg)
 {
+    int error;
+    uint32_t id, proto_err;
+    const struct wl_interface *interface;
+
     while (wl_display_dispatch_queue(process_wayland.wl_display,
                                      process_wayland.wl_event_queue) != -1)
         continue;
     /* This function only returns on a fatal error, e.g., if our connection
      * to the Wayland server is lost. */
+
+    error = wl_display_get_error(process_wayland.wl_display);
+
+    if (error == EPROTO)
+    {
+        proto_err = wl_display_get_protocol_error(process_wayland.wl_display,
+                                                  &interface, &id);
+        ERR("Protocol error on %s#%u with code %u\n",
+            (interface && interface->name) ? interface->name : "Unknown", id, proto_err);
+    }
+    else ERR("%s when dispatching event queue\n", strerror(error));
+
     return STATUS_UNSUCCESSFUL;
 }
 
@@ -119,6 +145,7 @@ static NTSTATUS waylanddrv_unix_init_clipboard(void *arg)
      * per-process clipboard window and handling, we can use the default clipboard
      * window from the desktop process. */
     if (process_wayland.zwlr_data_control_manager_v1) return STATUS_UNSUCCESSFUL;
+    if (process_wayland.ext_data_control_manager_v1) return STATUS_UNSUCCESSFUL;
     return STATUS_SUCCESS;
 }
 
