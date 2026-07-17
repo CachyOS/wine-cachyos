@@ -50,6 +50,20 @@ extern HRESULT get_audio_session(const GUID *sessionguid, IMMDevice *device, UIN
                                  struct audio_session **out);
 extern struct audio_session_wrapper *session_wrapper_create(struct audio_client *client);
 
+static BOOL device_fake_exclusive(void)
+{
+    WCHAR str[10];
+    DWORD ret = GetEnvironmentVariableW(L"PROTON_MMDEV_FAKE_EXCLUSIVE", str, ARRAY_SIZE(str));
+
+    if (!ret)
+        return FALSE;
+
+    if (ret == 1 && str[0] == L'0')
+        return FALSE;
+
+    return TRUE;
+}
+
 void set_stream_volumes(struct audio_client *This)
 {
     struct set_volumes_params params;
@@ -759,6 +773,9 @@ static HRESULT WINAPI client_Initialize(IAudioClient3 *iface, AUDCLNT_SHAREMODE 
                                                wine_dbgstr_longlong(period), fmt,
                                                debugstr_guid(sessionguid));
 
+    if (mode == AUDCLNT_SHAREMODE_EXCLUSIVE && device_fake_exclusive())
+        mode = AUDCLNT_SHAREMODE_SHARED;
+
     return stream_init(This, TRUE, mode, flags, duration, period, fmt, sessionguid);
 }
 
@@ -830,6 +847,7 @@ static HRESULT WINAPI client_IsFormatSupported(IAudioClient3 *iface, AUDCLNT_SHA
 {
     struct audio_client *This = impl_from_IAudioClient3(iface);
     struct is_format_supported_params params;
+    BOOL fake_exclusive = FALSE;
     HRESULT hr;
 
     TRACE("(%p)->(%x, %p, %p)\n", This, mode, fmt, out);
@@ -841,6 +859,11 @@ static HRESULT WINAPI client_IsFormatSupported(IAudioClient3 *iface, AUDCLNT_SHA
         return E_POINTER;
 
     dump_fmt(fmt);
+
+    if (mode == AUDCLNT_SHAREMODE_EXCLUSIVE && device_fake_exclusive()) {
+        mode = AUDCLNT_SHAREMODE_SHARED;
+        fake_exclusive = TRUE;
+    }
 
     hr = validate_wfx(fmt, mode);
 
@@ -859,7 +882,7 @@ static HRESULT WINAPI client_IsFormatSupported(IAudioClient3 *iface, AUDCLNT_SHA
     }
 
     if (hr == S_FALSE) {
-        if (mode == AUDCLNT_SHAREMODE_EXCLUSIVE) {
+        if (mode == AUDCLNT_SHAREMODE_EXCLUSIVE || fake_exclusive) {
             return AUDCLNT_E_UNSUPPORTED_FORMAT;
         } else {
             if (FAILED(hr = IAudioClient3_GetMixFormat(iface, out)))
