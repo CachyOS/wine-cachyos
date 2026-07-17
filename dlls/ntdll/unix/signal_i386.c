@@ -2192,7 +2192,8 @@ static void quit_handler( int signal, siginfo_t *siginfo, void *sigcontext )
     ucontext_t *ucontext = sigcontext;
 
     init_handler( sigcontext );
-    if (!is_inside_syscall( ESP_sig(ucontext) )) user_mode_abort_thread( 0, get_syscall_frame() );
+    if (!ntdll_get_thread_data()->system_thread && !is_inside_syscall( ESP_sig(ucontext) ))
+        user_mode_abort_thread( 0, get_syscall_frame() );
     abort_thread( 0 );
 }
 
@@ -2208,7 +2209,11 @@ static void usr1_handler( int signal, siginfo_t *siginfo, void *sigcontext )
 
     init_handler( sigcontext );
 
-    if (is_inside_syscall( ESP_sig(ucontext) ))
+    if (ntdll_get_thread_data()->system_thread)
+    {
+        server_select( NULL, 0, SELECT_INTERRUPTIBLE, 0, NULL, NULL );
+    }
+    else if (is_inside_syscall( ESP_sig(ucontext) ))
     {
         struct syscall_frame *frame = get_syscall_frame();
         ULONG64 saved_compaction = 0;
@@ -2401,6 +2406,11 @@ NTSTATUS signal_alloc_thread( TEB *teb )
         if (!thread_data->fs) return STATUS_TOO_MANY_THREADS;
     }
     else thread_data->fs = gdt_fs_sel;
+
+    /* libc TLS selector, same GDT slot in every thread.  signal_init_thread
+     * refreshes it for normal threads; system threads never run it, and
+     * init_handler would load gs=0 and break libc TLS in signal handlers. */
+    thread_data->gs = get_gs();
 
     teb->WOW32Reserved = __wine_syscall_dispatcher;
     thread_data->frame_size = frame_size;

@@ -322,19 +322,47 @@ static void pulse_main_loop_thread_cleanup(void *context)
     pulse_broadcast();
 }
 
-static NTSTATUS pulse_main_loop(void *args)
+static void pulse_main_loop(void *args)
 {
-    struct main_loop_params *params = args;
+    HANDLE event = args;
     int ret;
     pulse_lock();
     pulse_ml = pa_mainloop_new();
     pa_mainloop_set_poll_func(pulse_ml, pulse_poll_func, NULL);
-    NtSetEvent(params->event, NULL);
+    NtSetEvent(event, NULL);
     pthread_cleanup_push(pulse_main_loop_thread_cleanup, NULL);
     pa_mainloop_run(pulse_ml, &ret);
     pthread_cleanup_pop(0);
     pa_mainloop_free(pulse_ml);
     pulse_unlock();
+    PsTerminateSystemThread( 0 );
+}
+
+static HANDLE main_loop_thread;
+
+static NTSTATUS pulse_main_loop_start(void *args)
+{
+    static const WCHAR name[] = {'a','u','d','i','o','_','c','l','i','e','n','t','_','m','a','i','n',0};
+    HANDLE event;
+    NTSTATUS status;
+
+    if (main_loop_thread) return STATUS_SUCCESS;
+
+    NtCreateEvent( &event, EVENT_ALL_ACCESS, NULL, NotificationEvent, FALSE );
+    if (!(status = create_unix_thread( &main_loop_thread, name, pulse_main_loop, event )))
+        NtWaitForSingleObject( event, FALSE, NULL );
+    NtClose( event );
+    return status;
+}
+
+static NTSTATUS pulse_main_loop_stop(void *args)
+{
+    if (main_loop_thread)
+    {
+        NtWaitForSingleObject( main_loop_thread, FALSE, NULL );
+        NtClose( main_loop_thread );
+        main_loop_thread = 0;
+    }
     return STATUS_SUCCESS;
 }
 
@@ -1690,12 +1718,6 @@ static void pulse_read(struct pulse_stream *stream)
     }
 }
 
-static NTSTATUS pulse_timer_loop(void *args)
-{
-    /* Stream's data are read and written from the main loop timer callback. */
-    return STATUS_SUCCESS;
-}
-
 #define TIMER_ADJUST_DELAY (5 * PA_USEC_PER_SEC)
 
 static void pulse_update_timing_cb(pa_stream *s, int success, void *user)
@@ -1921,11 +1943,6 @@ static NTSTATUS pulse_release_stream(void *args)
     struct pulse_stream *stream = handle_get_stream(params->stream);
     SIZE_T size;
 
-    if(params->timer_thread) {
-        NtWaitForSingleObject(params->timer_thread, FALSE, NULL);
-        NtClose(params->timer_thread);
-    }
-
     pulse_lock();
     remove_stream_from_period(stream);
     if (PA_STREAM_IS_GOOD(pa_stream_get_state(stream->stream))) {
@@ -1956,6 +1973,7 @@ static NTSTATUS pulse_start(void *args)
 {
     struct start_params *params = args;
     struct pulse_stream *stream = handle_get_stream(params->stream);
+    static const WCHAR name[] = {'a','u','d','i','o','_','c','l','i','e','n','t','_','t','i','m','e','r',0};
     int success;
 
     params->result = S_OK;
@@ -2830,14 +2848,14 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
 {
     pulse_process_attach,
     pulse_process_detach,
-    pulse_main_loop,
+    pulse_main_loop_start,
+    pulse_main_loop_stop,
     pulse_get_endpoint_ids,
     pulse_create_stream,
     pulse_release_stream,
     pulse_start,
     pulse_stop,
     pulse_reset,
-    pulse_timer_loop,
     pulse_get_render_buffer,
     pulse_release_render_buffer,
     pulse_get_capture_buffer,
@@ -2872,19 +2890,6 @@ C_ASSERT(ARRAYSIZE(__wine_unix_call_funcs) == funcs_count);
 #ifdef _WIN64
 
 typedef UINT PTR32;
-
-static NTSTATUS pulse_wow64_main_loop(void *args)
-{
-    struct
-    {
-        PTR32 event;
-    } *params32 = args;
-    struct main_loop_params params =
-    {
-        .event = ULongToHandle(params32->event)
-    };
-    return pulse_main_loop(&params);
-}
 
 static NTSTATUS pulse_wow64_get_endpoint_ids(void *args)
 {
@@ -2950,13 +2955,11 @@ static NTSTATUS pulse_wow64_release_stream(void *args)
     struct
     {
         stream_handle stream;
-        PTR32 timer_thread;
         HRESULT result;
     } *params32 = args;
     struct release_stream_params params =
     {
         .stream = params32->stream,
-        .timer_thread = ULongToHandle(params32->timer_thread)
     };
     pulse_release_stream(&params);
     params32->result = params.result;
@@ -3328,14 +3331,14 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
 {
     pulse_process_attach,
     pulse_process_detach,
-    pulse_wow64_main_loop,
+    pulse_main_loop_start,
+    pulse_main_loop_stop,
     pulse_wow64_get_endpoint_ids,
     pulse_wow64_create_stream,
     pulse_wow64_release_stream,
     pulse_start,
     pulse_stop,
     pulse_reset,
-    pulse_timer_loop,
     pulse_wow64_get_render_buffer,
     pulse_release_render_buffer,
     pulse_wow64_get_capture_buffer,
