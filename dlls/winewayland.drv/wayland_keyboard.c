@@ -920,8 +920,6 @@ static void keyboard_handle_enter(void *private, struct wl_keyboard *wl_keyboard
                                   struct wl_array *keys)
 {
     struct wayland_keyboard *keyboard = &process_wayland.keyboard;
-    struct wayland_surface *surface;
-    struct wayland_win_data *data;
     HWND hwnd;
 
     InterlockedExchange(&process_wayland.input_serial, serial);
@@ -937,27 +935,8 @@ static void keyboard_handle_enter(void *private, struct wl_keyboard *wl_keyboard
     keyboard->focused_hwnd = hwnd;
     pthread_mutex_unlock(&keyboard->mutex);
 
-    NtUserPostMessage(keyboard->focused_hwnd, WM_INPUTLANGCHANGEREQUEST, 0 /*FIXME*/,
-                      (LPARAM)keyboard_hkl);
-
-    if (!(data = wayland_win_data_get(hwnd))) return;
-
-    if ((surface = data->wayland_surface))
-    {
-        /* TODO: Drop the internal message and call NtUserSetForegroundWindow
-         * directly once it's updated to not explicitly deactivate the old
-         * foreground window when both the old and new foreground windows
-         * are in the same non-current thread. */
-        if (surface->window.managed)
-        {
-            if (surface->window.minimized)
-                NtUserPostMessage(hwnd, WM_SYSCOMMAND, SC_RESTORE, 0);
-            else
-                NtUserPostMessage(hwnd, WM_WAYLAND_SET_FOREGROUND, 0, 0);
-        }
-    }
-
-    wayland_win_data_release(data);
+    NtUserPostMessage(hwnd, WM_INPUTLANGCHANGEREQUEST, 0 /*FIXME*/, (LPARAM)keyboard_hkl);
+    NtUserPostMessage(hwnd, WM_WINE_WINDOW_STATE_CHANGED, 0, 0);
 }
 
 static BOOL wayland_disable_focus_loss(void)
@@ -977,8 +956,6 @@ static BOOL wayland_disable_focus_loss(void)
 static void keyboard_handle_leave(void *private, struct wl_keyboard *wl_keyboard,
                                   uint32_t serial, struct wl_surface *wl_surface)
 {
-    struct wayland_win_data *data;
-    struct wayland_surface *surface;
     struct wayland_keyboard *keyboard = &process_wayland.keyboard;
     HWND hwnd;
 
@@ -1005,19 +982,10 @@ static void keyboard_handle_leave(void *private, struct wl_keyboard *wl_keyboard
         if (!(NtUserGetWindowLongW(hwnd, GWL_STYLE) & WS_MINIMIZE))
             send_message(hwnd, WM_CANCELMODE, 0, 0);
 
-        if (!(data = wayland_win_data_get(hwnd))) return;
+        if (hwnd != NtUserGetForegroundWindow()) return;
 
-        if ((surface = data->wayland_surface))
-        {
-            /* TODO: Drop the internal message and call NtUserSetForegroundWindow
-             * directly once it's updated to not explicitly deactivate the old
-             * foreground window when both the old and new foreground windows
-             * are in the same non-current thread. */
-            if (surface->window.managed && !wayland_disable_focus_loss())
-                NtUserPostMessage(hwnd, WM_WAYLAND_SET_FOREGROUND, 1, 0);
-        }
-
-        wayland_win_data_release(data);
+        if (!wayland_disable_focus_loss())
+            NtUserPostMessage(hwnd, WM_WINE_WINDOW_STATE_CHANGED, 0, 0);
     }
 }
 
