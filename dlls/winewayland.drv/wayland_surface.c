@@ -1887,7 +1887,6 @@ static void xdg_activation_token_handle_done(void *user_data,
     struct wayland_win_data *data;
     struct wayland_surface *surface;
 
-
     if ((data = wayland_win_data_get(hwnd)))
     {
         if ((surface = data->wayland_surface))
@@ -1895,32 +1894,47 @@ static void xdg_activation_token_handle_done(void *user_data,
         wayland_win_data_release(data);
     }
 
-    xdg_activation_token_v1_destroy(xdg_activation_token_v1);
+    if (xdg_activation_token_v1) xdg_activation_token_v1_destroy(xdg_activation_token_v1);
 }
 
 const static struct xdg_activation_token_v1_listener xdg_activation_listener = {
     xdg_activation_token_handle_done
 };
 
-void wayland_surface_activate(struct wayland_surface *surface)
+void wayland_surface_activate(struct wayland_surface *surface, BOOL activate)
 {
+    struct wayland_seat *seat = &process_wayland.seat;
     struct xdg_activation_token_v1 *token;
+    uint32_t serial = ReadAcquire(&process_wayland.input_serial);
     assert(surface);
 
-    if (process_wayland.xdg_activation_v1)
+    if (!process_wayland.xdg_activation_v1) return;
+    if (!wayland_surface_is_toplevel(surface)) return;
+
+    /* fall back to the per process activation token */
+    if (!serial && activate && process_activate_token)
     {
-        token = xdg_activation_v1_get_activation_token(process_wayland.xdg_activation_v1);
-
-        if (!token)
-        {
-            ERR("Failed to create activation token!\n");
-            return;
-        }
-
-        xdg_activation_token_v1_add_listener(token, &xdg_activation_listener, surface->hwnd);
-        xdg_activation_token_v1_set_surface(token, surface->wl_surface);
-        xdg_activation_token_v1_commit(token);
+        xdg_activation_token_handle_done(surface->hwnd, NULL, process_activate_token);
+        free(process_activate_token);
+        process_activate_token = NULL;
+        return;
     }
+
+    if (!(token = xdg_activation_v1_get_activation_token(process_wayland.xdg_activation_v1)))
+    {
+        ERR("Failed to create activation token!\n");
+        return;
+    }
+
+    pthread_mutex_lock(&seat->mutex);
+
+    xdg_activation_token_v1_add_listener(token, &xdg_activation_listener, surface->hwnd);
+    xdg_activation_token_v1_set_surface(token, surface->wl_surface);
+    if (process_name && activate) xdg_activation_token_v1_set_app_id(token, process_name);
+    if (activate) xdg_activation_token_v1_set_serial(token, serial, seat->wl_seat);
+    xdg_activation_token_v1_commit(token);
+
+    pthread_mutex_unlock(&seat->mutex);
 }
 
 static BOOL use_inhibit(void)
