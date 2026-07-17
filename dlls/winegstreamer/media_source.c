@@ -214,6 +214,9 @@ static inline struct media_source *impl_from_IMFMediaSource(IMFMediaSource *ifac
     return CONTAINING_RECORD(iface, struct media_source, IMFMediaSource_iface);
 }
 
+static HRESULT media_stream_create(IMFMediaSource *source, IMFStreamDescriptor *descriptor,
+        wg_parser_stream_t wg_stream, struct media_stream **out);
+
 static inline struct media_source *impl_from_IMFGetService(IMFGetService *iface)
 {
     return CONTAINING_RECORD(iface, struct media_source, IMFGetService_iface);
@@ -509,6 +512,85 @@ done:
         IMFMediaType_Release(types[count]);
     *out = SUCCEEDED(hr) ? descriptor : NULL;
     return hr;
+}
+
+static void media_source_release_streams(struct media_source *source)
+{
+    while (source->streams && source->stream_count--)
+    {
+        struct media_stream *stream = source->streams[source->stream_count];
+
+        IMFStreamDescriptor_Release(source->descriptors[source->stream_count]);
+        IMFMediaStream_Release(&stream->IMFMediaStream_iface);
+    }
+
+    free(source->descriptors);
+    free(source->streams);
+    source->descriptors = NULL;
+    source->streams = NULL;
+    source->duration = 0;
+}
+
+static void media_source_destroy_parser(struct media_source *source, BOOL connected)
+{
+    if (connected)
+        wg_parser_disconnect(source->wg_parser);
+
+    if (source->read_thread)
+    {
+        source->read_thread_shutdown = true;
+        WaitForSingleObject(source->read_thread, INFINITE);
+        CloseHandle(source->read_thread);
+        source->read_thread = NULL;
+        source->read_thread_shutdown = false;
+    }
+
+    if (source->wg_parser)
+    {
+        wg_parser_destroy(source->wg_parser);
+        source->wg_parser = 0;
+    }
+}
+
+static HRESULT media_source_create_streams(struct media_source *source, BOOL compressed)
+{
+    unsigned int stream_count, i;
+
+    stream_count = wg_parser_get_stream_count(source->wg_parser);
+
+    if (!(source->descriptors = calloc(stream_count, sizeof(*source->descriptors)))
+            || !(source->streams = calloc(stream_count, sizeof(*source->streams))))
+        return E_OUTOFMEMORY;
+
+    for (i = 0; i < stream_count; ++i)
+    {
+        wg_parser_stream_t wg_stream = wg_parser_get_stream(source->wg_parser, i);
+        IMFStreamDescriptor *descriptor;
+        struct media_stream *stream;
+        struct wg_format format;
+        HRESULT hr;
+
+        if (compressed)
+            wg_parser_stream_get_codec_format(wg_stream, &format);
+        else
+            wg_parser_stream_get_current_format(wg_stream, &format);
+
+        if (FAILED(hr = stream_descriptor_create(i, &format, &descriptor)))
+            return hr;
+        if (FAILED(hr = media_stream_create(&source->IMFMediaSource_iface, descriptor, wg_stream, &stream)))
+        {
+            IMFStreamDescriptor_Release(descriptor);
+            return hr;
+        }
+
+        source->duration = max(source->duration, wg_parser_stream_get_duration(wg_stream));
+        IMFStreamDescriptor_AddRef(descriptor);
+        source->descriptors[i] = descriptor;
+        source->streams[i] = stream;
+        source->stream_count++;
+    }
+
+    return S_OK;
 }
 
 static BOOL enqueue_token(struct media_stream *stream, IUnknown *token)
@@ -1642,10 +1724,9 @@ static void media_source_init_descriptors(struct media_source *source)
 
 static HRESULT media_source_create(struct object_context *context, IMFMediaSource **out)
 {
-    unsigned int stream_count = UINT_MAX;
+    BOOL compressed = TRUE, parser_connected = FALSE;
     struct media_source *object;
     wg_parser_t parser;
-    unsigned int i;
     HRESULT hr;
 
     if (!(object = calloc(1, sizeof(*object))))
@@ -1670,7 +1751,8 @@ static HRESULT media_source_create(struct object_context *context, IMFMediaSourc
     if (FAILED(hr = MFAllocateWorkQueue(&object->async_commands_queue)))
         goto fail;
 
-    if (!(parser = wg_parser_create(FALSE, FALSE)))
+retry:
+    if (!(parser = wg_parser_create(compressed, FALSE)))
     {
         hr = E_OUTOFMEMORY;
         goto fail;
@@ -1683,37 +1765,20 @@ static HRESULT media_source_create(struct object_context *context, IMFMediaSourc
 
     if (FAILED(hr = wg_parser_connect(parser, object->file_size, context->url)))
         goto fail;
+    parser_connected = TRUE;
 
-    stream_count = wg_parser_get_stream_count(parser);
-
-    if (!(object->descriptors = calloc(stream_count, sizeof(*object->descriptors)))
-            || !(object->streams = calloc(stream_count, sizeof(*object->streams))))
+    if (FAILED(hr = media_source_create_streams(object, compressed)))
     {
-        hr = E_OUTOFMEMORY;
-        goto fail;
-    }
-
-    for (i = 0; i < stream_count; ++i)
-    {
-        wg_parser_stream_t wg_stream = wg_parser_get_stream(object->wg_parser, i);
-        IMFStreamDescriptor *descriptor;
-        struct media_stream *stream;
-        struct wg_format format;
-
-        wg_parser_stream_get_current_format(wg_stream, &format);
-        if (FAILED(hr = stream_descriptor_create(i, &format, &descriptor)))
-            goto fail;
-        if (FAILED(hr = media_stream_create(&object->IMFMediaSource_iface, descriptor, wg_stream, &stream)))
+        if (compressed && hr == MF_E_INVALIDMEDIATYPE)
         {
-            IMFStreamDescriptor_Release(descriptor);
-            goto fail;
+            WARN("Failed to expose native compressed media types; retrying with decoded parser output.\n");
+            media_source_release_streams(object);
+            media_source_destroy_parser(object, parser_connected);
+            parser_connected = FALSE;
+            compressed = FALSE;
+            goto retry;
         }
-
-        object->duration = max(object->duration, wg_parser_stream_get_duration(wg_stream));
-        IMFStreamDescriptor_AddRef(descriptor);
-        object->descriptors[i] = descriptor;
-        object->streams[i] = stream;
-        object->stream_count++;
+        goto fail;
     }
 
     /* Hack for bug 19766 - Biomutant (597820) [T5] Title Hangs After Intro Cut Scene Unless Skipped.
@@ -1748,25 +1813,8 @@ static HRESULT media_source_create(struct object_context *context, IMFMediaSourc
 fail:
     WARN("Failed to construct MFMediaSource, hr %#lx.\n", hr);
 
-    while (object->streams && object->stream_count--)
-    {
-        struct media_stream *stream = object->streams[object->stream_count];
-        IMFStreamDescriptor_Release(object->descriptors[object->stream_count]);
-        IMFMediaStream_Release(&stream->IMFMediaStream_iface);
-    }
-    free(object->descriptors);
-    free(object->streams);
-
-    if (stream_count != UINT_MAX)
-        wg_parser_disconnect(object->wg_parser);
-    if (object->read_thread)
-    {
-        object->read_thread_shutdown = true;
-        WaitForSingleObject(object->read_thread, INFINITE);
-        CloseHandle(object->read_thread);
-    }
-    if (object->wg_parser)
-        wg_parser_destroy(object->wg_parser);
+    media_source_release_streams(object);
+    media_source_destroy_parser(object, parser_connected);
     if (object->async_commands_queue)
         MFUnlockWorkQueue(object->async_commands_queue);
     if (object->event_queue)

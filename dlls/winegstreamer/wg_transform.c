@@ -1179,7 +1179,7 @@ static NTSTATUS copy_buffer(GstBuffer *buffer, struct wg_sample *sample, gsize *
     return STATUS_SUCCESS;
 }
 
-static void set_sample_flags_from_buffer(struct wg_sample *sample, GstBuffer *buffer, gsize total_size)
+static void set_sample_flags_from_buffer(struct wg_sample *sample, GstBuffer *buffer, gsize total_size, bool is_video)
 {
     GstReferenceTimestampMeta *timestamps;
     GstCaps *transform_timestamp;
@@ -1188,9 +1188,25 @@ static void set_sample_flags_from_buffer(struct wg_sample *sample, GstBuffer *bu
     timestamps = gst_buffer_get_reference_timestamp_meta(buffer, transform_timestamp);
     gst_caps_unref(transform_timestamp);
 
-    if (timestamps)
+    /* for videos, prefer decoder output PTS over the preserved input timestamp */
+    if (is_video && GST_BUFFER_PTS_IS_VALID(buffer))
     {
-        /* GStreamer can overwrite our timestamps, so we use the wg-transform timestamps instead */
+        sample->flags |= WG_SAMPLE_FLAG_HAS_PTS | WG_SAMPLE_FLAG_PRESERVE_TIMESTAMPS;
+        sample->pts = GST_BUFFER_PTS(buffer) / 100;
+        if (GST_BUFFER_DURATION_IS_VALID(buffer))
+        {
+            GstClockTime duration = GST_BUFFER_DURATION(buffer) / 100;
+
+            duration = (duration * sample->size) / total_size;
+            GST_BUFFER_DURATION(buffer) -= duration * 100;
+            GST_BUFFER_PTS(buffer) += duration * 100;
+
+            sample->flags |= WG_SAMPLE_FLAG_HAS_DURATION;
+            sample->duration = duration;
+        }
+    }
+    else if (timestamps)
+    {
         sample->flags |= WG_SAMPLE_FLAG_HAS_PTS | WG_SAMPLE_FLAG_PRESERVE_TIMESTAMPS;
         sample->pts = timestamps->timestamp / 100;
         if (timestamps->duration != GST_CLOCK_TIME_NONE)
@@ -1330,7 +1346,7 @@ static NTSTATUS read_transform_output_video(struct wg_sample *sample, GstBuffer 
     if (dst_buffer)
         gst_buffer_unref(dst_buffer);
 
-    set_sample_flags_from_buffer(sample, buffer, total_size);
+    set_sample_flags_from_buffer(sample, buffer, total_size, true);
 
     if (needs_copy)
         GST_WARNING("Copied %u bytes, sample %p, flags %#x", sample->size, sample, sample->flags);
@@ -1360,7 +1376,7 @@ static NTSTATUS read_transform_output(struct wg_sample *sample, GstBuffer *buffe
         return status;
     }
 
-    set_sample_flags_from_buffer(sample, buffer, total_size);
+    set_sample_flags_from_buffer(sample, buffer, total_size, false);
 
     if (needs_copy)
         GST_INFO("Copied %u bytes, sample %p, flags %#x", sample->size, sample, sample->flags);
