@@ -333,6 +333,7 @@ void bus_event_cleanup(struct bus_event *event)
 struct bus_event_entry
 {
     struct list entry;
+    BOOL coalescible;
     struct bus_event event;
 };
 
@@ -361,6 +362,7 @@ BOOL bus_event_queue_device_removed(struct list *queue, struct unix_device *devi
     }
 
     entry->event.type = BUS_EVENT_TYPE_DEVICE_REMOVED;
+    entry->coalescible = FALSE;
     entry->event.device = (UINT_PTR)device;
     list_add_tail(queue, &entry->entry);
 
@@ -380,6 +382,7 @@ BOOL bus_event_queue_device_created(struct list *queue, struct unix_device *devi
     }
 
     entry->event.type = BUS_EVENT_TYPE_DEVICE_CREATED;
+    entry->coalescible = FALSE;
     entry->event.device = (UINT_PTR)device;
     entry->event.device_created.desc = *desc;
     list_add_tail(queue, &entry->entry);
@@ -387,10 +390,25 @@ BOOL bus_event_queue_device_created(struct list *queue, struct unix_device *devi
     return TRUE;
 }
 
-BOOL bus_event_queue_input_report(struct list *queue, struct unix_device *device, BYTE *report, USHORT length)
+static BOOL queue_input_report(struct list *queue, struct unix_device *device, BYTE *report, USHORT length,
+                               BOOL coalescible)
 {
+    struct list *tail = list_tail(queue);
     ULONG size = offsetof(struct bus_event_entry, event.input_report.buffer[length]);
-    struct bus_event_entry *entry = malloc(size);
+    struct bus_event_entry *entry;
+
+    if (coalescible && tail)
+    {
+        entry = LIST_ENTRY(tail, struct bus_event_entry, entry);
+        if (entry->coalescible && entry->event.type == BUS_EVENT_TYPE_INPUT_REPORT &&
+            entry->event.device == (UINT_PTR)device && entry->event.input_report.length == length)
+        {
+            memcpy(entry->event.input_report.buffer, report, length);
+            return TRUE;
+        }
+    }
+
+    entry = malloc(size);
     if (!entry) return FALSE;
 
     if (unix_device_incref(device) == 1) /* being destroyed */
@@ -400,12 +418,26 @@ BOOL bus_event_queue_input_report(struct list *queue, struct unix_device *device
     }
 
     entry->event.type = BUS_EVENT_TYPE_INPUT_REPORT;
+    entry->coalescible = coalescible;
     entry->event.device = (UINT_PTR)device;
     entry->event.input_report.length = length;
     memcpy(entry->event.input_report.buffer, report, length);
     list_add_tail(queue, &entry->entry);
 
     return TRUE;
+}
+
+BOOL bus_event_queue_input_report(struct list *queue, struct unix_device *device, BYTE *report, USHORT length)
+{
+    return queue_input_report(queue, device, report, length, FALSE);
+}
+
+/* Non-coalescible reports act as ordering barriers, preserving button edges
+ * and other discrete transitions exactly as they were received. */
+BOOL bus_event_queue_coalesced_input_report(struct list *queue, struct unix_device *device,
+                                            BYTE *report, USHORT length)
+{
+    return queue_input_report(queue, device, report, length, TRUE);
 }
 
 BOOL bus_event_queue_pop(struct list *queue, struct bus_event *event)
