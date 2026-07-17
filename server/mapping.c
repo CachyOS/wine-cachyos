@@ -799,6 +799,104 @@ static int load_cfg_header( IMAGE_LOAD_CONFIG_DIRECTORY64 *cfg, size_t va, size_
     return 1;
 }
 
+/* check whether a base relocation directory contains any effective relocations */
+static int has_effective_relocs( IMAGE_DATA_DIRECTORY *data, size_t align_mask,
+                                 int unix_fd, IMAGE_SECTION_HEADER *sec, unsigned int nb_sec,
+                                 client_ptr_t image_base, mem_size_t image_size )
+{
+    size_t offset = 0;
+    int found_effective = 0;
+
+    if (!data->VirtualAddress || !data->Size) return 0;
+
+    while (offset < data->Size)
+    {
+        IMAGE_BASE_RELOCATION base;
+        size_t entries_size, entries_offset;
+        int ret;
+
+        if (data->Size - offset < sizeof(base))
+            return 0;
+
+        ret = load_data_dir( &base, sizeof(base), data->VirtualAddress + offset, data->Size - offset,
+                             align_mask, unix_fd, sec, nb_sec );
+
+        if (ret != sizeof(base))
+            return 0;
+
+        if (base.SizeOfBlock < sizeof(base))
+            return 0;
+
+        if (base.SizeOfBlock > data->Size - offset)
+            return 0;
+
+        if (base.SizeOfBlock & 3)
+            return 0;
+
+        /* Address must be dword aligned */
+        if (base.VirtualAddress & 0xfff)
+            return 0;
+
+        entries_size = base.SizeOfBlock - sizeof(base);
+
+        for ( entries_offset = 0; entries_offset < entries_size; entries_offset += sizeof(USHORT) )
+        {
+            USHORT entry;
+            USHORT type;
+            size_t target_va;
+
+            ret = load_data_dir(
+                &entry, sizeof(entry),
+                data->VirtualAddress + offset + sizeof(base) + entries_offset,
+                entries_size - entries_offset,
+                align_mask, unix_fd, sec, nb_sec );
+
+            if (ret != sizeof(entry))
+                return 0;
+
+            type = entry >> 12;
+            target_va = base.VirtualAddress + (entry & 0xfff);
+
+            switch (type)
+            {
+            case IMAGE_REL_BASED_HIGHLOW:
+            {
+                DWORD value;
+
+                ret = load_data_dir( &value, sizeof(value), target_va, sizeof(value),
+                                     align_mask, unix_fd, sec, nb_sec );
+                if (ret != sizeof(value))
+                    return 0;
+                if ((client_ptr_t)value - image_base < image_size)
+                    found_effective = 1;
+                break;
+            }
+            case IMAGE_REL_BASED_DIR64:
+            {
+                ULONGLONG value;
+
+                ret = load_data_dir( &value, sizeof(value), target_va, sizeof(value),
+                                     align_mask, unix_fd, sec, nb_sec );
+                if (ret != sizeof(value))
+                    return 0;
+                if ((client_ptr_t)value - image_base < image_size)
+                    found_effective = 1;
+                break;
+            }
+            case IMAGE_REL_BASED_ABSOLUTE:
+                break;
+            default:
+                found_effective = 1;
+                break;
+            }
+        }
+
+        offset += base.SizeOfBlock;
+    }
+
+    return found_effective;
+}
+
 /* retrieve the mapping parameters for an executable (PE) image */
 static unsigned int get_image_params( struct mapping *mapping, file_pos_t file_size, int unix_fd )
 {
@@ -828,7 +926,8 @@ static unsigned int get_image_params( struct mapping *mapping, file_pos_t file_s
         IMAGE_LOAD_CONFIG_DIRECTORY64 cfg64;
     } cfg;
     off_t pos;
-    int size, has_relocs;
+    int size;
+    IMAGE_DATA_DIRECTORY *reloc_dir = NULL;
     size_t mz_size, clr_va = 0, clr_size = 0, exp_va, exp_size, cfg_va, cfg_size, align_mask;
     unsigned int i, ret;
 
@@ -896,10 +995,13 @@ static unsigned int get_image_params( struct mapping *mapping, file_pos_t file_s
         mapping->image.header_size     = nt.opt.hdr32.SizeOfHeaders;
         mapping->image.checksum        = nt.opt.hdr32.CheckSum;
 
-        has_relocs = (nt.opt.hdr32.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_BASERELOC &&
-                      nt.opt.hdr32.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress &&
-                      nt.opt.hdr32.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size &&
-                      !(nt.FileHeader.Characteristics & IMAGE_FILE_RELOCS_STRIPPED));
+
+        if (nt.opt.hdr32.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_BASERELOC &&
+            !(nt.FileHeader.Characteristics & IMAGE_FILE_RELOCS_STRIPPED))
+        {
+            reloc_dir = &nt.opt.hdr32.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+        }
+
         break;
 
     case IMAGE_NT_OPTIONAL_HDR64_MAGIC:
@@ -944,10 +1046,12 @@ static unsigned int get_image_params( struct mapping *mapping, file_pos_t file_s
         mapping->image.header_size     = nt.opt.hdr64.SizeOfHeaders;
         mapping->image.checksum        = nt.opt.hdr64.CheckSum;
 
-        has_relocs = (nt.opt.hdr64.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_BASERELOC &&
-                      nt.opt.hdr64.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress &&
-                      nt.opt.hdr64.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size &&
-                      !(nt.FileHeader.Characteristics & IMAGE_FILE_RELOCS_STRIPPED));
+        if (nt.opt.hdr64.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_BASERELOC &&
+            !(nt.FileHeader.Characteristics & IMAGE_FILE_RELOCS_STRIPPED))
+        {
+            reloc_dir = &nt.opt.hdr64.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+        }
+
         break;
 
     default:
@@ -972,9 +1076,6 @@ static unsigned int get_image_params( struct mapping *mapping, file_pos_t file_s
 
     if (mapping->image.alignment & page_mask)
         mapping->image.image_flags |= IMAGE_FLAGS_ImageMappedFlat;
-    else if ((mapping->image.dll_charact & IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE) &&
-             (has_relocs || mapping->image.contains_code) && !(clr_va && clr_size))
-        mapping->image.image_flags |= IMAGE_FLAGS_ImageDynamicallyRelocated;
 
     align_mask = max( mapping->image.alignment - 1, page_mask );
     mapping->image.map_size = round_size( mapping->image.map_size, align_mask );
@@ -997,6 +1098,16 @@ static unsigned int get_image_params( struct mapping *mapping, file_pos_t file_s
         mapping->image.header_map_size = min( mapping->image.header_map_size, sec[i].VirtualAddress );
         if (sec[i].Characteristics & IMAGE_SCN_MEM_EXECUTE) mapping->image.contains_code = 1;
     }
+
+    if (!(mapping->image.image_flags & IMAGE_FLAGS_ImageMappedFlat) &&
+        (mapping->image.dll_charact & IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE) &&
+        reloc_dir && !(clr_va && clr_size) &&
+        has_effective_relocs( reloc_dir, align_mask, unix_fd, sec,
+                              nt.FileHeader.NumberOfSections,
+                              mapping->image.base, mapping->image.map_size ))
+        mapping->image.image_flags |= IMAGE_FLAGS_ImageDynamicallyRelocated;
+    else
+        mapping->image.map_addr = 0;
 
     if (mapping->image.wine_builtin || mapping->image.wine_fakedll)
         mapping->exp_len = load_export_name( &mapping->exp_name, exp_va, exp_size, align_mask,
@@ -1309,8 +1420,6 @@ static client_ptr_t assign_map_address( struct mapping *mapping )
     client_ptr_t ret;
     struct addr_range *range = (mapping->image.base >> 32) ? &ranges64 : &ranges32;
     mem_size_t size = round_size( mapping->size, granularity_mask );
-
-    if (!(mapping->image.image_charact & IMAGE_FILE_DLL)) return 0;
 
     if ((ret = get_fd_map_address( mapping->fd ))) return ret;
 
