@@ -872,7 +872,24 @@ void WAYLAND_FlashWindowEx(FLASHWINFO *info)
     if ((data = wayland_win_data_get(info->hwnd)))
     {
         if (data->wayland_surface && info->dwFlags)
-            wayland_surface_activate(data->wayland_surface);
+            wayland_surface_activate(data->wayland_surface, FALSE);
+        wayland_win_data_release(data);
+    }
+}
+
+/***********************************************************************
+ *           WAYLAND_ActivateWindow
+ */
+void WAYLAND_ActivateWindow(HWND hwnd, HWND previous)
+{
+    struct wayland_win_data *data;
+
+    TRACE("hwnd=%p previous=%p\n", hwnd, previous);
+
+    if ((data = wayland_win_data_get(hwnd)))
+    {
+        if (data->wayland_surface)
+            wayland_surface_activate(data->wayland_surface, TRUE);
         wayland_win_data_release(data);
     }
 }
