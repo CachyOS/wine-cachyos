@@ -548,6 +548,21 @@ static const WCHAR *wcscasestr(const WCHAR *search, const WCHAR *needle)
     return NULL;
 }
 
+/* Some games (e.g. Helldivers 2) only enable DualSense features such as
+ * haptics for the regular DualSense, so allow presenting the DualSense
+ * Edge as one. */
+static BOOL disguise_dualsense_edge(void)
+{
+    WCHAR value[32];
+    SIZE_T len;
+
+    if (RtlQueryEnvironmentVariable(NULL, L"PROTON_DUALSENSE_EDGE_AS_DUALSENSE", 34,
+                                    value, ARRAY_SIZE(value) - 1, &len))
+        return FALSE;
+    value[len] = 0;
+    return wcscmp(value, L"0");
+}
+
 static BOOL is_hidraw_enabled(WORD vid, WORD pid, const USAGE_AND_PAGE *usages, UINT buttons)
 {
     char buffer[FIELD_OFFSET(KEY_VALUE_PARTIAL_INFORMATION, Data[1024])];
@@ -1031,11 +1046,20 @@ static DWORD CALLBACK bus_main_thread(void *args)
             break;
         case BUS_EVENT_TYPE_DEVICE_CREATED:
         {
-            struct device_desc desc = event->device_created.desc;
+            struct device_desc desc;
             USAGE_AND_PAGE usages;
             UINT buttons;
             BOOL hidraw_enabled;
 
+            if (event->device_created.desc.vid == 0x054c && event->device_created.desc.pid == 0x0df2 &&
+                disguise_dualsense_edge())
+            {
+                TRACE("disguising DualSense Edge device %#I64x as DualSense\n", event->device);
+                event->device_created.desc.pid = 0x0ce6;
+                wcscpy(event->device_created.desc.product, L"DualSense Wireless Controller");
+            }
+
+            desc = event->device_created.desc;
             usages = get_device_usages(event->device, &buttons);
             hidraw_enabled = is_hidraw_enabled(desc.vid, desc.pid, &usages, buttons);
             if (desc.is_hidraw && !hidraw_enabled)
