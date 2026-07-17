@@ -21,16 +21,7 @@
 #pragma makedep unix
 #endif
 
-#include "config.h"
 #include "media-converter.h"
-
-#ifdef _WINEDMO
-
-#include <errno.h>
-#include "wine/debug.h"
-WINE_DEFAULT_DEBUG_CHANNEL(dmo);
-
-#else /*  _WINEDMO */
 
 GST_ELEMENT_REGISTER_DECLARE(protonvideoconverter);
 GST_ELEMENT_REGISTER_DECLARE(protonaudioconverter);
@@ -38,8 +29,6 @@ GST_ELEMENT_REGISTER_DECLARE(protonaudioconverterbin);
 GST_ELEMENT_REGISTER_DECLARE(protondemuxer);
 
 GST_DEBUG_CATEGORY(media_converter_debug);
-
-#endif /* _WINEDMO */
 
 static void get_dirname(const char *path, char *result)
 {
@@ -316,172 +305,53 @@ void dump_fozdb_close(struct dump_fozdb *db)
     }
 }
 
-#define SHA1_DIGEST_LENGTH 20
-
-typedef struct
-{
-    uint32_t tag;
-    struct fozdb_hash hash;
-    uint8_t sha1[SHA1_DIGEST_LENGTH];
-} original_entries_slot;
-C_ASSERT(sizeof(original_entries_slot) == 40);
-
-void mark_transcoded_stream(struct fozdb *fozdb, struct fozdb_hash *hash)
-{
-    struct fozdb *played_fozdb;
-    uint32_t original_size;
-    size_t read_size;
-    char *played_filename;
-    char *transcoded_file;
-    char *ptr;
-    size_t len;
-    uint8_t *slots;
-
-    if (fozdb_entry_size(fozdb, VIDEO_CONV_FOZ_TAG_ORIGINAL_ENTRIES, hash, &original_size) != CONV_OK)
-    {
-        GST_TRACE("No original entries stream found. Not dumping played chunks.\n");
-        return;
-    }
-    if (!original_size || (original_size % sizeof(original_entries_slot)))
-    {
-        GST_TRACE("Unexpected orginal entries stream size %d.\n", original_size);
-        return;
-    }
-    /* FIXME until we get a proper output file name,
-     * store played_chunks.foz in same directory as MEDIACONV_VIDEO_TRANSCODED_FILE
-     */
-    if (!(transcoded_file = getenv("MEDIACONV_VIDEO_TRANSCODED_FILE")))
-    {
-        GST_DEBUG("No transcoded filename, aborting\n");
-        return;
-    }
-    ptr = strrchr(transcoded_file, '/');
-    len = ptr ? ptr + 1 - transcoded_file : 0;
-    if (!(played_filename = malloc(len + strlen("played_chunks.foz") + 1)))
-    {
-        GST_DEBUG("OOM\n");
-        return;
-    }
-    if (len) memcpy(played_filename, transcoded_file, len);
-    strcpy(played_filename + len, "played_chunks.foz");
-
-    GST_TRACE("Writing played chunks into %s\n", played_filename);
-    /* ensure file exists */
-    if (create_file(played_filename) != CONV_OK ||
-        fozdb_create(played_filename, O_RDWR, false, VIDEO_CONV_FOZ_NUM_TAGS, &played_fozdb) != CONV_OK)
-    {
-        GST_ERROR("Couldn't create or open %s fozdb\n", played_filename);
-        return;
-    }
-
-    slots = malloc(original_size);
-    if (slots &&
-        fozdb_read_entry_data(fozdb, VIDEO_CONV_FOZ_TAG_ORIGINAL_ENTRIES, hash, 0,
-                              slots, original_size, &read_size, false) == CONV_OK &&
-        original_size == read_size)
-    {
-        original_entries_slot *slot;
-        original_entries_slot *last_slot = (void *)(slots + original_size);
-
-        for (slot = (void *)slots; slot < last_slot; slot++)
-        {
-            if (!fozdb_has_entry(played_fozdb, slot->tag, &slot->hash))
-            {
-                struct bytes_reader bytes_reader;
-                bytes_reader_init(&bytes_reader, slot->sha1, SHA1_DIGEST_LENGTH);
-                fozdb_write_entry(played_fozdb, slot->tag, &slot->hash, &bytes_reader, bytes_reader_read, true);
-            }
-        }
-    }
-    free(slots);
-    fozdb_release(played_fozdb);
-}
-
-int discard_transcoded_streams(struct fozdb *dump_db, struct fozdb *read_db)
-{
-    struct rb_tree to_discard_chunks = {fozdb_entry_compare};
-    struct fozdb_entry *entry;
-    int ret;
-
-    if (!dump_db || !read_db)
-        return CONV_ERROR_INVALID_ARGUMENT;
-
-    if (discarding_disabled())
-        return CONV_OK;
-
-    FOZDB_FOR_EACH_TAG_ENTRY(entry, VIDEO_CONV_FOZ_TAG_STREAM, dump_db)
-    {
-        struct fozdb_hash chunk_id;
-        uint32_t i;
-        size_t read_size;
-
-        if (fozdb_has_entry(read_db, VIDEO_CONV_FOZ_TAG_OGVDATA, &entry->key.hash) ||
-                fozdb_has_entry(read_db, VIDEO_CONV_FOZ_TAG_MKVDATA, &entry->key.hash))
-        {
-            uint8_t *buffer;
-
-            fozdb_entry_put(&to_discard_chunks, VIDEO_CONV_FOZ_TAG_STREAM, &entry->key.hash);
-
-            if (!entry->full_size) continue;
-
-            if (!(buffer = calloc(1, entry->full_size)))
-            {
-                GST_WARNING("out of memory.");
-                break;
-            }
-
-            if (fozdb_read_entry_data(dump_db, VIDEO_CONV_FOZ_TAG_STREAM, &entry->key.hash,
-                    0, buffer, entry->full_size, &read_size, true) == CONV_OK)
-            {
-                for (i = 0; i < read_size / sizeof(chunk_id); ++i)
-                {
-                    fozdb_hash_from_bytes(&chunk_id, buffer + i * sizeof(chunk_id));
-                    fozdb_entry_put(&to_discard_chunks, VIDEO_CONV_FOZ_TAG_VIDEODATA, &chunk_id);
-                }
-            }
-            free(buffer);
-        }
-    }
-
-    ret = fozdb_discard_entries(dump_db, &to_discard_chunks);
-
-    rb_destroy(&to_discard_chunks, fozdb_entry_destroy, NULL);
-
-    return ret;
-}
-
-#ifndef _WINEDMO
-
 bool media_converter_init(void)
 {
+    // Disable protonvideoconverter, protonaudioconverter, protonaudioconverterbin
+    // and protondemuxer by default unless their respective env variables are set to 1
+    const char *proton_video_convert = getenv("PROTON_VIDEO_CONVERT");
+    const char *proton_audio_convert = getenv("PROTON_AUDIO_CONVERT");
+    const char *proton_audio_convert_bin = getenv("PROTON_AUDIO_CONVERT_BIN");
+    const char *proton_demuxer = getenv("PROTON_DEMUX");
+
     GST_DEBUG_CATEGORY_INIT(media_converter_debug,
             "protonmediaconverter", GST_DEBUG_FG_YELLOW, "Proton media converter");
 
+    if (proton_video_convert && !strcmp(proton_video_convert, "1"))
+    {
     if (!GST_ELEMENT_REGISTER(protonvideoconverter, NULL))
     {
         GST_ERROR("Failed to register protonvideoconverter.");
         return false;
     }
+    } else GST_ERROR("Skipped \"protonvideoconverter\" registration.");
 
+    if (proton_audio_convert && !strcmp(proton_audio_convert, "1"))
+    {
     if (!GST_ELEMENT_REGISTER(protonaudioconverter, NULL))
     {
         GST_ERROR("Failed to register protonaudioconverter.");
         return false;
     }
+    } else GST_ERROR("Skipped \"protonaudioconverter\" registration.");
 
+    if (proton_audio_convert_bin && !strcmp(proton_audio_convert_bin, "1"))
+    {
     if (!GST_ELEMENT_REGISTER(protonaudioconverterbin, NULL))
     {
         GST_ERROR("Failed to register protonaudioconverterbin.");
         return false;
     }
+    } else GST_ERROR("Skipped \"protonaudioconverterbin\" registration.");
 
+    if (proton_demuxer && !strcmp(proton_demuxer, "1"))
+    {
     if (!GST_ELEMENT_REGISTER(protondemuxer, NULL))
     {
         GST_ERROR("Failed to register protondemuxer.");
         return false;
     }
+    } else GST_ERROR("Skipped \"protondemuxer\" registration.");
 
     return true;
 }
-
-#endif /* _WINEDMO */

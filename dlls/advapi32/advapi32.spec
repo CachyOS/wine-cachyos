@@ -106,8 +106,8 @@
 @ stdcall CommandLineFromMsiDescriptor(wstr ptr ptr)
 # @ stub ComputeAccessTokenFromCodeAuthzLevel
 @ stdcall -import ControlService(long long ptr)
-# @ stub ControlServiceExA
-# @ stub ControlServiceExW
+@ stdcall -import ControlServiceExA(long long long ptr)
+@ stdcall -import ControlServiceExW(long long long ptr)
 @ stdcall -import ControlTraceA(int64 str ptr long)
 @ stdcall -import ControlTraceW(int64 wstr ptr long)
 # @ stub ConvertAccessToSecurityDescriptorA

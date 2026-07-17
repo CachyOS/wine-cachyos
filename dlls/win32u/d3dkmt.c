@@ -748,8 +748,82 @@ NTSTATUS WINAPI NtGdiDdDDIQueryAdapterInfo( D3DKMT_QUERYADAPTERINFO *desc )
             data->HwSchSupported = 1;
             data->HwSchEnabledByDefault = 1;
         }
+        /* on multi GPU systems nvidia streamline may not properly detect hardware scheduling support.
+         * However, enabling it by default for all configurations may be risky. */
+        else if ((e = getenv( "WINE_ENABLE_HARDWARE_SCHEDULING" )) && *e == '1')
+        {
+            data->HwSchEnabled = 1;
+            data->HwSchSupported = 1;
+            data->HwSchEnabledByDefault = 1;
+        }
 
         return STATUS_SUCCESS;
+    }
+    case KMTQAITYPE_UMDRIVERPRIVATE:
+    {
+        VkExtensionProperties *prop = NULL;
+        uint32_t prop_count = 0;
+        VkPhysicalDeviceProperties2KHR properties2 = {0};
+        BOOL fp8_support = FALSE, wmma = FALSE, rdna2 = FALSE;
+        struct vulkan_physical_device *physical_device;
+        struct vulkan_instance *instance;
+        const char *e;
+
+        TRACE("size %x\n", desc->PrivateDriverDataSize);
+
+        if (!(adapter = get_d3dkmt_object( desc->hAdapter, D3DKMT_ADAPTER ))) return STATUS_INVALID_PARAMETER;
+        if (!(physical_device = adapter->physical_device)) return STATUS_INVALID_PARAMETER;
+        instance = physical_device->instance;
+
+        properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2_KHR;
+        instance->p_vkGetPhysicalDeviceProperties2KHR( physical_device->host.physical_device, &properties2 );
+
+        instance->p_vkEnumerateDeviceExtensionProperties( physical_device->host.physical_device, NULL, &prop_count, NULL );
+
+        if (!(prop = malloc( prop_count * sizeof(*prop) ))) return STATUS_NO_MEMORY;
+
+        instance->p_vkEnumerateDeviceExtensionProperties( physical_device->host.physical_device, NULL, &prop_count, prop );
+
+        for (int i = 0; i < prop_count; i++)
+        {
+            if (!strcmp( prop[i].extensionName, "VK_EXT_shader_float8" )) fp8_support = TRUE;
+            if (!strcmp( prop[i].extensionName, "VK_NV_cooperative_matrix2" )) wmma = TRUE;
+            if (!strcmp( prop[i].extensionName, "VK_KHR_fragment_shading_rate" )) rdna2 = TRUE;
+        }
+
+        free( prop );
+
+        /* FSR4-I8 on iGPU will not work that well due to performance reasons.
+         * Disable out of the box, can be enabled with FSR4_UPGRADE=1 */
+        if (properties2.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU)
+            rdna2 = FALSE;
+
+        if (properties2.properties.vendorID == 0x1002 && desc->PrivateDriverDataSize == 0x260)
+        {
+            int *data = desc->pPrivateDriverData;
+            if (fp8_support && wmma)
+            {
+                /* Navi4x 9070xt */
+                data[0xc] = 0x98; /* APU/GPU Family */
+                data[0xd] = 0x51; /* Revision/which GPU it is in that family */
+            }
+            else if (rdna2 || ((e = getenv("FSR4_UPGRADE")) && *e == '1'))
+            {
+                /* Navi31 */
+                data[0xc] = 0x91; /* APU/GPU Family */
+                data[0xd] = 0x3; /* Revision/which GPU it is in that family */
+            }
+            else
+            {
+                WARN("Not recommended to use FSR-I8, Use FSR4_UPGRADE=1 for FSR4-I8!\n");
+                return STATUS_NOT_IMPLEMENTED;
+            }
+
+            return STATUS_SUCCESS;
+        }
+
+        FIXME("Unsupported KMTQAITYPE_UMDRIVERPRIVATE!\n");
+        return STATUS_NOT_IMPLEMENTED;
     }
     default:
     {
@@ -764,7 +838,13 @@ NTSTATUS WINAPI NtGdiDdDDIQueryAdapterInfo( D3DKMT_QUERYADAPTERINFO *desc )
  */
 NTSTATUS WINAPI NtGdiDdDDIQueryStatistics( D3DKMT_QUERYSTATISTICS *stats )
 {
-    FIXME( "(%p): stub\n", stats );
+    static unsigned int once;
+
+    if (!once++)
+        FIXME( "(%p): stub\n", stats );
+    else
+        WARN( "(%p): stub\n", stats );
+
     return STATUS_SUCCESS;
 }
 

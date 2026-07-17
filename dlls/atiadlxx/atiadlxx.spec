@@ -376,7 +376,7 @@
 @ stub ADL2_Display_SLSMapConfig_SupportedImageCropType_Get
 @ stub ADL2_Display_SLSMapConfig_Valid
 @ stub ADL2_Display_SLSMapIndexList_Get
-@ stub ADL2_Display_SLSMapIndex_Get
+@ cdecl ADL2_Display_SLSMapIndex_Get(ptr long long ptr ptr)
 @ stub ADL2_Display_SLSMiddleMode_Get
 @ stub ADL2_Display_SLSMiddleMode_Set
 @ stub ADL2_Display_SLSRecords_Get
@@ -936,7 +936,7 @@
 @ stub ADL_Display_SLSMapConfig_Rearrange
 @ stub ADL_Display_SLSMapConfig_SetState
 @ stub ADL_Display_SLSMapIndexList_Get
-@ stub ADL_Display_SLSMapIndex_Get
+@ cdecl ADL_Display_SLSMapIndex_Get(long long ptr ptr)
 @ stub ADL_Display_SLSMiddleMode_Get
 @ stub ADL_Display_SLSMiddleMode_Set
 @ stub ADL_Display_SLSRecords_Get

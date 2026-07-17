@@ -20,6 +20,9 @@
 #define WIN32_NO_STATUS
 #include "mfsrcsnk_private.h"
 
+#include <stdlib.h>
+#include <string.h>
+
 #include "wine/list.h"
 #include "wine/debug.h"
 #include "wine/winedmo.h"
@@ -2080,6 +2083,14 @@ static BOOL use_gst_byte_stream_handler(void)
 {
     BOOL result;
     DWORD size = sizeof(result);
+    const char *orientation = getenv("PROTON_GST_VIDEO_ORIENTATION");
+    const char *media_use_gst = getenv("PROTON_MEDIA_FORCE_GST");
+
+    /* Proton override: if PROTON_VIDEO_ORIENTATION is set then manually set orientation based on value */
+    if (orientation || (media_use_gst && !strcmp(media_use_gst, "1")))
+    {
+        return TRUE;
+    }
 
     /* @@ Wine registry key: HKCU\Software\Wine\MediaFoundation */
     if (!RegGetValueW( HKEY_CURRENT_USER, L"Software\\Wine\\MediaFoundation", L"DisableGstByteStreamHandler",

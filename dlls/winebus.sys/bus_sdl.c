@@ -946,6 +946,12 @@ static BOOL set_report_from_controller_event(struct sdl_device *impl, SDL_Event 
 }
 
 
+static BOOL is_emulating_steaminput(void)
+{
+    const char *env = getenv("PROTON_EMULATE_STEAMINPUT");
+    return env && atoi(env);
+}
+
 static void sdl_add_device(unsigned int index)
 {
     struct device_desc desc =
@@ -1000,6 +1006,14 @@ static void sdl_add_device(unsigned int index)
         if (controller) pSDL_GameControllerClose(controller);
         pSDL_JoystickClose(joystick);
         return;
+    }
+
+    if (is_emulating_steaminput())
+    {
+        TRACE("emulating steam input with %s\n", debugstr_device_desc(&desc));
+        desc.vid = 0x28de;
+        desc.pid = 0x11ff;
+        desc.version = 0;
     }
 
     if (pSDL_JoystickGetSerial && (sdl_serial = pSDL_JoystickGetSerial(joystick)))
