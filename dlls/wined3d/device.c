@@ -1487,6 +1487,8 @@ void wined3d_device_gl_delete_opengl_contexts_cs(void *object)
 
         wined3d_release_dc(device_gl->backup_wnd, device_gl->backup_dc);
         DestroyWindow(device_gl->backup_wnd);
+        device_gl->backup_dc = NULL;
+        device_gl->backup_wnd = NULL;
     }
 }
 

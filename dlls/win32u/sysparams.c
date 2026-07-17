@@ -8327,3 +8327,36 @@ BOOL get_gpu_info_from_uuid( const GUID *uuid, LUID *luid, UINT32 *node_mask, ch
     unlock_display_devices();
     return found;
 }
+
+BOOL get_font_smoothing_aa( UINT *font_aa, UINT *subpixel_orientation_aa )
+{
+    DWORD type, orientation;
+    UINT smoothing;
+
+    if (!volatile_base_key
+            || !get_entry( &entry_FONTSMOOTHING, 0, &smoothing )
+            || !get_entry( &entry_FONTSMOOTHINGTYPE, 0, &type )
+            || !get_entry( &entry_FONTSMOOTHINGORIENTATION, 0, &orientation ))
+        return FALSE;
+
+    switch (orientation)
+    {
+    case FE_FONTSMOOTHINGORIENTATIONBGR:
+        *subpixel_orientation_aa = WINE_GGO_HBGR_BITMAP;
+        break;
+    case FE_FONTSMOOTHINGORIENTATIONRGB:
+        *subpixel_orientation_aa = WINE_GGO_HRGB_BITMAP;
+        break;
+    default:
+        return FALSE;
+    }
+
+    if (!smoothing)
+        *font_aa = GGO_BITMAP;
+    else if (type == FE_FONTSMOOTHINGCLEARTYPE)
+        *font_aa = *subpixel_orientation_aa;
+    else
+        *font_aa = GGO_GRAY4_BITMAP;
+
+    return TRUE;
+}
