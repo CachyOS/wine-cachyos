@@ -2244,7 +2244,7 @@ static LRESULT handle_internal_message( HWND hwnd, UINT msg, WPARAM wparam, LPAR
     case WM_WINE_WINDOW_STATE_CHANGED:
     {
         UINT state_cmd = 0, swp_flags = 0;
-        RECT window_rect;
+        RECT window_rect = {0};
         HWND foreground = 0;
 
         if (!user_driver->pGetWindowStateUpdates( hwnd, &state_cmd, &swp_flags, &window_rect, &foreground )) return 0;
@@ -2256,8 +2256,8 @@ static LRESULT handle_internal_message( HWND hwnd, UINT msg, WPARAM wparam, LPAR
         case SC_RESTORE:
             if (HIWORD(state_cmd)) NtUserSetActiveWindow( hwnd );
 
-            /* make the win32 window restore to the current host window config */
-            set_window_normal_placement( hwnd, window_rect );
+            /* make the win32 window restore to the current host window config, if present */
+            if (!IsRectEmpty( &window_rect )) set_window_normal_placement( hwnd, window_rect );
 
             /* fallthrough */
         default:

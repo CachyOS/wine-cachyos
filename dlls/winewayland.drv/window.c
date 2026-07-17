@@ -664,23 +664,6 @@ LRESULT WAYLAND_WindowMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_WAYLAND_CONFIGURE:
         wayland_configure_window(hwnd);
         return 0;
-    case WM_WAYLAND_SET_FOREGROUND:
-    {
-        HWND focused;
-        pthread_mutex_lock(&process_wayland.keyboard.mutex);
-        focused = process_wayland.keyboard.focused_hwnd;
-        pthread_mutex_unlock(&process_wayland.keyboard.mutex);
-        /* if the focused hwnd is already == hwnd, this was a spurious leave event. */
-        if (wp && NtUserGetForegroundWindow() == hwnd && focused != hwnd)
-            NtUserSetForegroundWindowInternal(NtUserGetDesktopWindow());
-        /* the same applies here */
-        else if (!wp && focused == hwnd)
-            NtUserSetForegroundWindowInternal(hwnd);
-        else
-            WARN("focused %p hwnd %p, Ignoring stale %s message\n",
-                 focused, hwnd, wp ? "focus loss" : "focus gain");
-        return 0;
-    }
     default:
         FIXME("got window msg %x hwnd %p wp %lx lp %lx\n", msg, hwnd, (long)wp, lp);
         return 0;
@@ -927,6 +910,42 @@ BOOL WAYLAND_GetWindowStyleMasks(HWND hwnd, UINT style, UINT ex_style, UINT *sty
     }
 
     return ret;
+}
+
+/***********************************************************************
+ *           WAYLAND_GetWindowStateUpdates
+ */
+BOOL WAYLAND_GetWindowStateUpdates(HWND hwnd, UINT *state_cmd, UINT *swp_flags,
+                                   RECT *rect, HWND *foreground)
+{
+    struct wayland_keyboard *keyboard = &process_wayland.keyboard;
+    DWORD style = NtUserGetWindowLongW(hwnd, GWL_STYLE);
+    HWND focused_hwnd, old_foreground = NtUserGetForegroundWindow();
+
+    /* in these cases we dont need to update the window focus, borrowed from winemac */
+    if (!(style & WS_VISIBLE)) return FALSE;
+    if ((style & (WS_POPUP | WS_CHILD)) == WS_CHILD) return FALSE;
+    if (style & WS_DISABLED) return FALSE;
+
+    pthread_mutex_lock(&keyboard->mutex);
+    focused_hwnd = keyboard->focused_hwnd;
+    pthread_mutex_unlock(&keyboard->mutex);
+
+    /* if the foreground window is not the hwnd then this is a stale focus loss */
+    if (!focused_hwnd && old_foreground == hwnd)
+        focused_hwnd = NtUserGetDesktopWindow();
+    else if (focused_hwnd != hwnd) focused_hwnd = NULL;
+
+    if (old_foreground != focused_hwnd) *foreground = focused_hwnd;
+
+    /* we can't track if the host window is minimized or unminimized, but
+     * if we have keyboard focus on this window we can treat it as restored. */
+    if ((style & WS_MINIMIZE) && focused_hwnd == hwnd && old_foreground != hwnd)
+        *state_cmd = MAKELONG(SC_RESTORE, 1);
+
+    TRACE("hwnd=%p foreground=%p state_low=%#x\n", hwnd, *foreground, LOWORD(*state_cmd));
+
+    return TRUE;
 }
 
 BOOL set_window_surface_contents(HWND hwnd, struct wayland_shm_buffer *shm_buffer, HRGN damage_region)

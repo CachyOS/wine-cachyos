@@ -61,6 +61,7 @@ static const struct user_driver_funcs waylanddrv_funcs =
     .pWindowPosChanging = WAYLAND_WindowPosChanging,
     .pCreateWindowSurface = WAYLAND_CreateWindowSurface,
     .pGetWindowStyleMasks = WAYLAND_GetWindowStyleMasks,
+    .pGetWindowStateUpdates = WAYLAND_GetWindowStateUpdates,
     .pHasWindowManager = WAYLAND_HasWindowManager,
     .pVulkanInit = WAYLAND_VulkanInit,
     .pOpenGLInit = WAYLAND_OpenGLInit,
