@@ -2495,7 +2495,7 @@ static VkResult win32u_vkGetPhysicalDeviceSurfaceFormatsKHR( VkPhysicalDevice cl
     struct vulkan_instance *instance = physical_device->instance;
 
     return instance->p_vkGetPhysicalDeviceSurfaceFormatsKHR( physical_device->host.physical_device,
-                                                                surface->obj.host.surface, format_count, formats );
+                                                             surface->obj.host.surface, format_count, formats );
 }
 
 static VkResult win32u_vkGetPhysicalDeviceSurfaceFormats2KHR( VkPhysicalDevice client_physical_device, const VkPhysicalDeviceSurfaceInfo2KHR *surface_info,
@@ -3070,6 +3070,8 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
     VkSwapchainCreateInfoKHR create_info_host = *create_info;
     VkSurfaceCapabilitiesKHR capabilities;
     VkSwapchainKHR host_swapchain;
+    uint32_t format_count = 0;
+    VkSurfaceFormatKHR *formats;
     RECT client_rect;
     VkResult res;
 
@@ -3086,6 +3088,7 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
     res = instance->p_vkGetPhysicalDeviceSurfaceCapabilitiesKHR( physical_device->host.physical_device, surface->obj.host.surface, &capabilities );
     if (res) return res;
 
+    create_info_host.imageColorSpace = driver_funcs->p_vulkan_map_colorspace( create_info_host.imageColorSpace, surface->client );
     create_info_host.imageExtent.width = max( create_info_host.imageExtent.width, capabilities.minImageExtent.width );
     create_info_host.imageExtent.height = max( create_info_host.imageExtent.height, capabilities.minImageExtent.height );
 
@@ -3119,10 +3122,46 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
                    create_info_host.imageFormat );
     }
 
-    if ((res = driver_funcs->p_vulkan_colorspace_configure( &create_info_host.imageColorSpace, surface->client )))
+    /* check if the new colorspace works with the provided format */
+    if (create_info_host.imageColorSpace != create_info->imageColorSpace)
     {
-        free( swapchain );
-        return res;
+        BOOL found = FALSE;
+
+        res = instance->p_vkGetPhysicalDeviceSurfaceFormatsKHR( physical_device->host.physical_device, surface->obj.host.surface, &format_count, NULL );
+
+        if (!(formats = calloc( format_count, sizeof(*formats) ))) return VK_ERROR_OUT_OF_HOST_MEMORY;
+
+        res = instance->p_vkGetPhysicalDeviceSurfaceFormatsKHR( physical_device->host.physical_device, surface->obj.host.surface, &format_count, formats );
+
+        if (res)
+        {
+            free(formats);
+            return res;
+        }
+
+    again:
+        for (unsigned i = 0; i < format_count; i++)
+        {
+            if (formats[i].format == create_info_host.imageFormat &&
+                formats[i].colorSpace == create_info_host.imageColorSpace)
+                found = TRUE;
+        }
+
+        /* HACK: try again with VK_COLOR_SPACE_SRGB_NONLINEAR_KHR */
+        if (!found && create_info_host.imageColorSpace == VK_COLOR_SPACE_PASS_THROUGH_EXT)
+        {
+            create_info_host.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+            goto again;
+        }
+
+        if (!found)
+        {
+            ERR("Colorspace %u is not compatible with format %u\n",
+                create_info_host.imageColorSpace, create_info_host.imageFormat);
+            create_info_host.imageColorSpace = create_info->imageColorSpace;
+        }
+
+        free(formats);
     }
 
     InterlockedIncrement( &surface->client->busy_ref );
@@ -4734,9 +4773,9 @@ static VkResult nulldrv_vulkan_surface_create( HWND hwnd, BOOL raw, const struct
     return res;
 }
 
-static VkResult nulldrv_vulkan_colorspace_configure( VkColorSpaceKHR *colorspace, struct client_surface *client )
+static VkColorSpaceKHR nulldrv_vulkan_map_colorspace( VkColorSpaceKHR colorspace, struct client_surface *client )
 {
-    return VK_SUCCESS;
+    return colorspace;
 }
 
 static VkBool32 nulldrv_get_physical_device_presentation_support( struct vulkan_physical_device *physical_device, uint32_t queue )
@@ -4765,7 +4804,7 @@ static void nulldrv_map_device_extensions( struct vulkan_device_extensions *exte
 static const struct vulkan_driver_funcs nulldrv_funcs =
 {
     .p_vulkan_surface_create = nulldrv_vulkan_surface_create,
-    .p_vulkan_colorspace_configure = nulldrv_vulkan_colorspace_configure,
+    .p_vulkan_map_colorspace = nulldrv_vulkan_map_colorspace,
     .p_get_physical_device_presentation_support = nulldrv_get_physical_device_presentation_support,
     .p_map_instance_extensions = nulldrv_map_instance_extensions,
     .p_map_device_extensions = nulldrv_map_device_extensions,
@@ -4798,10 +4837,10 @@ static VkResult lazydrv_vulkan_surface_create( HWND hwnd, BOOL raw, const struct
     return driver_funcs->p_vulkan_surface_create( hwnd, raw, instance, surface, client );
 }
 
-static VkResult lazydrv_vulkan_colorspace_configure( VkColorSpaceKHR *colorspace, struct client_surface *client )
+static VkColorSpaceKHR lazydrv_vulkan_map_colorspace( VkColorSpaceKHR colorspace, struct client_surface *client )
 {
     vulkan_driver_load();
-    return driver_funcs->p_vulkan_colorspace_configure( colorspace, client );
+    return driver_funcs->p_vulkan_map_colorspace( colorspace, client );
 }
 
 static VkBool32 lazydrv_get_physical_device_presentation_support( struct vulkan_physical_device *physical_device, uint32_t queue )
@@ -4825,7 +4864,7 @@ static void lazydrv_map_device_extensions( struct vulkan_device_extensions *exte
 static const struct vulkan_driver_funcs lazydrv_funcs =
 {
     .p_vulkan_surface_create = lazydrv_vulkan_surface_create,
-    .p_vulkan_colorspace_configure = lazydrv_vulkan_colorspace_configure,
+    .p_vulkan_map_colorspace = lazydrv_vulkan_map_colorspace,
     .p_get_physical_device_presentation_support = lazydrv_get_physical_device_presentation_support,
     .p_map_instance_extensions = lazydrv_map_instance_extensions,
     .p_map_device_extensions = lazydrv_map_device_extensions,

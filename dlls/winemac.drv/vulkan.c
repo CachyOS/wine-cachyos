@@ -90,9 +90,9 @@ err:
     return VK_ERROR_INCOMPATIBLE_DRIVER;
 }
 
-static VkResult macdrv_vulkan_colorspace_configure(VkColorSpaceKHR *colorspace, struct client_surface *client)
+static VkColorSpaceKHR macdrv_vulkan_map_colorspace(VkColorSpaceKHR colorspace, struct client_surface *client)
 {
-    return VK_SUCCESS;
+    return colorspace;
 }
 
 static VkBool32 macdrv_get_physical_device_presentation_support(struct vulkan_physical_device *physical_device,
@@ -126,7 +126,7 @@ static void macdrv_map_device_extensions(struct vulkan_device_extensions *extens
 static const struct vulkan_driver_funcs macdrv_vulkan_driver_funcs =
 {
     .p_vulkan_surface_create = macdrv_vulkan_surface_create,
-    .p_vulkan_colorspace_configure = macdrv_vulkan_colorspace_configure,
+    .p_vulkan_map_colorspace = macdrv_vulkan_map_colorspace,
     .p_get_physical_device_presentation_support = macdrv_get_physical_device_presentation_support,
     .p_map_instance_extensions = macdrv_map_instance_extensions,
     .p_map_device_extensions = macdrv_map_device_extensions,

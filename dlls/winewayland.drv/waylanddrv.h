@@ -268,10 +268,8 @@ struct wayland
     /* Protects the output_list, output_info_array, and the wayland_output.current states. */
     pthread_mutex_t output_mutex;
     LONG input_serial;
-    BOOL supports_pq;
-    BOOL supports_scrgb;
+    BOOL supports_win_scrgb;
     BOOL supports_win_pq;
-    BOOL supports_extended_volume;
 };
 
 struct wayland_output_mode
