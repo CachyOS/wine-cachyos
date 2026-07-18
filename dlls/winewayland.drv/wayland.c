@@ -43,10 +43,6 @@ struct wayland process_wayland =
     .data_device.mutex = PTHREAD_MUTEX_INITIALIZER,
     .output_list = {&process_wayland.output_list, &process_wayland.output_list},
     .output_mutex = PTHREAD_MUTEX_INITIALIZER,
-    .supports_extended_volume = FALSE,
-    .supports_pq = FALSE,
-    .supports_scrgb = FALSE,
-    .supports_win_pq = FALSE
 };
 
 /**********************************************************************
@@ -95,6 +91,49 @@ static const struct wl_seat_listener seat_listener =
 {
     wl_seat_handle_capabilities,
     wl_seat_handle_name
+};
+
+static void wayland_color_manager_handle_supported_intent(void *data,
+    struct wp_color_manager_v1 *wp_color_manager_v1, uint32_t intent)
+{
+}
+
+static void wayland_color_manager_handle_supported_feature(void *data,
+    struct wp_color_manager_v1 *wp_color_manager_v1, uint32_t feature)
+{
+    pthread_mutex_lock(&process_wayland.output_mutex);
+
+    TRACE("feature %u\n", feature);
+
+    if (feature == WP_COLOR_MANAGER_V1_FEATURE_WINDOWS_SCRGB)
+        process_wayland.supports_win_scrgb = TRUE;
+    else if (feature == WP_COLOR_MANAGER_V1_FEATURE_WINDOWS_BT2100)
+        process_wayland.supports_win_pq = TRUE;
+
+    pthread_mutex_unlock(&process_wayland.output_mutex);
+}
+
+static void wayland_color_manager_handle_supported_named_tf(void *data,
+    struct wp_color_manager_v1 *wp_color_manager_v1, uint32_t tf)
+{
+}
+
+static void wayland_color_manager_handle_supported_primaries(void *data,
+    struct wp_color_manager_v1 *wp_color_manager_v1, uint32_t primaries)
+{
+}
+
+static void wayland_color_manager_handle_done(void *data,
+                        struct wp_color_manager_v1 *wp_color_manager_v1)
+{
+}
+
+static const struct wp_color_manager_v1_listener wp_color_manager_listener = {
+    wayland_color_manager_handle_supported_intent,
+    wayland_color_manager_handle_supported_feature,
+    wayland_color_manager_handle_supported_named_tf,
+    wayland_color_manager_handle_supported_primaries,
+    wayland_color_manager_handle_done
 };
 
 static int wayland_disable_ssd(void)
@@ -270,8 +309,8 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
         process_wayland.wp_color_manager_v1 =
             wl_registry_bind(registry, id, &wp_color_manager_v1_interface,
                              version < 3 ? version : 3);
-
-        wayland_color_manager_init();
+        wp_color_manager_v1_add_listener(process_wayland.wp_color_manager_v1,
+                                         &wp_color_manager_listener, NULL);
         /* Add image descriptions to existing outputs. */
         wl_list_for_each(output, &process_wayland.output_list, link)
             wayland_output_use_image_description(output);
@@ -443,7 +482,13 @@ BOOL wayland_process_init(void)
         WARN("Wayland compositor doesn't support optional zxdg_decoration_manager_v1!\n");
 
     if (!process_wayland.xdg_activation_v1)
-        ERR("Wayland compositor doesn't support xdg_activation_v1! (Flash Window will not be supported)\n");
+        ERR("Wayland compositor doesn't support xdg_activation_v1! (Window Activation will not be supported)\n");
+
+    if (!process_wayland.supports_win_pq)
+        ERR("Wayland compositor doesn't expose windows_bt2100 image description (HDR may look broken)!\n");
+
+    if (!process_wayland.supports_win_scrgb)
+        ERR("Wayland compositor doesn't expose windows_scrgb image description (HDR may look broken)!\n");
 
     process_wayland.initialized = TRUE;
 

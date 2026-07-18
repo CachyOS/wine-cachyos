@@ -70,9 +70,9 @@ static VkResult X11DRV_vulkan_surface_create( HWND hwnd, BOOL raw, const struct 
     return VK_SUCCESS;
 }
 
-static VkResult X11DRV_vulkan_colorspace_configure(  VkColorSpaceKHR *colorspace, struct client_surface *client )
+static VkColorSpaceKHR X11DRV_vulkan_map_colorspace( VkColorSpaceKHR colorspace, struct client_surface *client )
 {
-    return VK_SUCCESS;
+    return colorspace;
 }
 
 static VkBool32 X11DRV_get_physical_device_presentation_support( struct vulkan_physical_device *physical_device, uint32_t index )
@@ -104,7 +104,7 @@ static void X11DRV_map_device_extensions( struct vulkan_device_extensions *exten
 static const struct vulkan_driver_funcs x11drv_vulkan_driver_funcs =
 {
     .p_vulkan_surface_create = X11DRV_vulkan_surface_create,
-    .p_vulkan_colorspace_configure = X11DRV_vulkan_colorspace_configure,
+    .p_vulkan_map_colorspace = X11DRV_vulkan_map_colorspace,
     .p_get_physical_device_presentation_support = X11DRV_get_physical_device_presentation_support,
     .p_map_instance_extensions = X11DRV_map_instance_extensions,
     .p_map_device_extensions = X11DRV_map_device_extensions,
