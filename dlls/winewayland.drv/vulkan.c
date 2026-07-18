@@ -140,44 +140,47 @@ static void wayland_map_device_extensions(struct vulkan_device_extensions *exten
     if (extensions->has_VK_KHR_external_fence_fd) extensions->has_VK_KHR_external_fence_win32 = 1;
 }
 
-static VkResult wayland_vulkan_colorspace_configure(VkColorSpaceKHR *colorspace, struct client_surface *client)
+static VkColorSpaceKHR wayland_vulkan_map_colorspace(VkColorSpaceKHR colorspace, struct client_surface *client)
 {
     struct wp_image_description_v1 *wp_image_description_v1 = NULL;
-    VkColorSpaceKHR old = *colorspace;
+    VkColorSpaceKHR new = colorspace;
 
-    if (process_wayland.supports_scrgb &&
-        old == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT)
+    if (process_wayland.supports_win_scrgb && new == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT)
+        new = VK_COLOR_SPACE_PASS_THROUGH_EXT;
+    else if (process_wayland.supports_win_pq && colorspace == VK_COLOR_SPACE_HDR10_ST2084_EXT)
+        new = VK_COLOR_SPACE_PASS_THROUGH_EXT;
+
+    if (!client) return new;
+    if (new == colorspace) return colorspace;
+
+    switch(colorspace)
     {
-        *colorspace = VK_COLOR_SPACE_PASS_THROUGH_EXT;
+    case VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT:
         wp_image_description_v1 =
             wp_color_manager_v1_create_windows_scrgb(process_wayland.wp_color_manager_v1);
-
-        if (!wp_image_description_v1) goto err;
-    }
-    else if (process_wayland.supports_win_pq &&
-             old == VK_COLOR_SPACE_HDR10_ST2084_EXT)
-    {
-        *colorspace = VK_COLOR_SPACE_PASS_THROUGH_EXT;
+        break;
+    case VK_COLOR_SPACE_HDR10_ST2084_EXT:
         wp_image_description_v1 =
             wp_color_manager_v1_create_windows_bt2100(process_wayland.wp_color_manager_v1);
-
-        if (!wp_image_description_v1) goto err;
+    default: break;
     }
 
-    TRACE("mapping colorspace %u => %u\n", old, *colorspace);
+    if (!wp_image_description_v1) goto err;
+
+    TRACE("mapping colorspace %u => %u\n", colorspace, new);
 
     wayland_client_surface_attach_image_description(client, wp_image_description_v1);
 
-    return VK_SUCCESS;
+    return new;
 err:
     ERR("Failed to configure image description for client surface!\n");
-    return VK_ERROR_OUT_OF_HOST_MEMORY;
+    return colorspace;
 }
 
 static const struct vulkan_driver_funcs wayland_vulkan_driver_funcs =
 {
     .p_vulkan_surface_create = wayland_vulkan_surface_create,
-    .p_vulkan_colorspace_configure = wayland_vulkan_colorspace_configure,
+    .p_vulkan_map_colorspace = wayland_vulkan_map_colorspace,
     .p_get_physical_device_presentation_support = wayland_get_physical_device_presentation_support,
     .p_map_instance_extensions = wayland_map_instance_extensions,
     .p_map_device_extensions = wayland_map_device_extensions,
