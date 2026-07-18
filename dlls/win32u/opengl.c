@@ -1406,10 +1406,19 @@ static BOOL egldrv_make_current( struct opengl_drawable *draw, struct opengl_dra
 {
     const struct opengl_funcs *funcs = &display_funcs;
     const struct egl_platform *egl = &display_egl;
+    BOOL ret;
 
     TRACE( "draw %s, read %s, context %p\n", debugstr_opengl_drawable( draw ), debugstr_opengl_drawable( read ), context );
 
-    return funcs->p_eglMakeCurrent( egl->display, context ? draw->surface : EGL_NO_SURFACE, context ? read->surface : EGL_NO_SURFACE, context );
+    ret = funcs->p_eglMakeCurrent( egl->display, context ? draw->surface : EGL_NO_SURFACE, context ? read->surface : EGL_NO_SURFACE, context );
+    if (ret && context && draw->surface != EGL_NO_SURFACE && egl->display && egl->type == EGL_PLATFORM_WAYLAND_KHR)
+    {
+        /* HACK: set swap interval to 0 for the wayland platform,
+         * winewayland implements swap interval=1 instead of the GPU driver. */
+        ERR("HACK: Using swap interval 0\n");
+        funcs->p_eglSwapInterval( egl->display, 0 );
+    }
+    return ret;
 }
 
 static void egldrv_pbuffer_destroy( struct opengl_drawable *drawable )
