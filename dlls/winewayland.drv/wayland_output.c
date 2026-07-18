@@ -216,16 +216,8 @@ static void wayland_output_done(struct wayland_output *output)
         output->current.ref_lum = output->pending.ref_lum;
     }
 
-    output->current.supports_hdr = FALSE;
-
-    if (process_wayland.supports_extended_volume &&
-        process_wayland.supports_pq &&
-        process_wayland.supports_scrgb)
-    {
-        if (!process_wayland.supports_win_pq)
-            ERR("Compositor doesn't supports windows_bt2100, HDR10 ST2084 may look broken\n");
-        output->current.supports_hdr = (output->current.max_target_lum > output->current.ref_lum);
-    }
+    output->current.supports_hdr = process_wayland.supports_win_scrgb &&
+                                    (output->current.max_target_lum > output->current.ref_lum);
 
     output->pending_flags = 0;
 
@@ -800,66 +792,4 @@ void wayland_output_use_xdg_extension(struct wayland_output *output)
                                               output->wl_output);
     zxdg_output_v1_add_listener(output->zxdg_output_v1, &zxdg_output_v1_listener,
                                 output);
-}
-
-static void wayland_color_manager_handle_supported_intent(void *data,
-    struct wp_color_manager_v1 *wp_color_manager_v1, uint32_t intent)
-{
-}
-
-static void wayland_color_manager_handle_supported_feature(void *data,
-    struct wp_color_manager_v1 *wp_color_manager_v1, uint32_t feature)
-{
-    pthread_mutex_lock(&process_wayland.output_mutex);
-
-    TRACE("feature %u\n", feature);
-
-    if (feature == WP_COLOR_MANAGER_V1_FEATURE_WINDOWS_SCRGB)
-        process_wayland.supports_scrgb = TRUE;
-    else if (feature == WP_COLOR_MANAGER_V1_FEATURE_WINDOWS_BT2100)
-        process_wayland.supports_win_pq = TRUE;
-    else if (feature == WP_COLOR_MANAGER_V1_FEATURE_EXTENDED_TARGET_VOLUME)
-        process_wayland.supports_extended_volume = TRUE;
-
-    pthread_mutex_unlock(&process_wayland.output_mutex);
-}
-
-static void wayland_color_manager_handle_supported_named_tf(void *data,
-    struct wp_color_manager_v1 *wp_color_manager_v1, uint32_t tf)
-{
-    pthread_mutex_lock(&process_wayland.output_mutex);
-
-    TRACE("named tf %u\n", tf);
-
-    if (tf == WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_ST2084_PQ)
-        process_wayland.supports_pq = TRUE;
-
-    pthread_mutex_unlock(&process_wayland.output_mutex);
-}
-
-static void wayland_color_manager_handle_supported_primaries(void *data,
-    struct wp_color_manager_v1 *wp_color_manager_v1, uint32_t primaries)
-{
-}
-
-static void wayland_color_manager_handle_done(void *data,
-                        struct wp_color_manager_v1 *wp_color_manager_v1)
-{
-}
-
-static const struct wp_color_manager_v1_listener wp_color_manager_listener = {
-    wayland_color_manager_handle_supported_intent,
-    wayland_color_manager_handle_supported_feature,
-    wayland_color_manager_handle_supported_named_tf,
-    wayland_color_manager_handle_supported_primaries,
-    wayland_color_manager_handle_done
-};
-
-/**********************************************************************
- *          wayland_color_manager_init
- */
-void wayland_color_manager_init(void)
-{
-    wp_color_manager_v1_add_listener(process_wayland.wp_color_manager_v1,
-                                     &wp_color_manager_listener, NULL);
 }
