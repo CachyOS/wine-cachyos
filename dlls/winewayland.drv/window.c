@@ -532,7 +532,7 @@ static void wayland_configure_window(HWND hwnd)
     BOOL needs_enter_size_move = FALSE;
     BOOL needs_exit_size_move = FALSE;
     struct wayland_win_data *data;
-    RECT rect, surface_rect;
+    RECT rect;
 
     if (!(data = wayland_win_data_get(hwnd))) return;
     if (!(surface = data->wayland_surface))
@@ -602,21 +602,18 @@ static void wayland_configure_window(HWND hwnd)
         flags |= SWP_FRAMECHANGED;
     }
 
-    surface_rect = map_rect_to_surface(surface, surface->window.rect);
-
     /* If the window is already fullscreen and its size is compatible with what
      * the compositor is requesting, don't force a resize, since some applications
      * are very insistent on a particular fullscreen size (which may not match
      * the monitor size). */
     if ((surface->window.state & WAYLAND_SURFACE_CONFIG_STATE_FULLSCREEN) &&
-        wayland_surface_config_is_compatible(&surface->processing, surface_rect,
+        wayland_surface_config_is_compatible(&surface->processing, surface->window.rect,
                                              surface->window.state))
     {
         flags |= SWP_NOSIZE;
     }
 
     SetRect(&rect, 0, 0, width, height);
-    rect = map_rect_from_surface(surface, rect);
     OffsetRect(&rect, data->rects.window.left, data->rects.window.top);
     if (!IsRectEmpty(&rect)) rect = window_rect_from_visible(&data->rects, rect);
 
