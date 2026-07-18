@@ -109,6 +109,9 @@ static void xdg_toplevel_handle_configure(void *private,
     uint32_t *state;
     enum wayland_surface_config_state config_state = 0;
     struct wayland_win_data *data;
+    RECT rect;
+
+    SetRect(&rect, 0, 0, width, height);
 
     wl_array_for_each(state, states)
     {
@@ -134,19 +137,19 @@ static void xdg_toplevel_handle_configure(void *private,
         }
     }
 
-    TRACE("hwnd=%p %dx%d,%#x\n", hwnd, width, height, config_state);
-
     if (!(data = wayland_win_data_get(hwnd))) return;
 
     if ((surface = data->wayland_surface) && wayland_surface_is_toplevel(surface))
     {
-        SetRect(&surface->pending.rect, 0, 0, width, height);
+        surface->pending.rect = rect = map_rect_from_surface(surface, rect);
         surface->pending.state = config_state;
         if (!surface->pending.decor)
             surface->pending.decor = surface->current.decor;
     }
 
     wayland_win_data_release(data);
+
+    TRACE("hwnd=%p %s,%#x\n", hwnd, wine_dbgstr_rect(&rect), config_state);
 }
 
 static void xdg_toplevel_handle_close(void *data, struct xdg_toplevel *xdg_toplevel)
@@ -172,6 +175,7 @@ static void xdg_popup_handle_configure(void *private, struct xdg_popup *xdg_popu
     if ((surface = data->wayland_surface) && wayland_surface_is_popup(surface))
     {
         SetRect(&surface->pending.rect, x, y, x + width, y + height);
+        surface->pending.rect = map_rect_from_surface(surface, surface->pending.rect);
 
         TRACE("hwnd=%p rect=%s\n", hwnd, wine_dbgstr_rect(&surface->pending.rect));
         surface->pending.state = 0;
@@ -875,8 +879,6 @@ static void wayland_surface_reconfigure_geometry(struct wayland_surface *surface
     {
         wayland_surface_get_rect_in_monitor(surface, &rect);
 
-        rect = map_rect_to_surface(surface, rect);
-
         /* If the window rect in the monitor is smaller than required,
          * fall back to an appropriately sized rect at the top-left. */
         if ((surface->current.state & WAYLAND_SURFACE_CONFIG_STATE_MAXIMIZED) &&
@@ -893,10 +895,8 @@ static void wayland_surface_reconfigure_geometry(struct wayland_surface *surface
         }
         TRACE("Window is too large for Wayland state, using subregion\n");
     }
-    else
-    {
-        OffsetRect(&rect, -rect.left, -rect.top);
-    }
+
+    rect = map_rect_to_surface(surface, rect);
 
     TRACE("hwnd=%p geometry=%s\n", surface->hwnd, wine_dbgstr_rect(&rect));
 
@@ -1024,7 +1024,7 @@ static BOOL wayland_surface_reconfigure_xdg(struct wayland_surface *surface, REC
 BOOL wayland_surface_reconfigure(struct wayland_surface *surface)
 {
     struct wayland_window_config *window = &surface->window;
-    RECT rect = map_rect_to_surface(surface, surface->window.rect);
+    RECT rect = surface->window.rect;
 
     TRACE("hwnd=%p window=%s,%#x processing=%s,%#x current=%s,%#x\n",
           surface->hwnd, wine_dbgstr_rect(&rect), window->state,
@@ -1042,6 +1042,7 @@ BOOL wayland_surface_reconfigure(struct wayland_surface *surface)
         break;
     }
 
+    rect = map_rect_to_surface(surface, rect);
     wayland_surface_reconfigure_size(surface, rect.right - rect.left, rect.bottom - rect.top);
 
     return TRUE;
