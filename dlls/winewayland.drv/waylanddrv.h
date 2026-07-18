@@ -359,6 +359,8 @@ struct wayland_client_surface
 {
     struct client_surface client;
     HWND toplevel;
+    HANDLE throttle;
+    struct wl_callback *wl_callback;
     struct wl_surface *wl_surface;
     struct wl_subsurface *wl_subsurface;
     struct wp_color_management_surface_v1 *wp_color_management_surface_v1;
@@ -466,6 +468,7 @@ struct wayland_client_surface *wayland_client_surface_create(HWND hwnd);
 void wayland_client_surface_attach(struct wayland_client_surface *client, HWND toplevel);
 void wayland_client_surface_attach_image_description(struct client_surface *client,
                                                      struct wp_image_description_v1 *image_desc);
+struct wayland_client_surface *impl_from_client_surface(struct client_surface *client);
 void wayland_surface_set_title(struct wayland_surface *surface, LPCWSTR title);
 void wayland_surface_assign_icon(struct wayland_surface *surface);
 void wayland_surface_set_icon_buffer(struct wayland_surface *surface, UINT type, const ICONINFO *ii);

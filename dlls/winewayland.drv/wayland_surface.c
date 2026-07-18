@@ -1374,7 +1374,7 @@ POINT map_point_from_surface(struct wayland_surface *surface, POINT point)
     return point;
 }
 
-static struct wayland_client_surface *impl_from_client_surface(struct client_surface *client)
+struct wayland_client_surface *impl_from_client_surface(struct client_surface *client)
 {
     return CONTAINING_RECORD(client, struct wayland_client_surface, client);
 }
@@ -1385,6 +1385,10 @@ static void wayland_client_surface_destroy(struct client_surface *client)
 
     TRACE("%s\n", debugstr_client_surface(client));
 
+    if (surface->wl_callback)
+        wl_callback_destroy(surface->wl_callback);
+    if (surface->throttle)
+        NtClose(surface->throttle);
     if (surface->wp_color_management_surface_v1)
         wp_color_management_surface_v1_destroy(surface->wp_color_management_surface_v1);
     if (surface->wp_content_type_v1)
