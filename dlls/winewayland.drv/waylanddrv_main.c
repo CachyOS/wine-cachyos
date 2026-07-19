@@ -105,6 +105,9 @@ static void wayland_init_activation_token(void)
     else if ((env = getenv("DESKTOP_STARTUP_ID")))
         process_activate_token = strdup(env);
 
+    unsetenv("DESKTOP_STARTUP_ID");
+    unsetenv("XDG_ACTIVATION_TOKEN");
+
     TRACE("activation token %s\n", debugstr_a(process_activate_token));
 }
 
