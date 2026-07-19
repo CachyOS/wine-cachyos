@@ -192,26 +192,25 @@ static char g_default_source[256];
  * Small helpers
  * ---------------------------------------------------------------------- */
 
-/* copied from kernelbase */
-static int muldiv(int a, int b, int c)
+/* frames = round(period * rate / denom); bytes = frames * frame_size.
+ * period/rate/denom are unsigned so callers can pass REFERENCE_TIME (hns)
+ * or usec without intermediate int narrowing. */
+static BOOL calc_period_bytes(UINT64 period, UINT32 rate, UINT32 denom,
+                              UINT32 frame_size, SIZE_T *out_bytes)
 {
-    LONGLONG ret;
+    UINT64 frames;
 
-    if (!c) return -1;
+    if (!period || !rate || !denom || !frame_size)
+        return FALSE;
+    if (period > (UINT64_MAX - denom / 2) / rate)
+        return FALSE;
 
-    if (c < 0)
-    {
-        a = -a;
-        c = -c;
-    }
+    frames = (period * (UINT64)rate + denom / 2) / denom;
+    if (!frames || frames > (UINT64)SIZE_MAX / frame_size)
+        return FALSE;
 
-    if ((a < 0 && b < 0) || (a >= 0 && b >= 0))
-        ret = (((LONGLONG)a * b) + (c / 2)) / c;
-    else
-        ret = (((LONGLONG)a * b) - (c / 2)) / c;
-
-    if (ret > 2147483647 || ret < -2147483647) return -1;
-    return ret;
+    *out_bytes = (SIZE_T)(frames * frame_size);
+    return TRUE;
 }
 
 static char *wstr_to_str(const WCHAR *wstr)
@@ -1899,8 +1898,8 @@ static NTSTATUS pipewire_create_stream(void *args)
         goto exit;
     }
 
-    stream->period_bytes = stream->frame_size * muldiv(params->period, stream->info.rate, 10000000);
-    if (stream->period_bytes == 0)
+    if (!calc_period_bytes(params->period, stream->info.rate, 10000000,
+                           stream->frame_size, &stream->period_bytes))
     {
         WARN("Invalid period: %lld hns at %u Hz.\n", (long long)params->period, stream->info.rate);
         hr = E_INVALIDARG;
@@ -2844,6 +2843,7 @@ static NTSTATUS pipewire_set_sample_rate(void *args)
     struct pipewire_stream *stream = handle_get_stream(params->stream);
     HRESULT hr = S_OK;
     float ratio;
+    SIZE_T period_bytes;
 
     TRACE("stream %p rate %u.\n", stream, (unsigned)params->rate);
     pw_thread_loop_lock(pw_loop_global);
@@ -2869,6 +2869,15 @@ static NTSTATUS pipewire_set_sample_rate(void *args)
         goto exit;
     }
 
+    if (!calc_period_bytes(stream->mmdev_period_usec, (UINT32)params->rate, 1000000,
+                           stream->frame_size, &period_bytes))
+    {
+        WARN("Invalid period after rate change: %llu us at %u Hz.\n",
+             (unsigned long long)stream->mmdev_period_usec, (unsigned)params->rate);
+        hr = E_INVALIDARG;
+        goto exit;
+    }
+
     ratio = params->rate / (float)stream->rate_connected;
     if (pw_stream_set_control(stream->pw, SPA_PROP_rate, 1, &ratio, 0) < 0)
     {
@@ -2884,8 +2893,7 @@ static NTSTATUS pipewire_set_sample_rate(void *args)
     stream->pa_offs_bytes = stream->lcl_offs_bytes = 0;
     stream->held_bytes = 0;
     __atomic_store_n(&stream->pa_held_bytes, 0, __ATOMIC_RELEASE);
-    stream->period_bytes =
-        stream->frame_size * muldiv(stream->mmdev_period_usec, params->rate, 1000000);
+    stream->period_bytes = period_bytes;
     stream->info.rate = params->rate;
 
     silence_buffer(stream->info.format, stream->local_buffer, stream->real_bufsize_bytes);
