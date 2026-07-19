@@ -104,10 +104,11 @@ struct pipewire_stream
     SIZE_T bufsize_frames, real_bufsize_bytes, period_bytes;
     /* render ring bookkeeping: lcl_offs/held track the application side,
      * pa_offs/pa_held track the process-callback reader (field names kept
-     * from the pulse.c transplant for diffability).  pa_held_bytes is
-     * SPSC-atomic (producer release_render_buffer release-adds, the RT
-     * process callback acquire-loads and subtracts); pa_offs_bytes stays
-     * plain, a bounded residual race the producer only hits on overflow. */
+     * from the pulse.c transplant for diffability).  Both sides run under
+     * the pw_thread_loop lock today (process callbacks are dispatched on
+     * that loop), so the counters are not concurrently accessed; the
+     * atomics on pa_held_bytes are retained only as future-proofing if an
+     * RT_PROCESS path returns.  pa_offs_bytes stays plain. */
     SIZE_T lcl_offs_bytes, pa_offs_bytes;
     SIZE_T tmp_buffer_bytes, held_bytes, pa_held_bytes;
     BYTE *local_buffer, *tmp_buffer;
@@ -115,11 +116,12 @@ struct pipewire_stream
     UINT64 mmdev_period_usec;
 
     /* capture staging ring: the analogue of PulseAudio's internal record
-     * buffer.  The pw_stream process callback (a foreign pthread) appends
-     * raw bytes here; the Wine timer thread slices period-sized ACPackets
-     * out of it with QPC timestamps.  cap_held_bytes is SPSC-atomic (RT
-     * producer release-adds, pipewire_read acquire-loads and subtracts);
-     * cap_read_offs stays plain, raced only in the overrun-drop path. */
+     * buffer.  The pw_stream process callback (on the main loop thread,
+     * lock held) appends raw bytes here; the Wine timer thread slices
+     * period-sized ACPackets out of it with QPC timestamps.  Both sides
+     * take the loop lock, so cap_held_bytes is not concurrently accessed;
+     * the atomics are retained only as future-proofing for RT_PROCESS.
+     * cap_read_offs stays plain. */
     BYTE *capture_ring;
     SIZE_T capture_ring_size, cap_read_offs, cap_held_bytes;
 
