@@ -3088,7 +3088,7 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
     res = instance->p_vkGetPhysicalDeviceSurfaceCapabilitiesKHR( physical_device->host.physical_device, surface->obj.host.surface, &capabilities );
     if (res) return res;
 
-    create_info_host.imageColorSpace = driver_funcs->p_vulkan_map_colorspace( create_info_host.imageColorSpace, surface->client );
+    create_info_host.imageColorSpace = driver_funcs->p_vulkan_map_colorspace( create_info_host.imageColorSpace, NULL );
     create_info_host.imageExtent.width = max( create_info_host.imageExtent.width, capabilities.minImageExtent.width );
     create_info_host.imageExtent.height = max( create_info_host.imageExtent.height, capabilities.minImageExtent.height );
 
@@ -3160,9 +3160,11 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
                 create_info_host.imageColorSpace, create_info_host.imageFormat);
             create_info_host.imageColorSpace = create_info->imageColorSpace;
         }
+        else driver_funcs->p_vulkan_map_colorspace( create_info->imageColorSpace, surface->client );
 
         free(formats);
     }
+    else driver_funcs->p_vulkan_map_colorspace( create_info->imageColorSpace, surface->client );
 
     InterlockedIncrement( &surface->client->busy_ref );
 
