@@ -128,7 +128,8 @@ struct pipewire_stream
     SIZE_T capture_ring_size, cap_read_offs, cap_held_bytes;
 
     INT64 clock_lastpos, clock_written;
-    UINT32 underrun_count, overrun_count; /* render starves / capture drops; one-line summary at release */
+    UINT32 underrun_count, overrun_count, bad_buffer_count;
+    BOOL underrun_logged, overrun_logged, bad_buffer_logged;
 
     struct list packet_free_head;
     struct list packet_filled_head;
@@ -1687,6 +1688,7 @@ static void on_stream_process(void *data)
     if (!buf || !buf->n_datas || !buf->datas ||
         !(d = &buf->datas[0])->data || !d->chunk)
     {
+        stream->bad_buffer_count++;
         pw_stream_queue_buffer(stream->pw, b);
         return;
     }
@@ -2070,9 +2072,9 @@ static NTSTATUS pipewire_release_stream(void *args)
 
     pw_thread_loop_lock(pw_loop_global);
     TRACE("stream %p.\n", stream);
-    if (stream->underrun_count || stream->overrun_count)
-        WARN("stream %p underran %u times, overran %u times.\n",
-             stream, stream->underrun_count, stream->overrun_count);
+    if (stream->underrun_count || stream->overrun_count || stream->bad_buffer_count)
+        WARN("stream %p underran %u times, overran %u times, bad buffers %u.\n",
+             stream, stream->underrun_count, stream->overrun_count, stream->bad_buffer_count);
     if (stream->period)
     {
         struct pipewire_period *period = stream->period;
@@ -2284,8 +2286,26 @@ static void pipewire_period_timer_loop(void *args)
         }
 
         LIST_FOR_EACH_ENTRY(stream, &period->streams, struct pipewire_stream, period_entry)
+        {
+            if (stream->underrun_count && !stream->underrun_logged)
+            {
+                WARN("stream %p first underrun (count %u).\n", stream, stream->underrun_count);
+                stream->underrun_logged = TRUE;
+            }
+            if (stream->overrun_count && !stream->overrun_logged)
+            {
+                WARN("stream %p first overrun (count %u).\n", stream, stream->overrun_count);
+                stream->overrun_logged = TRUE;
+            }
+            if (stream->bad_buffer_count && !stream->bad_buffer_logged)
+            {
+                WARN("stream %p first bad process buffer (count %u).\n",
+                     stream, stream->bad_buffer_count);
+                stream->bad_buffer_logged = TRUE;
+            }
             if (stream->event)
                 NtSetEvent(stream->event, NULL);
+        }
 
         pw_thread_loop_unlock(pw_loop_global);
     }
