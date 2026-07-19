@@ -2275,12 +2275,6 @@ static NTSTATUS pipewire_start(void *args)
         return STATUS_SUCCESS;
     }
 
-    if (FAILED(params->result = pipewire_add_stream_to_period(stream)))
-    {
-        pw_thread_loop_unlock(pw_loop_global);
-        return STATUS_SUCCESS;
-    }
-
     if (pw_stream_set_active(stream->pw, true) < 0)
     {
         /* mirrors pulse_start's failed-uncork path */
@@ -2289,6 +2283,15 @@ static NTSTATUS pipewire_start(void *args)
         pw_thread_loop_unlock(pw_loop_global);
         return STATUS_SUCCESS;
     }
+
+    if (FAILED(params->result = pipewire_add_stream_to_period(stream)))
+    {
+        if (pw_stream_set_active(stream->pw, false) < 0)
+            WARN("pw_stream_set_active(false) rollback failed for stream %p.\n", stream);
+        pw_thread_loop_unlock(pw_loop_global);
+        return STATUS_SUCCESS;
+    }
+
     stream->started = TRUE;
     pw_thread_loop_unlock(pw_loop_global);
     return STATUS_SUCCESS;
