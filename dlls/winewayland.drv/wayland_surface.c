@@ -1459,7 +1459,7 @@ static const struct wl_buffer_listener dummy_buffer_listener =
  * Ensure that the wayland surface has up-to-date contents, by committing
  * a dummy buffer if necessary.
  */
-static BOOL wayland_surface_ensure_contents(struct wayland_surface *surface)
+static BOOL wayland_surface_ensure_contents(struct wayland_surface *surface, BOOL toplevel)
 {
     enum wayland_surface_ensure_type needs_contents = WAYLAND_SURFACE_NOT_ENSURED;
     HWND hwnd = surface->hwnd;
@@ -1478,7 +1478,7 @@ static BOOL wayland_surface_ensure_contents(struct wayland_surface *surface)
      * 1. fullscreen window black background
      * 2. avoid alpha blending between client surface and toplevel */
     if (surface->ensured_contents != WAYLAND_SURFACE_ENSURED_DUMMY_BUFFER &&
-        (fullscreen || EqualRect(&surface->window.client_rect, window)))
+        (fullscreen || (toplevel && EqualRect(&surface->window.client_rect, window))))
         needs_contents = WAYLAND_SURFACE_ENSURED_DUMMY_BUFFER;
 
     /* we still need a contents, so in the other cases we use
@@ -1536,7 +1536,7 @@ static void wayland_client_surface_present(struct client_surface *client, HDC hd
 
     if ((wayland_surface = data->wayland_surface))
     {
-        expose = wayland_surface_ensure_contents(wayland_surface);
+        expose = wayland_surface_ensure_contents(wayland_surface, hwnd == toplevel);
 
         /* Handle any processed configure request, to ensure the related
          * surface state is applied by the compositor. */
