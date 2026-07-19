@@ -181,6 +181,9 @@ static struct pw_core *pw_core_global;
 static struct spa_hook core_listener;
 static BOOL core_listener_added;
 static BOOL core_dead;
+static int core_last_res;
+static char core_last_message[128];
+static BOOL core_error_logged;
 
 static struct list g_streams = LIST_INIT(g_streams); /* loop-lock protected */
 
@@ -628,6 +631,9 @@ static void on_core_error(void *data, uint32_t id, int seq, int res, const char 
     if (id == PW_ID_CORE)
     {
         core_dead = TRUE;
+        core_last_res = res;
+        copy_cstr(core_last_message, sizeof(core_last_message), message);
+        core_error_logged = FALSE;
         if (pw_loop_global)
             pw_thread_loop_signal(pw_loop_global, false);
     }
@@ -661,7 +667,13 @@ static HRESULT pipewire_connect(const WCHAR *appname)
 
             LIST_FOR_EACH_ENTRY(stream, &g_streams, struct pipewire_stream, entry)
                 n++;
-            WARN("core dead: invalidating %u live stream(s) and reconnecting.\n", n);
+            if (!core_error_logged)
+            {
+                WARN("core dead (res %d: %s): invalidating %u live stream(s) and reconnecting.\n",
+                     core_last_res, debugstr_a(core_last_message[0] ? core_last_message : NULL),
+                     n);
+                core_error_logged = TRUE;
+            }
             LIST_FOR_EACH_ENTRY(stream, &g_streams, struct pipewire_stream, entry)
             {
                 if (!stream->pw)
@@ -669,7 +681,15 @@ static HRESULT pipewire_connect(const WCHAR *appname)
                 spa_hook_remove(&stream->stream_listener);
                 pw_stream_destroy(stream->pw);
                 stream->pw = NULL;
+                copy_cstr(stream->last_error, sizeof(stream->last_error), "core connection lost");
+                stream->pending_error = TRUE;
             }
+        }
+        else if (!core_error_logged && core_dead)
+        {
+            WARN("reconnecting after core error (res %d: %s).\n",
+                 core_last_res, debugstr_a(core_last_message[0] ? core_last_message : NULL));
+            core_error_logged = TRUE;
         }
 
         if (core_listener_added)
@@ -681,6 +701,9 @@ static HRESULT pipewire_connect(const WCHAR *appname)
         pw_core_global = NULL;
     }
     core_dead = FALSE;
+    core_last_res = 0;
+    core_last_message[0] = '\0';
+    core_error_logged = FALSE;
 
     if ((app = app_name_from_wstr(appname)))
     {
@@ -1753,16 +1776,22 @@ static BOOL stream_valid(struct pipewire_stream *stream)
 {
     enum pw_stream_state st;
 
-    if (!stream || !stream->pw)
+    if (!stream)
         return FALSE;
-    st = pw_stream_get_state(stream->pw, NULL);
     if (stream->pending_error)
     {
+        if (stream->pw)
+            st = pw_stream_get_state(stream->pw, NULL);
+        else
+            st = PW_STREAM_STATE_ERROR;
         WARN("stream %p saw error (now %s): %s.\n", stream,
              pw_stream_state_as_string(st),
              debugstr_a(stream->last_error[0] ? stream->last_error : NULL));
         stream->pending_error = FALSE;
     }
+    if (!stream->pw)
+        return FALSE;
+    st = pw_stream_get_state(stream->pw, NULL);
     return st == PW_STREAM_STATE_PAUSED || st == PW_STREAM_STATE_STREAMING;
 }
 
