@@ -1185,6 +1185,7 @@ static NTSTATUS pipewire_test_connect(void *args)
 
     if (!(p.core = pw_context_connect(p.context, NULL, 0)))
     {
+        ERR("pw_context_connect failed during probe.\n");
         pw_thread_loop_unlock(p.loop);
         pw_thread_loop_stop(p.loop);
         pw_context_destroy(p.context);
@@ -1469,6 +1470,8 @@ static HRESULT pipewire_info_from_waveformat(struct pipewire_stream *stream, con
                 else if (valid == 24) spafmt = SPA_AUDIO_FORMAT_S24_32_LE;
                 break;
             default:
+                WARN("Unsupported PCM container %u valid %lu.\n",
+                     fmt->wBitsPerSample, (unsigned long)valid);
                 return AUDCLNT_E_UNSUPPORTED_FORMAT;
             }
         }
@@ -1486,7 +1489,12 @@ static HRESULT pipewire_info_from_waveformat(struct pipewire_stream *stream, con
             spafmt = SPA_AUDIO_FORMAT_UNKNOWN;
         }
         if (spafmt == SPA_AUDIO_FORMAT_UNKNOWN)
+        {
+            WARN("Unsupported extensible format: tag=%u ch=%u rate=%u bits=%u mask=%#x.\n",
+                 fmt->wFormatTag, fmt->nChannels, fmt->nSamplesPerSec,
+                 fmt->wBitsPerSample, mask);
             return AUDCLNT_E_UNSUPPORTED_FORMAT;
+        }
         info->format = spafmt;
         return S_OK;
     }
@@ -1507,12 +1515,17 @@ static HRESULT pipewire_info_from_waveformat(struct pipewire_stream *stream, con
         mask = get_channel_mask(fmt->nChannels);
         break;
     default:
-        WARN("Unhandled tag %x\n", fmt->wFormatTag);
+        WARN("Unhandled tag %#x ch=%u rate=%u bits=%u.\n",
+             fmt->wFormatTag, fmt->nChannels, fmt->nSamplesPerSec, fmt->wBitsPerSample);
         return AUDCLNT_E_UNSUPPORTED_FORMAT;
     }
 
     if (spafmt == SPA_AUDIO_FORMAT_UNKNOWN || !info->channels)
+    {
+        WARN("Rejected format: tag=%#x ch=%u rate=%u bits=%u mask=%#x.\n",
+             fmt->wFormatTag, fmt->nChannels, fmt->nSamplesPerSec, fmt->wBitsPerSample, mask);
         return AUDCLNT_E_UNSUPPORTED_FORMAT;
+    }
     info->format = spafmt;
     for (j = 0; j < ARRAY_SIZE(spa_pos_from_wfx) && i < info->channels; ++j)
         if (mask & (1u << j))
@@ -1860,15 +1873,18 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
         return AUDCLNT_E_ENDPOINT_CREATE_FAILED;
     }
 
-    if (pw_stream_connect(stream->pw,
+    {
+        int rc = pw_stream_connect(stream->pw,
                           stream->dataflow == eRender ? PW_DIRECTION_OUTPUT : PW_DIRECTION_INPUT,
                           PW_ID_ANY,
                           PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS |
                           PW_STREAM_FLAG_INACTIVE,
-                          params, 1) < 0)
-    {
-        WARN("pw_stream_connect failed.\n");
-        return AUDCLNT_E_ENDPOINT_CREATE_FAILED;
+                          params, 1);
+        if (rc < 0)
+        {
+            WARN("pw_stream_connect failed for stream %p: %d.\n", stream, rc);
+            return AUDCLNT_E_ENDPOINT_CREATE_FAILED;
+        }
     }
 
     for (tries = 0; tries < 10; tries++)
@@ -1934,6 +1950,7 @@ static NTSTATUS pipewire_create_stream(void *args)
 
     if (!(stream = calloc(1, sizeof(*stream))))
     {
+        WARN("Out of memory allocating stream.\n");
         params->result = E_OUTOFMEMORY;
         pw_thread_loop_unlock(pw_loop_global);
         return STATUS_SUCCESS;
@@ -1963,6 +1980,7 @@ static NTSTATUS pipewire_create_stream(void *args)
 
     if (!(stream->device = strdup(params->device ? params->device : "")))
     {
+        WARN("Out of memory duplicating device name.\n");
         hr = E_OUTOFMEMORY;
         goto exit;
     }
@@ -1992,7 +2010,10 @@ static NTSTATUS pipewire_create_stream(void *args)
         size = stream->real_bufsize_bytes = stream->bufsize_frames * 2 * stream->frame_size;
         if (NtAllocateVirtualMemory(GetCurrentProcess(), (void **)&stream->local_buffer,
                                     zero_bits, &size, MEM_COMMIT, PAGE_READWRITE))
+        {
+            WARN("Out of memory allocating render buffer (%lu bytes).\n", (unsigned long)size);
             hr = E_OUTOFMEMORY;
+        }
     }
     else
     {
@@ -2007,7 +2028,10 @@ static NTSTATUS pipewire_create_stream(void *args)
         size = stream->real_bufsize_bytes + capture_packets * sizeof(ACPacket);
         if (NtAllocateVirtualMemory(GetCurrentProcess(), (void **)&stream->local_buffer,
                                     zero_bits, &size, MEM_COMMIT, PAGE_READWRITE))
+        {
+            WARN("Out of memory allocating capture buffer (%lu bytes).\n", (unsigned long)size);
             hr = E_OUTOFMEMORY;
+        }
         else
         {
             ACPacket *cur_packet = (ACPacket *)((char *)stream->local_buffer + stream->real_bufsize_bytes);
@@ -2024,7 +2048,10 @@ static NTSTATUS pipewire_create_stream(void *args)
             size = stream->capture_ring_size = stream->real_bufsize_bytes;
             if (NtAllocateVirtualMemory(GetCurrentProcess(), (void **)&stream->capture_ring,
                                         zero_bits, &size, MEM_COMMIT, PAGE_READWRITE))
+            {
+                WARN("Out of memory allocating capture ring (%lu bytes).\n", (unsigned long)size);
                 hr = E_OUTOFMEMORY;
+            }
         }
     }
 
@@ -2434,7 +2461,8 @@ static NTSTATUS pipewire_stop(void *args)
         return STATUS_SUCCESS;
     }
 
-    pw_stream_set_active(stream->pw, false);
+    if (pw_stream_set_active(stream->pw, false) < 0)
+        WARN("pw_stream_set_active(false) failed for stream %p.\n", stream);
     stream->started = FALSE;
     pw_thread_loop_unlock(pw_loop_global);
     params->result = S_OK;
@@ -2469,7 +2497,8 @@ static NTSTATUS pipewire_reset(void *args)
         return STATUS_SUCCESS;
     }
 
-    pw_stream_flush(stream->pw, false);
+    if (pw_stream_flush(stream->pw, false) < 0)
+        WARN("pw_stream_flush failed for stream %p.\n", stream);
 
     if (stream->dataflow == eRender)
     {
@@ -2518,7 +2547,10 @@ static BOOL alloc_tmp_buffer(struct pipewire_stream *stream, SIZE_T bytes)
     }
     if (NtAllocateVirtualMemory(GetCurrentProcess(), (void **)&stream->tmp_buffer,
                                 zero_bits, &bytes, MEM_COMMIT, PAGE_READWRITE))
+    {
+        WARN("Out of memory allocating tmp buffer (%lu bytes).\n", (unsigned long)bytes);
         return FALSE;
+    }
 
     stream->tmp_buffer_bytes = bytes;
     return TRUE;
@@ -2585,6 +2617,7 @@ static NTSTATUS pipewire_get_render_buffer(void *args)
         if (!alloc_tmp_buffer(stream, bytes))
         {
             pw_thread_loop_unlock(pw_loop_global);
+            WARN("Out of memory for render wrap buffer, stream %p.\n", stream);
             params->result = E_OUTOFMEMORY;
             return STATUS_SUCCESS;
         }
