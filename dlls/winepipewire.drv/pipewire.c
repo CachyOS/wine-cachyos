@@ -90,6 +90,8 @@ struct pipewire_stream
     struct spa_audio_info_raw info;
     UINT32 frame_size;
     UINT32 rate_connected; /* negotiated stream rate; SPA_PROP_rate is absolute vs this */
+    char last_error[128]; /* set on ERROR callback; emitted once from Wine path */
+    BOOL pending_error;
 
     DWORD flags;
     AUDCLNT_SHAREMODE share;
@@ -193,6 +195,23 @@ static char g_default_source[256];
 /* ----------------------------------------------------------------------
  * Small helpers
  * ---------------------------------------------------------------------- */
+
+/* Safe for TEB-less PW callback threads (no ntdll). */
+static void copy_cstr(char *dst, size_t dst_size, const char *src)
+{
+    size_t i;
+
+    if (!dst_size)
+        return;
+    if (!src)
+    {
+        dst[0] = '\0';
+        return;
+    }
+    for (i = 0; i + 1 < dst_size && src[i]; i++)
+        dst[i] = src[i];
+    dst[i] = '\0';
+}
 
 /* frames = round(period * rate / denom); bytes = frames * frame_size.
  * period/rate/denom are unsigned so callers can pass REFERENCE_TIME (hns)
@@ -1620,6 +1639,14 @@ static void apply_volume(const struct pipewire_stream *stream, BYTE *buffer, UIN
 static void on_stream_state_changed(void *data, enum pw_stream_state old,
                                     enum pw_stream_state state, const char *error)
 {
+    struct pipewire_stream *stream = data;
+
+    /* PW loop thread, lock held: record only, no Wine logging. */
+    if (state == PW_STREAM_STATE_ERROR)
+    {
+        copy_cstr(stream->last_error, sizeof(stream->last_error), error);
+        stream->pending_error = TRUE;
+    }
     if (pw_loop_global)
         pw_thread_loop_signal(pw_loop_global, false);
 }
@@ -1721,12 +1748,21 @@ static const struct pw_stream_events stream_events = {
  * Stream creation / release
  * ---------------------------------------------------------------------- */
 
+/* Called with the loop lock held. Emits one WARN per pending ERROR episode. */
 static BOOL stream_valid(struct pipewire_stream *stream)
 {
     enum pw_stream_state st;
+
     if (!stream || !stream->pw)
         return FALSE;
     st = pw_stream_get_state(stream->pw, NULL);
+    if (stream->pending_error)
+    {
+        WARN("stream %p saw error (now %s): %s.\n", stream,
+             pw_stream_state_as_string(st),
+             debugstr_a(stream->last_error[0] ? stream->last_error : NULL));
+        stream->pending_error = FALSE;
+    }
     return st == PW_STREAM_STATE_PAUSED || st == PW_STREAM_STATE_STREAMING;
 }
 
