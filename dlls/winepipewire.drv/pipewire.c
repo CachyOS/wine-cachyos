@@ -130,6 +130,7 @@ struct pipewire_stream
     struct list packet_filled_head;
 
     char *device;
+    struct list entry;          /* g_streams */
     struct list period_entry;
     struct pipewire_period *period;
 };
@@ -176,6 +177,8 @@ static struct pw_core *pw_core_global;
 static struct spa_hook core_listener;
 static BOOL core_listener_added;
 static BOOL core_dead;
+
+static struct list g_streams = LIST_INIT(g_streams); /* loop-lock protected */
 
 static pthread_mutex_t pw_init_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -626,6 +629,29 @@ static HRESULT pipewire_connect(const WCHAR *appname)
 
     if (pw_core_global)
     {
+        /* Existing streams still hold pw_stream objects on this core.
+         * Destroy those objects under the loop lock and mark the Wine-side
+         * streams invalidated so a fresh core can be opened for new clients.
+         * The app recovers by releasing the old IAudioClient after creating
+         * its replacement (standard device-lost order). */
+        if (!list_empty(&g_streams))
+        {
+            struct pipewire_stream *stream;
+            unsigned int n = 0;
+
+            LIST_FOR_EACH_ENTRY(stream, &g_streams, struct pipewire_stream, entry)
+                n++;
+            WARN("core dead: invalidating %u live stream(s) and reconnecting.\n", n);
+            LIST_FOR_EACH_ENTRY(stream, &g_streams, struct pipewire_stream, entry)
+            {
+                if (!stream->pw)
+                    continue;
+                spa_hook_remove(&stream->stream_listener);
+                pw_stream_destroy(stream->pw);
+                stream->pw = NULL;
+            }
+        }
+
         if (core_listener_added)
         {
             spa_hook_remove(&core_listener);
@@ -1958,6 +1984,7 @@ exit:
 
     if (SUCCEEDED(hr))
     {
+        list_add_tail(&g_streams, &stream->entry);
         *params->channel_count = stream->info.channels;
         *params->stream = (stream_handle)(UINT_PTR)stream;
         TRACE("created stream %p, %u channels.\n", stream, stream->info.channels);
@@ -2000,9 +2027,11 @@ static NTSTATUS pipewire_release_stream(void *args)
     }
     if (stream->pw)
     {
+        spa_hook_remove(&stream->stream_listener);
         pw_stream_destroy(stream->pw);
         stream->pw = NULL;
     }
+    list_remove(&stream->entry);
     pw_thread_loop_unlock(pw_loop_global);
 
     if (dead_period)
@@ -2096,7 +2125,8 @@ static void pipewire_period_timer_loop(void *args)
         pw_thread_loop_lock(pw_loop_global);
         delay.QuadPart = -(INT64)period->period_usec * 10;
 
-        if (period->timer_stream && !period->timer_stream->started)
+        if (period->timer_stream &&
+            (!period->timer_stream->started || !period->timer_stream->pw))
         {
             period->timer_stream = NULL;
             period->grid_valid = FALSE;
@@ -2105,7 +2135,7 @@ static void pipewire_period_timer_loop(void *args)
         {
             LIST_FOR_EACH_ENTRY(stream, &period->streams, struct pipewire_stream, period_entry)
             {
-                if (stream->started)
+                if (stream->started && stream->pw)
                 {
                     period->timer_stream = stream;
                     period->grid_valid = FALSE;
