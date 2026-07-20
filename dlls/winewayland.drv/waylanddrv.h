@@ -241,6 +241,7 @@ struct wayland
     struct wl_shm *wl_shm;
     struct wp_viewporter *wp_viewporter;
     struct wl_subcompositor *wl_subcompositor;
+    struct wl_fixes *wl_fixes;
     struct wp_fractional_scale_manager_v1 *wp_fractional_scale_manager_v1;
     struct zwp_pointer_constraints_v1 *zwp_pointer_constraints_v1;
     struct zwp_relative_pointer_manager_v1 *zwp_relative_pointer_manager_v1;
