@@ -26,7 +26,8 @@
 #endif
 
 #include <pthread.h>
-#include <wayland-client.h>
+#include <wayland-client-core.h>
+#include "wayland-client-protocol.h"
 #include <xkbcommon/xkbcommon.h>
 #include <xkbcommon/xkbregistry.h>
 #ifdef HAVE_XKBCOMMON_XKBCOMMON_COMPOSE_H
