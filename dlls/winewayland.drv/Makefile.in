@@ -23,6 +23,7 @@ SOURCES = \
 	viewporter.xml \
 	vulkan.c \
 	wayland.c \
+	wayland.xml \
 	wayland_data_device.c \
 	wayland_keyboard.c \
 	wayland_output.c \
