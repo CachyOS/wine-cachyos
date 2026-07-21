@@ -362,6 +362,7 @@ struct wayland_client_surface
     struct client_surface client;
     HWND toplevel;
     HANDLE throttle;
+    RECT viewport_rect;
     struct wl_callback *wl_callback;
     struct wl_surface *wl_surface;
     struct wl_subsurface *wl_subsurface;
