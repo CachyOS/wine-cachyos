@@ -322,13 +322,13 @@ typedef unsigned int ADL_D3DKMT_HANDLE;
 
 static const ADLVersionsInfo version = {
     "99.19.02-230831a-396538C-AMD-Software-Adrenalin-Edition",
-    "",
+    "99.10",
     "http://support.amd.com/drivers/xml/driver_09_us.xml",
 };
 
 static const ADLVersionsInfoX2 version2 = {
     "99.19.02-230831a-396538C-AMD-Software-Adrenalin-Edition",
-    "",
+    "99.10",
     "99.10.2",
     "http://support.amd.com/drivers/xml/driver_09_us.xml",
 };
