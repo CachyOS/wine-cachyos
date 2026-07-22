@@ -142,6 +142,7 @@ static void wayland_map_device_extensions(struct vulkan_device_extensions *exten
 
 static VkColorSpaceKHR wayland_vulkan_map_colorspace(VkColorSpaceKHR colorspace, struct client_surface *client)
 {
+    struct wayland_client_surface *surface = impl_from_client_surface(client);
     struct wp_image_description_v1 *wp_image_description_v1 = NULL;
     VkColorSpaceKHR new = colorspace;
 
@@ -153,7 +154,7 @@ static VkColorSpaceKHR wayland_vulkan_map_colorspace(VkColorSpaceKHR colorspace,
     if (!client) return new;
     if (new == colorspace)
     {
-        wayland_client_surface_attach_image_description(client, NULL);
+        wayland_client_surface_attach_image_description(surface, NULL);
         return colorspace;
     }
 
@@ -173,7 +174,7 @@ static VkColorSpaceKHR wayland_vulkan_map_colorspace(VkColorSpaceKHR colorspace,
 
     TRACE("mapping colorspace %u => %u\n", colorspace, new);
 
-    wayland_client_surface_attach_image_description(client, wp_image_description_v1);
+    wayland_client_surface_attach_image_description(surface, wp_image_description_v1);
 
     return new;
 err:

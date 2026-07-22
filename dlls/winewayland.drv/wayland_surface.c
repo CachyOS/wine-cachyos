@@ -1764,11 +1764,9 @@ static const struct wp_image_description_v1_listener image_description_listener 
     wayland_image_description_v1_ready2
 };
 
-void wayland_client_surface_attach_image_description(struct client_surface *client,
+void wayland_client_surface_attach_image_description(struct wayland_client_surface *surface,
                                                      struct wp_image_description_v1 *image_desc)
 {
-    struct wayland_client_surface *surface = impl_from_client_surface(client);
-
     if (!image_desc)
     {
         if (surface->wp_color_management_surface_v1)
