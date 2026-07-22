@@ -687,7 +687,7 @@
 @ stub ADL_Adapter_Active_Get
 @ stub ADL_Adapter_Active_Set
 @ stub ADL_Adapter_Active_SetPrefer
-@ stub ADL_Adapter_AdapterInfoX2_Get
+@ cdecl ADL_Adapter_AdapterInfoX2_Get(ptr)
 @ cdecl ADL_Adapter_AdapterInfo_Get(ptr long)
 @ stub ADL_Adapter_AdapterList_Disable
 @ stub ADL_Adapter_Aspects_Get
