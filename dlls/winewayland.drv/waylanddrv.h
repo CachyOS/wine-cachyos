@@ -469,7 +469,7 @@ RECT map_rect_from_surface(struct wayland_surface *surface, RECT rect);
 POINT map_point_from_surface(struct wayland_surface *surface, POINT point);
 struct wayland_client_surface *wayland_client_surface_create(HWND hwnd);
 void wayland_client_surface_attach(struct wayland_client_surface *client, HWND toplevel);
-void wayland_client_surface_attach_image_description(struct client_surface *client,
+void wayland_client_surface_attach_image_description(struct wayland_client_surface *surface,
                                                      struct wp_image_description_v1 *image_desc);
 struct wayland_client_surface *impl_from_client_surface(struct client_surface *client);
 void wayland_surface_set_title(struct wayland_surface *surface, LPCWSTR title);
