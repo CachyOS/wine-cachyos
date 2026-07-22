@@ -794,6 +794,12 @@ int CDECL ADL2_Adapter_AdapterInfoX2_Get(ADL_CONTEXT_HANDLE ctx, ADLAdapterInfo 
     return adapter_info_get(ctx, *info, ctx->adapter_count * sizeof(**info));
 }
 
+int CDECL ADL_Adapter_AdapterInfoX2_Get(ADLAdapterInfo **info)
+{
+    TRACE("info %p.\n", info);
+    return ADL2_Adapter_AdapterInfoX2_Get(default_ctx, info);
+}
+
 int CDECL ADL2_Adapter_Active_Get(ADL_CONTEXT_HANDLE ctx, int adapter_index, int *status)
 {
     TRACE("ctx %p, adapter_index %d, status %p.\n", ctx, adapter_index, status);
