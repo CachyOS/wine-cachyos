@@ -1774,6 +1774,7 @@ void wayland_client_surface_attach_image_description(struct wayland_client_surfa
             wp_color_management_surface_v1_destroy(surface->wp_color_management_surface_v1);
             surface->wp_color_management_surface_v1 = NULL;
         }
+        wl_display_flush(process_wayland.wl_display);
         return;
     }
 

@@ -35,7 +35,7 @@
 #include "wine/vulkan.h"
 #include "wine/vulkan_driver.h"
 
-WINE_DEFAULT_DEBUG_CHANNEL(vulkan);
+WINE_DEFAULT_DEBUG_CHANNEL(waylanddrv);
 
 static const struct vulkan_driver_funcs wayland_vulkan_driver_funcs;
 
@@ -146,10 +146,12 @@ static VkColorSpaceKHR wayland_vulkan_map_colorspace(VkColorSpaceKHR colorspace,
     struct wp_image_description_v1 *wp_image_description_v1 = NULL;
     VkColorSpaceKHR new = colorspace;
 
-    if (process_wayland.supports_win_scrgb && new == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT)
+    if (process_wayland.supports_win_scrgb && colorspace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT)
         new = VK_COLOR_SPACE_PASS_THROUGH_EXT;
     else if (process_wayland.supports_win_pq && colorspace == VK_COLOR_SPACE_HDR10_ST2084_EXT)
         new = VK_COLOR_SPACE_PASS_THROUGH_EXT;
+
+    TRACE("mapping colorspace %u => %u\n", colorspace, new);
 
     if (!client) return new;
     if (new == colorspace)
@@ -171,8 +173,6 @@ static VkColorSpaceKHR wayland_vulkan_map_colorspace(VkColorSpaceKHR colorspace,
     }
 
     if (!wp_image_description_v1) goto err;
-
-    TRACE("mapping colorspace %u => %u\n", colorspace, new);
 
     wayland_client_surface_attach_image_description(surface, wp_image_description_v1);
 
