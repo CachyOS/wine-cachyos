@@ -64,8 +64,6 @@ DECLARE_INTERFACE_(IAmdDxExt, IAmdDxExtInterface)
     /*** IAmdDxExt methods ***/
     THISCALLMETHOD_(HRESULT, GetVersion)(THIS_ AmdDxExtVersion *version) PURE;
     THISCALLMETHOD_(IAmdDxExtInterface*,GetExtInterface)(THIS_ unsigned int iface) PURE;
-
-
     THISCALLMETHOD_(HRESULT, IaSetPrimitiveTopology)(THIS_ AmdDxExtPrimitiveTopology topology) PURE;
     THISCALLMETHOD_(HRESULT, IaGetPrimitiveTopology)(THIS_ AmdDxExtPrimitiveTopology *topology) PURE;
     THISCALLMETHOD_(HRESULT, SetSingleSampleRead)(THIS_ ID3D10Resource *res, BOOL single_sample) PURE;
@@ -88,6 +86,8 @@ DECLARE_INTERFACE_(IAmdDxExtUAVOverlap, IAmdDxExtInterface)
     THISCALLMETHOD_(HRESULT, BeginUAVOverlap)(THIS) PURE;
     THISCALLMETHOD_(HRESULT, EndUAVOverlap)(THIS) PURE;
     THISCALLMETHOD_(void, GetVersion)(THIS, AmdDxExtVersion* version) PURE;
+    THISCALLMETHOD_(HRESULT, BeginUAVOverlapCtx)(THIS, ID3D11DeviceContext *ctx) PURE;
+    THISCALLMETHOD_(HRESULT, EndUAVOverlapCtx)(THIS, ID3D11DeviceContext *ctx) PURE;
 };
 #undef INTERFACE
 
@@ -117,6 +117,7 @@ DECLARE_INTERFACE_(IAmdDxExtDepthBounds, IAmdDxExtInterface)
     /*** IAmdDxExtDepthBounds methods ***/
     THISCALLMETHOD_(HRESULT, SetDepthBounds)(THIS, BOOL enabled, float min, float max) PURE;
     THISCALLMETHOD_(void, GetVersion)(THIS, AmdDxExtVersion *version) PURE;
+    THISCALLMETHOD_(HRESULT, SetDepthBoundsCtx)(THIS, BOOL enabled, float min, float max, ID3D11DeviceContext *context) PURE;
 };
 #undef INTERFACE
 
@@ -134,6 +135,10 @@ DECLARE_INTERFACE_(IAmdDxExtMultidrawIndirect, IAmdDxExtInterface)
     THISCALLMETHOD_(HRESULT, MultiDrawIndexedIndirect)(THIS, unsigned int draw_count, ID3D11Buffer *buffer, unsigned int byte_offset, unsigned int byte_stride) PURE;
     THISCALLMETHOD_(HRESULT, MultiDrawIndirectCount)(THIS, ID3D11Buffer *buffer_for_count, unsigned int byte_offset_for_count, ID3D11Buffer *buffer, unsigned int byte_offset, unsigned int byte_stride) PURE;
     THISCALLMETHOD_(HRESULT, MultiDrawIndexedIndirectCount)(THIS, ID3D11Buffer *buffer_for_count, unsigned int byte_offset_for_count, ID3D11Buffer *buffer, unsigned int byte_offset, unsigned int byte_stride) PURE;
+    THISCALLMETHOD_(HRESULT, MultiDrawIndirectCtx)(THIS, unsigned int draw_count, ID3D11Buffer *buffer, unsigned int byte_offset, unsigned int byte_stride, ID3D11DeviceContext *ctx) PURE;
+    THISCALLMETHOD_(HRESULT, MultiDrawIndexedIndirectCtx)(THIS, unsigned int draw_count, ID3D11Buffer *buffer, unsigned int byte_offset, unsigned int byte_stride, ID3D11DeviceContext *ctx) PURE;
+    THISCALLMETHOD_(HRESULT, MultiDrawIndirectCountCtx)(THIS, ID3D11Buffer *buffer_for_count, unsigned int byte_offset_for_count, ID3D11Buffer *buffer, unsigned int byte_offset, unsigned int byte_stride, ID3D11DeviceContext *ctx) PURE;
+    THISCALLMETHOD_(HRESULT, MultiDrawIndexedIndirectCountCtx)(THIS, ID3D11Buffer *buffer_for_count, unsigned int byte_offset_for_count, ID3D11Buffer *buffer, unsigned int byte_offset, unsigned int byte_stride, ID3D11DeviceContext *ctx) PURE;
 };
 
 #ifdef __cplusplus
