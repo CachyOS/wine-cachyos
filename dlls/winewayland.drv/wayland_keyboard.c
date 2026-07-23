@@ -599,6 +599,15 @@ static void add_xkb_layout(const char *xkb_layout, struct xkb_keymap *xkb_keymap
         uint32_t caps_ret, shift_ret;
         unsigned int mod;
 
+        /* A zero vkey marks the end of the pVkToWchars table, so keycodes
+        * without a corresponding vkey must not be added to the layout table. */
+        if (!(scan & 0xff) || !vkey)
+        {
+            TRACE("Ignoring keyc %#06x, scan %#06x, vkey %#06x; "
+                  "Invalid, not added to layout\n", keyc, scan, vkey);
+            continue;
+        }
+
         if ((vkey & KBDNUMPAD) && (vkey & 0xff) == VK_DELETE)
         {
             VK_TO_WCHARS8 num_vkey2wch = {.VirtualKey = VK_DECIMAL};
