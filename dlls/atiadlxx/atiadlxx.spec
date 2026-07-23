@@ -433,6 +433,7 @@
 @ stub ADL2_Graphics_MantleVersion_Get
 @ cdecl ADL2_Graphics_Platform_Get(ptr ptr)
 @ cdecl ADL2_Graphics_VersionsX2_Get(ptr ptr)
+@ cdecl ADL2_Graphics_VersionsX3_Get(ptr long ptr)
 @ cdecl ADL2_Graphics_Versions_Get(ptr ptr)
 @ stub ADL2_Graphics_VulkanVersion_Get
 @ stub ADL2_HybridGraphicsGPU_Set
