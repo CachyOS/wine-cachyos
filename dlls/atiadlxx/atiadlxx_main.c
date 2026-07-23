@@ -19,6 +19,8 @@
 
 #include "dxgi1_6.h"
 
+#include "dxvk_interfaces.h"
+
 #define MAX_GPUS 64
 #define VENDOR_AMD 0x1002
 
@@ -1213,4 +1215,109 @@ int CDECL ADL_Display_SLSMapIndex_Get(int adapter_index, int num_display_target,
           adapter_index, num_display_target, display_target, sls_index);
 
     return ADL2_Display_SLSMapIndex_Get(default_ctx, adapter_index, num_display_target, display_target, sls_index);
+}
+
+/* undocumented structure */
+typedef struct
+{
+    UINT32 unk; /* 0x0: AGS sets this to 2 */
+    UINT32 tf; /* 0x4: transfer function ADL_TF_* */
+    UINT32 colorspace; /* 0x8: ADL_CS_* */
+    UINT32 reserved; /* 0xc: (padding) */
+    double chromaticityGreenX; /* 0x10 -> local_a8[4-5] (local_a8 is uint*) */
+    double chromaticityGreenY; /* 0x18 -> local_a8[6-7] */
+    double chromaticityBlueX; /* 0x20 -> local_a8[8-9] */
+    double chromaticityBlueY; /* 0x28 -> local_a8[10-0xb] */
+    double chromaticityRedX; /* 0x30 -> local_a8[0xc-0xd] */
+    double chromaticityRedY; /* 0x38 -> local_a8[0xe-0xf] */
+    double chromaticityWhiteX; /* 0x40 -> local_a8[0x10-0x11] */
+    double chromaticityWhiteY; /* 0x48 -> local_a8[0x12-0x13] */
+    double minLuminance; /* 0x50 -> local_a8[0x14-0x15] */
+    double maxLuminance; /* 0x58 -> local_a8[0x16-0x17] */
+    double maxContentLightLevel; /* 0x60 -> local_a8[0x18-0x19] */
+    double maxFrameAverageLightLevel; /* 0x68 -> local_a8[0x1a-0x1b] */
+    UINT32 disableLocalDimming; /* 0x70 -> local_a8[0x1c] */
+} ADLSourceContentAttributes;
+
+int CDECL ADL2_Display_SourceContentAttribute_Set(ADL_CONTEXT_HANDLE ptr, int adapter_index, int display_index,
+                                                  ADLSourceContentAttributes *attributes)
+{
+    HMODULE dxgi;
+    typeof(CreateDXGIFactory1) *pCreateDXGIFactory1;
+    DXGI_COLOR_SPACE_TYPE colorspace;
+    DXGI_HDR_METADATA_HDR10 metadata;
+    IDXGIVkInteropFactory1 *dxgi_interop = NULL;
+    IDXGIFactory1 *factory;
+    struct gpu *gpu;
+    int ret = ADL_OK;
+    TRACE("ctx %p adapter %d display %d attr %p\n", ptr, adapter_index, display_index, attributes);
+
+    if (adapter_index >= ptr->adapter_count) return ADL_ERR_INVALID_ADL_IDX;
+    gpu = ptr->adapters[adapter_index].gpu;
+    if (gpu->display_count >= display_index) return ADL_ERR_INVALID_ADL_IDX;
+
+    if (attributes->unk != 2)
+    {
+        FIXME("unk was not 2!\n");
+        return ADL_ERR;
+    }
+
+    if (!(dxgi = LoadLibraryW(L"dxgi.dll"))) return ADL_ERR;
+
+    if (!(pCreateDXGIFactory1 = (void *)GetProcAddress(dxgi, "CreateDXGIFactory1")))
+    {
+        ERR("Could not find CreateDXGIFactory1.\n");
+        return ADL_ERR;
+    }
+
+    if (FAILED(pCreateDXGIFactory1(&IID_IDXGIFactory1, (void**)&factory)))
+        return ADL_ERR;
+
+    if (FAILED(IDXGIFactory1_QueryInterface(factory, &IID_IDXGIVkInteropFactory1, (void**)&dxgi_interop)))
+    {
+        WARN("Failed to get IDXGIVkInteropFactory1.\n");
+        ret = ADL_ERR;
+        goto done;
+    }
+
+    /* we can only support a limited number of colorspace + tf combinations */
+    if (attributes->colorspace == ADL_CS_BT2020 && attributes->tf == ADL_TF_PQ2084)
+        colorspace = DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+    else if (attributes->colorspace == ADL_CS_scRGB_MS_REF && attributes->tf == ADL_TF_LINEAR_0_125)
+        colorspace = DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
+    else
+    {
+        colorspace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+        if (attributes->colorspace != ADL_CS_sRGB || attributes->tf != ADL_TF_sRGB)
+            FIXME("Unknown colorspace %u, tf %u\n", attributes->colorspace, attributes->tf);
+    }
+
+    metadata.RedPrimary[0] = attributes->chromaticityRedX * 50000;
+    metadata.RedPrimary[1] = attributes->chromaticityRedY * 50000;
+    metadata.GreenPrimary[0] = attributes->chromaticityGreenX * 50000;
+    metadata.GreenPrimary[1] = attributes->chromaticityGreenY * 50000;
+    metadata.BluePrimary[0] = attributes->chromaticityBlueX * 50000;
+    metadata.BluePrimary[1] = attributes->chromaticityBlueY * 50000;
+    metadata.WhitePoint[0] = attributes->chromaticityWhiteX * 50000;
+    metadata.WhitePoint[1] = attributes->chromaticityWhiteY * 50000;
+    metadata.MaxContentLightLevel = attributes->maxContentLightLevel;
+    metadata.MaxFrameAverageLightLevel = attributes->maxFrameAverageLightLevel;
+    metadata.MaxMasteringLuminance = attributes->maxLuminance;
+    metadata.MinMasteringLuminance = attributes->minLuminance / 0.0001f;
+
+    /* FIXME: we have no way of respecting the display index, but the AGS implementation has the same limitation */
+    if (FAILED(IDXGIVkInteropFactory1_SetGlobalHDRState(dxgi_interop, colorspace, &metadata)))
+        ret = ADL_ERR;
+
+done:
+    if (dxgi_interop) IDXGIVkInteropFactory1_Release(dxgi_interop);
+    IDXGIFactory1_Release(factory);
+    FreeLibrary(dxgi);
+    return ret;
+}
+
+int CDECL ADL_Display_SourceContentAttribute_Set(int adapter_index, int display_index,
+                                                 ADLSourceContentAttributes *attributes)
+{
+    return ADL2_Display_SourceContentAttribute_Set(default_ctx, adapter_index, display_index, attributes);
 }
