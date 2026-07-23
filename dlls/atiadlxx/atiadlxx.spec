@@ -387,7 +387,7 @@
 @ stub ADL2_Display_Size_Get
 @ stub ADL2_Display_Size_Set
 @ stub ADL2_Display_SourceContentAttribute_Get
-@ stub ADL2_Display_SourceContentAttribute_Set
+@ cdecl ADL2_Display_SourceContentAttribute_Set(ptr long long ptr)
 @ stub ADL2_Display_SplitDisplay_Caps
 @ stub ADL2_Display_SplitDisplay_Get
 @ stub ADL2_Display_SplitDisplay_RestoreDesktopConfiguration
@@ -948,7 +948,7 @@
 @ stub ADL_Display_Size_Get
 @ stub ADL_Display_Size_Set
 @ stub ADL_Display_SourceContentAttribute_Get
-@ stub ADL_Display_SourceContentAttribute_Set
+@ cdecl ADL_Display_SourceContentAttribute_Set(long long ptr)
 @ stub ADL_Display_SplitDisplay_Caps
 @ stub ADL_Display_SplitDisplay_Get
 @ stub ADL_Display_SplitDisplay_RestoreDesktopConfiguration
