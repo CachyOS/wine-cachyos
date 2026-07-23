@@ -144,7 +144,7 @@ typedef enum D3D12_AGS_EXTENSION
     D3D12_AGS_EXTENSION_FLOAT_CONVERSION,
     D3D12_AGS_EXTENSION_READ_LANE_AT,
     D3D12_AGS_EXTENSION_RAY_HIT_TOKEN,
-    D3D12_AGS_EXTENSION_SHADER_TOKEN,
+    D3D12_AGS_EXTENSION_SHADER_CLOCK,
 
     /* Not part of the existing header, but useful regardless.
      * May include emulation path if enabled in build.
