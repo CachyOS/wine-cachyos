@@ -700,6 +700,13 @@ int CDECL ADL2_Adapter_NumberOfAdapters_Get(ADL_CONTEXT_HANDLE ctx, int *count)
     return ADL_OK;
 }
 
+int CDECL ADL2_Graphics_VersionsX3_Get(ADL_CONTEXT_HANDLE ptr, int adapter_index, ADLVersionsInfoX2 *ver)
+{
+    FIXME("ptr %p, index %d, ver %p semi-stub.\n", ptr, adapter_index, ver);
+    memcpy(ver, &version2, sizeof(version2));
+    return ADL_OK;
+}
+
 int CDECL ADL2_Graphics_VersionsX2_Get(ADL_CONTEXT_HANDLE ptr, ADLVersionsInfoX2 *ver)
 {
     TRACE("ptr %p, ver %p.\n", ptr, ver);
