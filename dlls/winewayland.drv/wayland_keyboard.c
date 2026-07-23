@@ -189,7 +189,7 @@ static WORD key2scan(UINT key)
     case KEY_F24: return 0x0076; /* T76 / VK_F24 */
     case KEY_KPPLUSMINUS: return 0x007b; /* T7B / VK_OEM_PA1 */
     /* FIXME: map a KEY to T7C / VK_TAB */
-    /* FIXME: map a KEY to T7E / VK_ABNT_C2 */
+    case KEY_KPCOMMA: return 0x007E; /* T7E / VK_ABNT_C2 */
     /* FIXME: map a KEY to T7F / VK_OEM_PA2 */
     case KEY_PREVIOUSSONG: return 0x0110; /* X10 / VK_MEDIA_PREV_TRACK */
     case KEY_NEXTSONG: return 0x0119; /* X19 / VK_MEDIA_NEXT_TRACK */
