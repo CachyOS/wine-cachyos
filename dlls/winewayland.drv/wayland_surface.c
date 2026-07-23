@@ -1430,12 +1430,13 @@ static void wayland_client_surface_update(struct client_surface *client)
     struct wayland_client_surface *surface = impl_from_client_surface(client);
     HWND hwnd = client->hwnd, toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
     struct wayland_win_data *data;
+    BOOL visible = FALSE;
 
     TRACE("%s\n", debugstr_client_surface(client));
-
+    if (toplevel) visible = is_client_visible(hwnd);
     if (!(data = wayland_win_data_get(hwnd))) return;
 
-    if (toplevel && is_client_visible(hwnd))
+    if (toplevel && visible)
         wayland_client_surface_attach(surface, toplevel);
     else
         wayland_client_surface_attach(surface, NULL);
@@ -1561,10 +1562,12 @@ void set_client_surface(HWND hwnd, struct wayland_client_surface *new_client)
     HWND toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
     struct wayland_client_surface *old_client;
     struct wayland_win_data *data;
+    BOOL visible = FALSE;
 
     /* ownership is shared with the callers, the last caller to release
      * its reference will also destroy it and clear our pointer. */
 
+    if (toplevel) visible = is_client_visible(hwnd);
     if (!(data = wayland_win_data_get(hwnd))) return;
 
     if (new_client != data->client_surface)
@@ -1574,7 +1577,7 @@ void set_client_surface(HWND hwnd, struct wayland_client_surface *new_client)
 
         if ((data->client_surface = new_client))
         {
-            if (toplevel && is_client_visible(hwnd))
+            if (toplevel && visible)
                 wayland_client_surface_attach(new_client, toplevel);
             else
                 wayland_client_surface_attach(new_client, NULL);
