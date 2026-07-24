@@ -64,13 +64,13 @@ DECLARE_INTERFACE_(IAmdDxExt, IAmdDxExtInterface)
     /*** IAmdDxExt methods ***/
     THISCALLMETHOD_(HRESULT, GetVersion)(THIS_ AmdDxExtVersion *version) PURE;
     THISCALLMETHOD_(IAmdDxExtInterface*,GetExtInterface)(THIS_ unsigned int iface) PURE;
-    THISCALLMETHOD_(HRESULT, IaSetPrimitiveTopology)(THIS_ AmdDxExtPrimitiveTopology topology) PURE;
-    THISCALLMETHOD_(HRESULT, IaGetPrimitiveTopology)(THIS_ AmdDxExtPrimitiveTopology *topology) PURE;
+    THISCALLMETHOD_(HRESULT, IaSetPrimitiveTopology)(THIS_ unsigned int topology) PURE;
+    THISCALLMETHOD_(HRESULT, IaGetPrimitiveTopology)(THIS_ unsigned int *topology) PURE;
     THISCALLMETHOD_(HRESULT, SetSingleSampleRead)(THIS_ ID3D10Resource *res, BOOL single_sample) PURE;
     THISCALLMETHOD_(HRESULT, SetSingleSampleRead11)(THIS_ ID3D11Resource *res, BOOL single_sample) PURE;
     THISCALLMETHOD_(HRESULT, QueryFeatureSupport)(THIS_ unsigned int feature_token, void *data, unsigned int data_size) PURE;
-    THISCALLMETHOD_(HRESULT, IaSetPrimitiveTopologyCtx)(THIS_ AmdDxExtPrimitiveTopology topology, ID3D11DeviceContext *ctx) PURE;
-    THISCALLMETHOD_(HRESULT, IaGetPrimitiveTopologyCtx)(THIS_ AmdDxExtPrimitiveTopology *topology, ID3D11DeviceContext *ctx) PURE;
+    THISCALLMETHOD_(HRESULT, IaSetPrimitiveTopologyCtx)(THIS_ unsigned int topology, ID3D11DeviceContext *ctx) PURE;
+    THISCALLMETHOD_(HRESULT, IaGetPrimitiveTopologyCtx)(THIS_ unsigned int *topology, ID3D11DeviceContext *ctx) PURE;
 };
 #undef INTERFACE
 

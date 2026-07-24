@@ -280,70 +280,34 @@ IAmdDxExtInterface* __thiscall AmdDxExt_GetExtInterface(IAmdDxExt *ext, unsigned
     return ret;
 }
 
-static D3D_PRIMITIVE_TOPOLOGY convert_topology_d3d(AmdDxExtPrimitiveTopology top)
-{
-    switch (top)
-    {
-        case AmdDxExtPrimitiveTopology_LineList:
-        case AmdDxExtPrimitiveTopology_LineListAdj:
-        case AmdDxExtPrimitiveTopology_TriangleStrip:
-        case AmdDxExtPrimitiveTopology_TriangleStripAdj:
-        case AmdDxExtPrimitiveTopology_TriangleList:
-        case AmdDxExtPrimitiveTopology_TriangleListAdj:
-        case AmdDxExtPrimitiveTopology_LineStrip:
-        case AmdDxExtPrimitiveTopology_LineStripAdj:
-        case AmdDxExtPrimitiveTopology_PointList:
-        case AmdDxExtPrimitiveTopology_Undefined:
-            return (D3D_PRIMITIVE_TOPOLOGY)top;
-        /* FIXME: what are the number of verticies in patch list?
-         * Vulkan doesn't support quads so we can't implement that */
-        default:
-            ERR("Failed to map topology %u\n", top);
-            return D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
-    }
-}
-
 DEFINE_THISCALL_WRAPPER(AmdDxExt_IaSetPrimitiveTopology, 8)
-HRESULT __thiscall AmdDxExt_IaSetPrimitiveTopology(IAmdDxExt *ext, AmdDxExtPrimitiveTopology topology)
+HRESULT __thiscall AmdDxExt_IaSetPrimitiveTopology(IAmdDxExt *ext, unsigned int topology)
 {
     AmdDxExt *This = impl_from_IAmdDxExt(ext);
-    FIXME("%p %u semi-stub\n", ext, topology);
+    TRACE("%p %u\n", ext, topology);
 
-    if (topology >= AmdDxExtPrimitiveTopology_Max) return E_INVALIDARG;
-    /* these don't exist in vulkan */
-    if (topology == AmdDxExtPrimitiveTopology_ExtQuadList) return E_NOTIMPL;
+    /* We don't expose support for this */
     if (topology == AmdDxExtPrimitiveTopology_ExtScreenRectList) return E_NOTIMPL;
 
+    /* We are required to expose quad list support */
+    if (topology == AmdDxExtPrimitiveTopology_ExtQuadList)
+    {
+        FIXME("Quad list not implemented!\n");
+        return E_NOTIMPL;
+    }
+
+    /* the meaning of the topology variable changes depending on the context.
+     * For D3D10 AmdDxExtPrimitiveTopology is accurate, but in D3D11 the situation changes due to
+     * patch list enum in D3D_PRIMITIVE_TOPOLOGY so > AmdDxExtPrimitiveTopology_Max is allowed */
+
     if (This->is_d3d11)
-        ID3D11DeviceContext_IASetPrimitiveTopology(This->context, convert_topology_d3d(topology));
+        ID3D11DeviceContext_IASetPrimitiveTopology(This->context, (D3D_PRIMITIVE_TOPOLOGY)topology);
 
     return S_OK;
 }
 
-static AmdDxExtPrimitiveTopology convert_topology_ext(D3D_PRIMITIVE_TOPOLOGY top)
-{
-    switch (top)
-    {
-        case D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP:
-        case D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP_ADJ:
-        case D3D_PRIMITIVE_TOPOLOGY_LINELIST:
-        case D3D_PRIMITIVE_TOPOLOGY_LINELIST_ADJ:
-        case D3D_PRIMITIVE_TOPOLOGY_POINTLIST:
-        case D3D_PRIMITIVE_TOPOLOGY_LINESTRIP:
-        case D3D_PRIMITIVE_TOPOLOGY_LINESTRIP_ADJ:
-        case D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST:
-        case D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST_ADJ:
-        case D3D_PRIMITIVE_TOPOLOGY_UNDEFINED:
-            return (AmdDxExtPrimitiveTopology)top;
-        /* the remaining are patchlist, but not sure how they map to AmdDxExt */
-        default:
-            ERR("Failed to map topology %u\n", top);
-            return AmdDxExtPrimitiveTopology_Undefined;
-    }
-}
-
 DEFINE_THISCALL_WRAPPER(AmdDxExt_IaGetPrimitiveTopology, 8)
-HRESULT __thiscall AmdDxExt_IaGetPrimitiveTopology(IAmdDxExt *ext, AmdDxExtPrimitiveTopology *topology)
+HRESULT __thiscall AmdDxExt_IaGetPrimitiveTopology(IAmdDxExt *ext, unsigned int *topology)
 {
     AmdDxExt *This = impl_from_IAmdDxExt(ext);
     D3D11_PRIMITIVE_TOPOLOGY d3d_topology;
@@ -352,7 +316,7 @@ HRESULT __thiscall AmdDxExt_IaGetPrimitiveTopology(IAmdDxExt *ext, AmdDxExtPrimi
     if (This->is_d3d11)
     {
         ID3D11DeviceContext_IAGetPrimitiveTopology(This->context, &d3d_topology);
-        *topology = convert_topology_ext(d3d_topology);
+        *topology = d3d_topology;
     }
 
     return S_OK;
@@ -383,28 +347,34 @@ HRESULT __thiscall AmdDxExt_QueryFeatureSupport(IAmdDxExt *iface, unsigned int f
 }
 
 DEFINE_THISCALL_WRAPPER(AmdDxExt_IaSetPrimitiveTopologyCtx, 12)
-HRESULT __thiscall AmdDxExt_IaSetPrimitiveTopologyCtx(IAmdDxExt *iface, AmdDxExtPrimitiveTopology topology, ID3D11DeviceContext *ctx)
+HRESULT __thiscall AmdDxExt_IaSetPrimitiveTopologyCtx(IAmdDxExt *iface, unsigned int topology, ID3D11DeviceContext *ctx)
 {
-    FIXME("%p %u %p semi-stub\n", iface, topology, ctx);
+    D3D_PRIMITIVE_TOPOLOGY d3d_topology = topology;
+    TRACE("%p %u %p\n", iface, topology, ctx);
 
-    if (topology >= AmdDxExtPrimitiveTopology_Max) return E_INVALIDARG;
-    /* these don't exist in vulkan */
-    if (topology == AmdDxExtPrimitiveTopology_ExtQuadList) return E_NOTIMPL;
+    /* We don't expose support for this */
     if (topology == AmdDxExtPrimitiveTopology_ExtScreenRectList) return E_NOTIMPL;
 
-    ID3D11DeviceContext_IASetPrimitiveTopology(ctx, convert_topology_d3d(topology));
+    /* We are required to expose quad list support */
+    if (topology == AmdDxExtPrimitiveTopology_ExtQuadList)
+    {
+        FIXME("Quad list not implemented!\n");
+        return E_NOTIMPL;
+    }
+
+    ID3D11DeviceContext_IASetPrimitiveTopology(ctx, d3d_topology);
 
     return S_OK;
 }
 
 DEFINE_THISCALL_WRAPPER(AmdDxExt_IaGetPrimitiveTopologyCtx, 12)
-HRESULT __thiscall AmdDxExt_IaGetPrimitiveTopologyCtx(IAmdDxExt *iface, AmdDxExtPrimitiveTopology *topology, ID3D11DeviceContext *ctx)
+HRESULT __thiscall AmdDxExt_IaGetPrimitiveTopologyCtx(IAmdDxExt *iface, unsigned int *topology, ID3D11DeviceContext *ctx)
 {
     D3D_PRIMITIVE_TOPOLOGY d3d_topology;
-    FIXME("%p %p %p semi-stub\n", iface, topology, ctx);
+    TRACE("%p %p %p\n", iface, topology, ctx);
 
     ID3D11DeviceContext_IAGetPrimitiveTopology(ctx, &d3d_topology);
-    *topology = convert_topology_ext(d3d_topology);
+    *topology = d3d_topology;
 
     return S_OK;
 }
