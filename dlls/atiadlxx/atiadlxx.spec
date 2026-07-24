@@ -281,7 +281,7 @@
 @ stub ADL2_Display_FormatsOverride_Set
 @ stub ADL2_Display_FreeSyncState_Get
 @ stub ADL2_Display_FreeSyncState_Set
-@ stub ADL2_Display_FreeSync_Cap
+@ cdecl ADL2_Display_FreeSync_Cap(ptr long long ptr)
 @ stub ADL2_Display_GamutMapping_Get
 @ stub ADL2_Display_GamutMapping_Reset
 @ stub ADL2_Display_GamutMapping_Set
@@ -315,7 +315,7 @@
 @ stub ADL2_Display_ModeTimingOverride_Delete
 @ stub ADL2_Display_ModeTimingOverride_Get
 @ stub ADL2_Display_ModeTimingOverride_Set
-@ stub ADL2_Display_Modes_Get
+@ cdecl ADL2_Display_Modes_Get(ptr long long ptr ptr)
 @ stub ADL2_Display_Modes_Set
 @ stub ADL2_Display_Modes_X2_Get
 @ stub ADL2_Display_MonitorPowerState_Set
@@ -865,7 +865,7 @@
 @ stub ADL_Display_FormatsOverride_Set
 @ stub ADL_Display_FreeSyncState_Get
 @ stub ADL_Display_FreeSyncState_Set
-@ stub ADL_Display_FreeSync_Cap
+@ cdecl ADL_Display_FreeSync_Cap(long long ptr)
 @ stub ADL_Display_GamutMapping_Get
 @ stub ADL_Display_GamutMapping_Reset
 @ stub ADL_Display_GamutMapping_Set
@@ -891,7 +891,7 @@
 @ stub ADL_Display_ModeTimingOverride_Delete
 @ stub ADL_Display_ModeTimingOverride_Get
 @ stub ADL_Display_ModeTimingOverride_Set
-@ stub ADL_Display_Modes_Get
+@ cdecl ADL_Display_Modes_Get(long long ptr ptr)
 @ stub ADL_Display_Modes_Set
 @ stub ADL_Display_MonitorPowerState_Set
 @ stub ADL_Display_NativeAUXChannel_Access
