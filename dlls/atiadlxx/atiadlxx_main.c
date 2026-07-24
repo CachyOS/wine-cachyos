@@ -201,6 +201,22 @@ typedef struct ADLMemoryInfo
     long long iMemoryBandwidth;
 } ADLMemoryInfo, *LPADLMemoryInfo;
 
+typedef struct ADLMemoryInfo2
+{
+	/// Memory size in bytes.
+	long long iMemorySize;
+	/// Memory type in string.
+	char strMemoryType[ADL_MAX_PATH];
+	/// Highest default performance level Memory bandwidth in Mbytes/s
+	long long iMemoryBandwidth;
+	/// HyperMemory size in bytes.
+	long long iHyperMemorySize;
+	/// Invisible Memory size in bytes.
+	long long iInvisibleMemorySize;
+	/// Visible Memory size in bytes.
+	long long iVisibleMemorySize;
+} ADLMemoryInfo2, *LPADLMemoryInfo2;
+
 typedef struct ADLDisplayTarget
 {
     ADLDisplayID displayID;
@@ -1152,6 +1168,26 @@ int CDECL ADL2_Adapter_MemoryInfo_Get(ADL_CONTEXT_HANDLE ctx, int adapter_index,
 
     mem_info->iMemorySize = ctx->adapters[adapter_index].gpu->dxgi_adapter_desc.DedicatedVideoMemory;
     mem_info->iMemoryBandwidth = 256000; /* not exposed on Linux, probably needs a lookup table */
+
+    TRACE("iMemoryBandwidth %s, iMemorySize %s\n",
+            wine_dbgstr_longlong(mem_info->iMemoryBandwidth),
+            wine_dbgstr_longlong(mem_info->iMemorySize));
+    return ADL_OK;
+}
+
+/* documented in the "Linux Specific APIs" section, present and used on Windows */
+int CDECL ADL2_Adapter_MemoryInfo2_Get(ADL_CONTEXT_HANDLE ctx, int adapter_index, ADLMemoryInfo2 *mem_info)
+{
+    FIXME("ctx %p, adapter %d, mem_info %p stub.\n", ctx, adapter_index, mem_info);
+
+    if (mem_info == NULL) return ADL_ERR_NULL_POINTER;
+    if (adapter_index >= ctx->adapter_count) return ADL_ERR_INVALID_ADL_IDX;
+    if (ctx->adapters[adapter_index].gpu->vendor_id != VENDOR_AMD) return ADL_ERR;
+
+    mem_info->iMemorySize = ctx->adapters[adapter_index].gpu->dxgi_adapter_desc.DedicatedVideoMemory;
+    /* not exposed on Linux, probably needs a lookup table */
+    mem_info->iMemoryBandwidth = 256000;
+    strcpy(mem_info->strMemoryType, "GDDR6");
 
     TRACE("iMemoryBandwidth %s, iMemorySize %s\n",
             wine_dbgstr_longlong(mem_info->iMemoryBandwidth),
