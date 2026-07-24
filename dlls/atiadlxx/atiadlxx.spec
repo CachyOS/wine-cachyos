@@ -93,7 +93,7 @@
 @ stub ADL2_Adapter_LocalDisplayState_Get
 @ stub ADL2_Adapter_MVPU_Set
 @ stub ADL2_Adapter_MaxCursorSize_Get
-@ stub ADL2_Adapter_MemoryInfo2_Get
+@ cdecl ADL2_Adapter_MemoryInfo2_Get(ptr long ptr)
 @ cdecl ADL2_Adapter_MemoryInfo_Get(ptr long ptr)
 @ stub ADL2_Adapter_MirabilisSupport_Get
 @ stub ADL2_Adapter_ModeSwitch
