@@ -19,7 +19,7 @@
 @ stub ADL2_Adapter_Active_SetPrefer
 @ cdecl ADL2_Adapter_AdapterInfoX2_Get(ptr ptr)
 @ stub ADL2_Adapter_AdapterInfoX3_Get
-@ stub ADL2_Adapter_AdapterInfoX4_Get
+@ cdecl ADL2_Adapter_AdapterInfoX4_Get(ptr long ptr ptr)
 @ cdecl ADL2_Adapter_AdapterInfo_Get(ptr ptr long)
 @ stub ADL2_Adapter_AdapterList_Disable
 @ stub ADL2_Adapter_AdapterLocationPath_Get
@@ -745,7 +745,7 @@
 @ stub ADL_Adapter_NumberOfActivatableSources_Get
 @ cdecl ADL_Adapter_NumberOfAdapters_Get(ptr)
 @ cdecl ADL_Adapter_ObservedClockInfo_Get(long ptr ptr)
-@ stub ADL_Adapter_ObservedGameClockInfo_Get
+@ cdecl ADL_Adapter_ObservedGameClockInfo_Get(ptr long ptr ptr ptr ptr)
 @ stub ADL_Adapter_Primary_Get
 @ stub ADL_Adapter_Primary_Set
 @ stub ADL_Adapter_RegValueInt_Get
