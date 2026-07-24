@@ -479,7 +479,7 @@
 @ stub ADL2_Overdrive5_ThermalDevices_Enum
 @ stub ADL2_Overdrive6_AdvancedFan_Caps
 @ stub ADL2_Overdrive6_CapabilitiesEx_Get
-@ stub ADL2_Overdrive6_Capabilities_Get
+@ cdecl ADL2_Overdrive6_Capabilities_Get(ptr long ptr)
 @ stub ADL2_Overdrive6_ControlI2C
 @ stub ADL2_Overdrive6_CurrentPower_Get
 @ stub ADL2_Overdrive6_CurrentStatus_Get
@@ -498,7 +498,7 @@
 @ stub ADL2_Overdrive6_PowerControl_Set
 @ stub ADL2_Overdrive6_StateEx_Get
 @ stub ADL2_Overdrive6_StateEx_Set
-@ stub ADL2_Overdrive6_StateInfo_Get
+@ cdecl ADL2_Overdrive6_StateInfo_Get(ptr long long ptr)
 @ stub ADL2_Overdrive6_State_Reset
 @ stub ADL2_Overdrive6_State_Set
 @ stub ADL2_Overdrive6_TargetTemperatureData_Get

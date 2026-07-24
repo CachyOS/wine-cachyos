@@ -375,6 +375,68 @@ typedef struct ADLAdapterODClockInfo
     ADLODClockSetting sEngineClock;
 } ADLAdapterODClockInfo;
 
+typedef struct ADLOD6ParameterRange
+{
+    /// The starting value of the clock range
+    int     iMin;
+    /// The ending value of the clock range
+    int     iMax;
+    /// The minimum increment between clock values
+    int     iStep;
+} ADLOD6ParameterRange;
+
+typedef struct ADLOD6Capabilities
+{
+    /// Contains a bitmap of the OD6 capability flags.  Possible values: \ref ADL_OD6_CAPABILITY_SCLK_CUSTOMIZATION,
+    /// \ref ADL_OD6_CAPABILITY_MCLK_CUSTOMIZATION, \ref ADL_OD6_CAPABILITY_GPU_ACTIVITY_MONITOR
+    int     iCapabilities;
+    /// Contains a bitmap indicating the power states
+    /// supported by OD6.  Currently only the performance state
+    /// is supported. Possible Values: \ref ADL_OD6_SUPPORTEDSTATE_PERFORMANCE
+    int     iSupportedStates;
+    /// Number of levels. OD6 will always use 2 levels, which describe
+    /// the minimum to maximum clock ranges.
+    /// The 1st level indicates the minimum clocks, and the 2nd level
+    /// indicates the maximum clocks.
+    int     iNumberOfPerformanceLevels;
+    /// Contains the hard limits of the sclk range.  Overdrive
+    /// clocks cannot be set outside this range.
+    ADLOD6ParameterRange     sEngineClockRange;
+    /// Contains the hard limits of the mclk range.  Overdrive
+    /// clocks cannot be set outside this range.
+    ADLOD6ParameterRange     sMemoryClockRange;
+
+    /// Value for future extension
+    int     iExtValue;
+    /// Mask for future extension
+    int     iExtMask;
+} ADLOD6Capabilities;
+
+typedef struct ADLOD6PerformanceLevel
+{
+    /// Engine (core) clock.
+    int iEngineClock;
+    /// Memory clock.
+    int iMemoryClock;
+} ADLOD6PerformanceLevel;
+
+typedef struct ADLOD6StateInfo
+{
+    /// Number of levels.  OD6 uses clock ranges instead of discrete performance levels.
+    /// iNumberOfPerformanceLevels is always 2.  The 1st level indicates the minimum clocks
+    /// in the range.  The 2nd level indicates the maximum clocks in the range.
+    int     iNumberOfPerformanceLevels;
+
+    /// Value for future extension
+    int     iExtValue;
+    /// Mask for future extension
+    int     iExtMask;
+
+    /// Variable-sized array of levels.
+    /// The number of elements in the array is specified by iNumberofPerformanceLevels.
+    ADLOD6PerformanceLevel aLevels [1];
+} ADLOD6StateInfo;
+
 typedef struct ADLFreeSyncCap
 {
     /// FreeSync capability flags. \ref define_freesync_caps
@@ -1382,6 +1444,20 @@ int CDECL ADL2_Overdrive_Caps(ADL_CONTEXT_HANDLE ctx, int adapter_index, int *su
     *enabled = 0;
     *version = 0;
     return ADL_ERR_NOT_SUPPORTED;
+}
+
+int CDECL ADL2_Overdrive6_Capabilities_Get(ADL_CONTEXT_HANDLE ctx, int adapter_index, ADLOD6Capabilities *caps)
+{
+    FIXME("ctx %p adapter_index %d caps %p stub!\n", ctx, adapter_index, caps);
+
+    return ADL_ERR;
+}
+
+int CDECL ADL2_Overdrive6_StateInfo_Get(ADL_CONTEXT_HANDLE ctx, int adapter_index, int type, ADLOD6StateInfo *info)
+{
+    FIXME("ctx %p adapter_index %d type %d info %p stub!\n", ctx, adapter_index, type, info);
+
+    return ADL_ERR;
 }
 
 int CDECL ADL2_OverdriveN_Temperature_Get(ADL_CONTEXT_HANDLE ctx, int adapter_index, int type, int *temperature)
