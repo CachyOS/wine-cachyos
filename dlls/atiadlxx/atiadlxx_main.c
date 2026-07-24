@@ -757,6 +757,9 @@ static int adapter_info_get(ADL_CONTEXT_HANDLE ctx, ADLAdapterInfo *adapters, in
         adapters[i].iSize = sizeof(ADLAdapterInfo);
         adapters[i].iAdapterIndex = i;
         adapters[i].iOSDisplayIndex = i;
+        adapters[i].iBusNumber = 0;
+        adapters[i].iFunctionNumber = 0;
+        adapters[i].iDeviceNumber = 0;
 
         strcpy(buffer, ctx->adapters[i].gpu->device_path + 4);
         if ((p = strrchr(buffer, '#'))) *p = 0;
