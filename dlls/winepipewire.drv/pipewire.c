@@ -2977,6 +2977,11 @@ static NTSTATUS pipewire_set_sample_rate(void *args)
         hr = E_NOTIMPL;
         goto exit;
     }
+    if (stream->locked)
+    {
+        hr = AUDCLNT_E_BUFFER_OPERATION_PENDING;
+        goto exit;
+    }
 
     /* PulseAudio rejects rates outside [1, 48000 * 8] in
      * pa_stream_update_sample_rate; mirror winepulse's observable failure
