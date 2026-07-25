@@ -1539,9 +1539,11 @@ static HRESULT pipewire_info_from_waveformat(struct pipewire_stream *stream, con
  * pw_stream callbacks (foreign thread, loop lock held: no ntdll/TRACE)
  * ---------------------------------------------------------------------- */
 
-static void apply_volume(const struct pipewire_stream *stream, BYTE *buffer, UINT32 bytes)
+/* vol is a caller-owned snapshot: the process callback must not re-read
+ * stream->vol, which SetVolumes mutates concurrently. */
+static void apply_volume(const struct pipewire_stream *stream, const float *vol,
+                         BYTE *buffer, UINT32 bytes)
 {
-    const float *vol = stream->vol;
     UINT32 i, channels = stream->info.channels, mute = 0;
     BOOL adjust = FALSE;
     BYTE *end;
@@ -1709,7 +1711,8 @@ static void on_stream_process(void *data)
     if (stream->dataflow == eRender)
     {
         UINT32 maxsize = d->maxsize;
-        UINT32 req_frames, need_bytes, n;
+        UINT32 req_frames, need_bytes, n, c;
+        float vol[PW_CHANNELS_MAX];
 
         if (!b->requested || b->requested > maxsize / stream->frame_size)
             req_frames = maxsize / stream->frame_size;
@@ -1725,7 +1728,9 @@ static void on_stream_process(void *data)
             n = min(n, stream->real_bufsize_bytes);
             copy_from_ring(d->data, stream->local_buffer, stream->real_bufsize_bytes,
                            stream->pa_offs_bytes, n);
-            apply_volume(stream, d->data, n);
+            for (c = 0; c < stream->info.channels; c++)
+                __atomic_load(&stream->vol[c], &vol[c], __ATOMIC_ACQUIRE);
+            apply_volume(stream, vol, d->data, n);
             if (n < need_bytes)
             {
                 silence_buffer(stream->info.format, (BYTE *)d->data + n, need_bytes - n);
@@ -2938,8 +2943,11 @@ static NTSTATUS pipewire_set_volumes(void *args)
     pw_thread_loop_lock(pw_loop_global);
     if (stream_valid(stream))
         for (i = 0; i < stream->info.channels; i++)
-            stream->vol[i] = params->volumes[i] * params->master_volume *
-                             params->session_volumes[i];
+        {
+            float v = params->volumes[i] * params->master_volume *
+                      params->session_volumes[i];
+            __atomic_store(&stream->vol[i], &v, __ATOMIC_RELEASE);
+        }
     pw_thread_loop_unlock(pw_loop_global);
     return STATUS_SUCCESS;
 }
