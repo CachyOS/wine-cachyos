@@ -1896,6 +1896,24 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
         }
     }
 
+    /* Diagnostic only.  node.loop.class can be redirected by PIPEWIRE_PROPS or
+     * a client.conf stream.rules entry, which moves the process callback off
+     * the thread loop and out from under the lock that serializes it against
+     * the control paths.  Warn once per process; the condition is a
+     * configuration, not a property of an individual stream. */
+    if (pw_stream_get_data_loop(stream->pw) != pw_thread_loop_get_loop(pw_loop_global))
+    {
+        static BOOL reported;
+
+        if (!reported)
+        {
+            reported = TRUE;
+            ERR("Stream processing was redirected off the driver loop by "
+                "node.loop.class; this configuration is not validated and can "
+                "corrupt audio.\n");
+        }
+    }
+
     for (tries = 0; tries < 10; tries++)
     {
         st = pw_stream_get_state(stream->pw, NULL);
