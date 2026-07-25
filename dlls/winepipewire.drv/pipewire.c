@@ -1719,7 +1719,10 @@ static void on_stream_process(void *data)
 
         if (stream->started)
         {
+            /* copy_from_ring wraps once, so a count above the ring size
+             * would read past the allocation. */
             n = min(need_bytes, __atomic_load_n(&stream->pa_held_bytes, __ATOMIC_ACQUIRE));
+            n = min(n, stream->real_bufsize_bytes);
             copy_from_ring(d->data, stream->local_buffer, stream->real_bufsize_bytes,
                            stream->pa_offs_bytes, n);
             apply_volume(stream, d->data, n);
