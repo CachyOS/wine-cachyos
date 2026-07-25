@@ -2707,12 +2707,18 @@ static NTSTATUS pipewire_release_render_buffer(void *args)
         pipewire_wrap_buffer(stream, buffer, written_bytes);
 
     stream->held_bytes += written_bytes;
-    if (__atomic_add_fetch(&stream->pa_held_bytes, written_bytes, __ATOMIC_RELEASE) > stream->real_bufsize_bytes)
+    /* Resync before publishing.  Adding first would briefly expose an
+     * overfull pa_held_bytes, and the process callback would consume that
+     * many bytes against a stale pa_offs_bytes before the repair landed. */
+    if (__atomic_load_n(&stream->pa_held_bytes, __ATOMIC_RELAXED) + written_bytes >
+        stream->real_bufsize_bytes)
     {
         WARN("%p PipeWire buffer overflow.\n", stream);
         stream->pa_offs_bytes = stream->lcl_offs_bytes;
         __atomic_store_n(&stream->pa_held_bytes, stream->held_bytes, __ATOMIC_RELEASE);
     }
+    else
+        __atomic_add_fetch(&stream->pa_held_bytes, written_bytes, __ATOMIC_RELEASE);
     stream->clock_written += written_bytes;
     stream->locked = 0;
 
