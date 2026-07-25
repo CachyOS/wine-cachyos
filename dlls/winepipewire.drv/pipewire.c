@@ -2989,6 +2989,18 @@ static NTSTATUS pipewire_set_event_handle(void *args)
     return STATUS_SUCCESS;
 }
 
+/* Runs with the stream's data loop locked, so the process callback cannot be
+ * in flight and cannot start until this returns. */
+static int do_reset_ring(struct spa_loop *loop, bool async, uint32_t seq,
+                         const void *data, size_t size, void *user_data)
+{
+    struct pipewire_stream *stream = user_data;
+
+    stream->pa_offs_bytes = 0;
+    __atomic_store_n(&stream->pa_held_bytes, 0, __ATOMIC_RELEASE);
+    return 0;
+}
+
 static NTSTATUS pipewire_set_sample_rate(void *args)
 {
     struct set_sample_rate_params *params = args;
@@ -3047,13 +3059,22 @@ static NTSTATUS pipewire_set_sample_rate(void *args)
     pw_stream_flush(stream->pw, false);
 
     stream->clock_lastpos = stream->clock_written = 0;
-    stream->pa_offs_bytes = stream->lcl_offs_bytes = 0;
+    stream->lcl_offs_bytes = 0;
     stream->held_bytes = 0;
-    __atomic_store_n(&stream->pa_held_bytes, 0, __ATOMIC_RELEASE);
+    /* pa_offs_bytes and pa_held_bytes belong to the process callback, so
+     * mutate them under the data loop lock rather than the thread loop lock.
+     * Lock order is main -> data, matching pw_stream_set_active and
+     * pw_stream_flush; the callback never takes the thread loop lock, so
+     * there is no inverse path.  When the callback runs on the main loop the
+     * data loop is that same loop, whose mutex is recursive.
+     *
+     * The ring is deliberately not cleared here: occupancy zero already makes
+     * the callback emit silence, GetBuffer silences every region it hands
+     * out, and Reset has always relied on exactly that.  Clearing storage the
+     * callback may be reading would be a data race for no benefit. */
+    pw_loop_locked(pw_stream_get_data_loop(stream->pw), do_reset_ring, 0, NULL, 0, stream);
     stream->period_bytes = period_bytes;
     stream->info.rate = params->rate;
-
-    silence_buffer(stream->info.format, stream->local_buffer, stream->real_bufsize_bytes);
 
 exit:
     pw_thread_loop_unlock(pw_loop_global);
