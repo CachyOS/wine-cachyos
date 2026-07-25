@@ -2854,6 +2854,12 @@ static NTSTATUS pipewire_get_next_packet_size(void *args)
     struct pipewire_stream *stream = handle_get_stream(params->stream);
 
     pw_thread_loop_lock(pw_loop_global);
+    if (!stream_valid(stream))
+    {
+        pw_thread_loop_unlock(pw_loop_global);
+        params->result = AUDCLNT_E_DEVICE_INVALIDATED;
+        return STATUS_SUCCESS;
+    }
     pipewire_capture_padding(stream);
     if (stream->locked_ptr)
         *params->frames = stream->period_bytes / stream->frame_size;
