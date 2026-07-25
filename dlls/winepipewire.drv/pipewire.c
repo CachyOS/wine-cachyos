@@ -102,7 +102,7 @@ struct pipewire_stream
     REFERENCE_TIME duration;
 
     INT32 locked;
-    BOOL started;
+    BOOL started; /* atomic: control release-stores, process callback load-acquires */
     SIZE_T bufsize_frames, real_bufsize_bytes, period_bytes;
     /* render ring bookkeeping: lcl_offs/held track the application side,
      * pa_offs/pa_held track the process-callback reader (field names kept
@@ -1720,7 +1720,7 @@ static void on_stream_process(void *data)
             req_frames = (UINT32)b->requested;
         need_bytes = req_frames * stream->frame_size;
 
-        if (stream->started)
+        if (__atomic_load_n(&stream->started, __ATOMIC_ACQUIRE))
         {
             /* copy_from_ring wraps once, so a count above the ring size
              * would read past the allocation. */
@@ -1749,7 +1749,7 @@ static void on_stream_process(void *data)
     }
     else /* eCapture */
     {
-        if (stream->started && stream->capture_ring)
+        if (__atomic_load_n(&stream->started, __ATOMIC_ACQUIRE) && stream->capture_ring)
         {
             UINT32 offs = min(d->chunk->offset, d->maxsize);
             UINT32 avail = min(d->chunk->size, d->maxsize - offs);
@@ -2426,9 +2426,16 @@ static NTSTATUS pipewire_start(void *args)
         return STATUS_SUCCESS;
     }
 
+    /* Publish started before activating: once the node is active the process
+     * callback may run, and it must not see a started=FALSE stream that is
+     * already producing.  set_active still precedes add_stream_to_period so a
+     * failed activation cannot leave the stream linked into the period. */
+    __atomic_store_n(&stream->started, TRUE, __ATOMIC_RELEASE);
+
     if (pw_stream_set_active(stream->pw, true) < 0)
     {
         /* mirrors pulse_start's failed-uncork path */
+        __atomic_store_n(&stream->started, FALSE, __ATOMIC_RELEASE);
         WARN("pw_stream_set_active failed for stream %p.\n", stream);
         params->result = E_FAIL;
         pw_thread_loop_unlock(pw_loop_global);
@@ -2439,11 +2446,11 @@ static NTSTATUS pipewire_start(void *args)
     {
         if (pw_stream_set_active(stream->pw, false) < 0)
             WARN("pw_stream_set_active(false) rollback failed for stream %p.\n", stream);
+        __atomic_store_n(&stream->started, FALSE, __ATOMIC_RELEASE);
         pw_thread_loop_unlock(pw_loop_global);
         return STATUS_SUCCESS;
     }
 
-    stream->started = TRUE;
     pw_thread_loop_unlock(pw_loop_global);
     return STATUS_SUCCESS;
 }
@@ -2471,7 +2478,9 @@ static NTSTATUS pipewire_stop(void *args)
 
     if (pw_stream_set_active(stream->pw, false) < 0)
         WARN("pw_stream_set_active(false) failed for stream %p.\n", stream);
-    stream->started = FALSE;
+    /* after set_active(false): its data-loop barrier has drained any
+     * in-flight callback, so no reader can still observe started=TRUE */
+    __atomic_store_n(&stream->started, FALSE, __ATOMIC_RELEASE);
     pw_thread_loop_unlock(pw_loop_global);
     params->result = S_OK;
     return STATUS_SUCCESS;
