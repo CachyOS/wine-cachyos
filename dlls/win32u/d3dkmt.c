@@ -705,6 +705,21 @@ typedef struct
     } info[1];
 } AMDLargeDriverPrivate;
 
+typedef enum _KMTUMDVERSION {
+  KMTUMDVERSION_DX9,
+  KMTUMDVERSION_DX10,
+  KMTUMDVERSION_DX11,
+  KMTUMDVERSION_DX12,
+  KMTUMDVERSION_DX12_WSA32,
+  KMTUMDVERSION_DX12_WSA64,
+  NUM_KMTUMDVERSIONS
+} KMTUMDVERSION;
+
+typedef struct _D3DKMT_UMDFILENAMEINFO {
+    KMTUMDVERSION Version;
+    WCHAR         UmdFileName[MAX_PATH];
+} D3DKMT_UMDFILENAMEINFO;
+
 /******************************************************************************
  *           NtGdiDdDDIQueryAdapterInfo    (win32u.@)
  */
@@ -860,6 +875,35 @@ NTSTATUS WINAPI NtGdiDdDDIQueryAdapterInfo( D3DKMT_QUERYADAPTERINFO *desc )
         }
 
         FIXME("Unsupported KMTQAITYPE_UMDRIVERPRIVATE!\n");
+        return STATUS_NOT_IMPLEMENTED;
+    }
+    case KMTQAITYPE_UMDRIVERNAME:
+    {
+        VkPhysicalDeviceProperties2KHR properties2 = {0};
+        struct vulkan_physical_device *physical_device;
+        struct vulkan_instance *instance;
+        D3DKMT_UMDFILENAMEINFO *info = desc->pPrivateDriverData;
+
+        if (desc->PrivateDriverDataSize < sizeof(*info)) return STATUS_INVALID_PARAMETER;
+        if (info->Version >= NUM_KMTUMDVERSIONS) return STATUS_INVALID_PARAMETER;
+
+        TRACE("Version %u\n", info->Version);
+
+        if (!(adapter = get_d3dkmt_object( desc->hAdapter, D3DKMT_ADAPTER ))) return STATUS_INVALID_PARAMETER;
+        if (!(physical_device = adapter->physical_device)) return STATUS_INVALID_PARAMETER;
+        instance = physical_device->instance;
+
+        properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2_KHR;
+        instance->p_vkGetPhysicalDeviceProperties2KHR( physical_device->host.physical_device, &properties2 );
+
+        if (properties2.properties.vendorID == 0x1002 && info->Version >= KMTUMDVERSION_DX12)
+        {
+            asciiz_to_unicode(info->UmdFileName, "C:\\Windows\\System32\\amdxc64.dll");
+            return STATUS_SUCCESS;
+        }
+
+        FIXME("KMTQAITYPE_UMDRIVERNAME\n");
+
         return STATUS_NOT_IMPLEMENTED;
     }
     default:
