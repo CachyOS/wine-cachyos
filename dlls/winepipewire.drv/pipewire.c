@@ -128,6 +128,7 @@ struct pipewire_stream
     SIZE_T capture_ring_size, cap_read_offs, cap_held_bytes;
 
     INT64 clock_lastpos, clock_written;
+    /* atomic: process callback relaxed-increments, timer/control relaxed-load */
     UINT32 underrun_count, overrun_count, bad_buffer_count;
     BOOL underrun_logged, overrun_logged, bad_buffer_logged;
 
@@ -1703,7 +1704,7 @@ static void on_stream_process(void *data)
     if (!buf || !buf->n_datas || !buf->datas ||
         !(d = &buf->datas[0])->data || !d->chunk)
     {
-        stream->bad_buffer_count++;
+        __atomic_add_fetch(&stream->bad_buffer_count, 1, __ATOMIC_RELAXED);
         pw_stream_queue_buffer(stream->pw, b);
         return;
     }
@@ -1734,7 +1735,7 @@ static void on_stream_process(void *data)
             if (n < need_bytes)
             {
                 silence_buffer(stream->info.format, (BYTE *)d->data + n, need_bytes - n);
-                stream->underrun_count++;
+                __atomic_add_fetch(&stream->underrun_count, 1, __ATOMIC_RELAXED);
             }
             stream->pa_offs_bytes = (stream->pa_offs_bytes + n) % stream->real_bufsize_bytes;
             __atomic_sub_fetch(&stream->pa_held_bytes, n, __ATOMIC_RELEASE);
@@ -1767,7 +1768,7 @@ static void on_stream_process(void *data)
                 SIZE_T drop = cap_held + n - stream->capture_ring_size;
                 stream->cap_read_offs = (stream->cap_read_offs + drop) % stream->capture_ring_size;
                 __atomic_sub_fetch(&stream->cap_held_bytes, drop, __ATOMIC_RELEASE);
-                stream->overrun_count++;
+                __atomic_add_fetch(&stream->overrun_count, 1, __ATOMIC_RELAXED);
             }
             if (n)
             {
@@ -2107,9 +2108,13 @@ static NTSTATUS pipewire_release_stream(void *args)
 
     pw_thread_loop_lock(pw_loop_global);
     TRACE("stream %p.\n", stream);
-    if (stream->underrun_count || stream->overrun_count || stream->bad_buffer_count)
-        WARN("stream %p underran %u times, overran %u times, bad buffers %u.\n",
-             stream, stream->underrun_count, stream->overrun_count, stream->bad_buffer_count);
+    if (__atomic_load_n(&stream->underrun_count, __ATOMIC_RELAXED) ||
+        __atomic_load_n(&stream->overrun_count, __ATOMIC_RELAXED) ||
+        __atomic_load_n(&stream->bad_buffer_count, __ATOMIC_RELAXED))
+        WARN("stream %p underran %u times, overran %u times, bad buffers %u.\n", stream,
+             __atomic_load_n(&stream->underrun_count, __ATOMIC_RELAXED),
+             __atomic_load_n(&stream->overrun_count, __ATOMIC_RELAXED),
+             __atomic_load_n(&stream->bad_buffer_count, __ATOMIC_RELAXED));
     if (stream->period)
     {
         struct pipewire_period *period = stream->period;
@@ -2322,20 +2327,24 @@ static void pipewire_period_timer_loop(void *args)
 
         LIST_FOR_EACH_ENTRY(stream, &period->streams, struct pipewire_stream, period_entry)
         {
-            if (stream->underrun_count && !stream->underrun_logged)
+            UINT32 n;
+
+            if ((n = __atomic_load_n(&stream->underrun_count, __ATOMIC_RELAXED)) &&
+                !stream->underrun_logged)
             {
-                WARN("stream %p first underrun (count %u).\n", stream, stream->underrun_count);
+                WARN("stream %p first underrun (count %u).\n", stream, n);
                 stream->underrun_logged = TRUE;
             }
-            if (stream->overrun_count && !stream->overrun_logged)
+            if ((n = __atomic_load_n(&stream->overrun_count, __ATOMIC_RELAXED)) &&
+                !stream->overrun_logged)
             {
-                WARN("stream %p first overrun (count %u).\n", stream, stream->overrun_count);
+                WARN("stream %p first overrun (count %u).\n", stream, n);
                 stream->overrun_logged = TRUE;
             }
-            if (stream->bad_buffer_count && !stream->bad_buffer_logged)
+            if ((n = __atomic_load_n(&stream->bad_buffer_count, __ATOMIC_RELAXED)) &&
+                !stream->bad_buffer_logged)
             {
-                WARN("stream %p first bad process buffer (count %u).\n",
-                     stream, stream->bad_buffer_count);
+                WARN("stream %p first bad process buffer (count %u).\n", stream, n);
                 stream->bad_buffer_logged = TRUE;
             }
             if (stream->event)
