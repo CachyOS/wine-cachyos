@@ -81,6 +81,51 @@ static ULONG_PTR zero_bits = 0;
  * Stream and device structures (struct pulse_stream transplant)
  * ---------------------------------------------------------------------- */
 
+/* Ownership token for one period-sized capture slot; see the capture ring
+ * comment in struct pipewire_stream.
+ *
+ * State and publication sequence share ONE atomic word so every transition
+ * compare-exchanges the exact value it observed.  On the state alone, a slot
+ * evicted and republished between a scan and its claim would read FULL both
+ * times and be delivered ahead of older slots; folding the sequence in makes
+ * any recycle change the compared word, so the exchange fails and the caller
+ * rescans.  30 bits of sequence wrap after about 128 days of continuous
+ * capture at a 10 ms period, and an ABA needs that wrap inside one
+ * scan-to-claim window. */
+enum cap_slot_state
+{
+    CAP_FREE = 0,   /* nobody owns the bytes */
+    CAP_FILLING,    /* producer owns them */
+    CAP_FULL,       /* published, unclaimed */
+    CAP_INUSE,      /* consumer owns them */
+};
+
+#define CAP_STATE_BITS 2
+#define CAP_STATE_MASK 3u
+#define CAP_STATE(w)   ((w) & CAP_STATE_MASK)
+#define CAP_SEQ(w)     ((w) >> CAP_STATE_BITS)
+#define CAP_SEQ_MAX    (~0u >> CAP_STATE_BITS)
+#define CAP_WORD(s, st) ((((s) & CAP_SEQ_MAX) << CAP_STATE_BITS) | (st))
+
+struct cap_slot
+{
+    UINT32 word;    /* CAP_WORD(sequence, state); only changed by exchange */
+    BOOL disc;      /* audio was lost immediately before this slot; written
+                     * by whoever owns the slot, so it needs no atomicity */
+};
+
+/* An aligned base only keeps every element aligned if the stride is a whole
+ * number of alignments; pin that so a later field cannot break it silently. */
+C_ASSERT(sizeof(struct cap_slot) % _Alignof(struct cap_slot) == 0);
+
+/* Publication order of two slot words, wraparound safe.  Masking off the
+ * state leaves the sequence already shifted, so a signed difference gives the
+ * right answer across a 30-bit wrap. */
+static BOOL cap_seq_before(UINT32 a, UINT32 b)
+{
+    return (INT32)((a & ~CAP_STATE_MASK) - (b & ~CAP_STATE_MASK)) < 0;
+}
+
 struct pipewire_stream
 {
     EDataFlow dataflow;
@@ -117,15 +162,30 @@ struct pipewire_stream
     void *locked_ptr;
     UINT64 mmdev_period_usec;
 
-    /* capture staging ring: the analogue of PulseAudio's internal record
-     * buffer.  The pw_stream process callback (on the main loop thread,
-     * lock held) appends raw bytes here; the Wine timer thread slices
-     * period-sized ACPackets out of it with QPC timestamps.  Both sides
-     * take the loop lock, so cap_held_bytes is not concurrently accessed;
-     * the atomics are retained only as future-proofing for RT_PROCESS.
-     * cap_read_offs stays plain. */
+    /* Capture staging ring, the analogue of PulseAudio's internal record
+     * buffer: the process callback appends raw bytes, the Wine timer thread
+     * slices period-sized ACPackets out with QPC timestamps.
+     *
+     * Ownership of a slot's BYTES follows ownership of its state word, which
+     * only changes by compare-exchange (FREE, FILLING, FULL, INUSE), so
+     * neither side can enter a slot without taking it out of the other's
+     * reach.  That is also what keeps drop-oldest, which a plain SPSC ring
+     * cannot: with nothing free the producer reclaims the oldest FULL slot,
+     * an exchange that can only succeed if the consumer has not claimed it.
+     * Dropping the newest would hand the application a stale backlog after a
+     * stall.  Slots are published in fill order via seq, compared with
+     * wraparound safe signed differences. */
     BYTE *capture_ring;
-    SIZE_T capture_ring_size, cap_read_offs, cap_held_bytes;
+    SIZE_T capture_ring_size;
+    struct cap_slot *cap_slots;
+    UINT32 cap_n_slots;
+    UINT32 cap_w_slot;    /* producer-private: slot being filled */
+    SIZE_T cap_w_fill;    /* producer-private: bytes already in it */
+    UINT32 cap_w_seq;     /* producer-private: next publication sequence */
+    BOOL cap_filling;     /* producer-private: cap_w_slot is held FILLING */
+    BOOL cap_lost;        /* producer-private: loss with no sequence gap,
+                           * charged to the next slot published */
+    UINT32 cap_next_seq;  /* consumer-private: sequence expected next */
 
     INT64 clock_lastpos, clock_written;
     /* atomic: process callback relaxed-increments, timer/control relaxed-load */
@@ -303,6 +363,48 @@ static UINT spa_format_bytes(enum spa_audio_format f)
 static void silence_buffer(enum spa_audio_format format, BYTE *buffer, UINT32 bytes)
 {
     memset(buffer, format == SPA_AUDIO_FORMAT_U8 ? 0x80 : 0, bytes);
+}
+
+/* Take ownership of the slot the producer is due to fill next.  A FREE slot
+ * is taken outright; otherwise the oldest FULL slot is evicted, which is what
+ * makes the policy drop-oldest.  Either transition is a compare-exchange, so
+ * a slot the consumer has already claimed can never be taken from under it,
+ * and the producer simply moves on to the next one.  Runs on the process
+ * callback: no allocation, no logging, no Wine calls. */
+static BOOL cap_acquire_slot(struct pipewire_stream *stream)
+{
+    UINT32 tries;
+
+    for (tries = 0; tries < stream->cap_n_slots; tries++)
+    {
+        struct cap_slot *slot = &stream->cap_slots[stream->cap_w_slot];
+        UINT32 w = __atomic_load_n(&slot->word, __ATOMIC_ACQUIRE);
+        UINT32 st = CAP_STATE(w);
+
+        /* Exchange the whole observed word, not just the state, so a slot
+         * that was recycled since the load fails here rather than being
+         * silently taken in its new generation. */
+        if ((st == CAP_FREE || st == CAP_FULL) &&
+            __atomic_compare_exchange_n(&slot->word, &w, CAP_WORD(CAP_SEQ(w), CAP_FILLING),
+                                        FALSE, __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE))
+        {
+            if (st == CAP_FULL)
+            {
+                /* Evicted unread audio.  Do NOT flag here: eviction removes a
+                 * sequence number, and the consumer turns that missing
+                 * sequence into the discontinuity on exactly the packet that
+                 * gapped.  Flagging the slot we are about to publish would
+                 * put it on a later packet instead. */
+                __atomic_add_fetch(&stream->overrun_count, 1, __ATOMIC_RELAXED);
+            }
+            stream->cap_filling = TRUE;
+            stream->cap_w_fill = 0;
+            return TRUE;
+        }
+        /* CAP_FILLING, CAP_INUSE, or the consumer won the race: move on. */
+        stream->cap_w_slot = (stream->cap_w_slot + 1) % stream->cap_n_slots;
+    }
+    return FALSE;
 }
 
 /* copy n bytes out of a byte ring starting at offs, wrapping at ring_size */
@@ -1755,29 +1857,54 @@ static void on_stream_process(void *data)
             UINT32 offs = min(d->chunk->offset, d->maxsize);
             UINT32 avail = min(d->chunk->size, d->maxsize - offs);
             const BYTE *src = (const BYTE *)d->data + offs;
-            SIZE_T n = avail, cap_held;
+            SIZE_T n = avail;
 
+            /* A chunk larger than the whole ring can only be represented by
+             * its tail, which is the newest audio in it. */
             if (n > stream->capture_ring_size)
             {
                 src += n - stream->capture_ring_size;
                 n = stream->capture_ring_size;
-            }
-            cap_held = __atomic_load_n(&stream->cap_held_bytes, __ATOMIC_ACQUIRE);
-            if (cap_held + n > stream->capture_ring_size)
-            {
-                SIZE_T drop = cap_held + n - stream->capture_ring_size;
-                stream->cap_read_offs = (stream->cap_read_offs + drop) % stream->capture_ring_size;
-                __atomic_sub_fetch(&stream->cap_held_bytes, drop, __ATOMIC_RELEASE);
                 __atomic_add_fetch(&stream->overrun_count, 1, __ATOMIC_RELAXED);
+                stream->cap_lost = TRUE;
             }
-            if (n)
+
+            while (n)
             {
-                SIZE_T woff = (stream->cap_read_offs + stream->cap_held_bytes) % stream->capture_ring_size;
-                SIZE_T first = min(n, stream->capture_ring_size - woff);
-                memcpy(stream->capture_ring + woff, src, first);
-                if (n > first)
-                    memcpy(stream->capture_ring, src + first, n - first);
-                __atomic_add_fetch(&stream->cap_held_bytes, n, __ATOMIC_RELEASE);
+                struct cap_slot *slot;
+                SIZE_T take;
+
+                if (!stream->cap_filling && !cap_acquire_slot(stream))
+                {
+                    /* Every slot is held by the consumer: the rest of this
+                     * chunk is dropped, and a drop must be reported like any
+                     * other, otherwise the application sees a gap with no
+                     * discontinuity to explain it. */
+                    __atomic_add_fetch(&stream->overrun_count, 1, __ATOMIC_RELAXED);
+                    stream->cap_lost = TRUE;
+                    break;
+                }
+                slot = &stream->cap_slots[stream->cap_w_slot];
+                take = min(n, stream->period_bytes - stream->cap_w_fill);
+                memcpy(stream->capture_ring + stream->cap_w_slot * stream->period_bytes +
+                       stream->cap_w_fill, src, take);
+                stream->cap_w_fill += take;
+                src += take;
+                n -= take;
+                if (stream->cap_w_fill == stream->period_bytes)
+                {
+                    /* We own the slot as CAP_FILLING, so nobody else can
+                     * transition it and a release store suffices.  The
+                     * release also publishes slot->disc. */
+                    slot->disc = stream->cap_lost;
+                    stream->cap_lost = FALSE;
+                    __atomic_store_n(&slot->word,
+                                     CAP_WORD(stream->cap_w_seq, CAP_FULL), __ATOMIC_RELEASE);
+                    stream->cap_w_seq = (stream->cap_w_seq + 1) & CAP_SEQ_MAX;
+                    stream->cap_filling = FALSE;
+                    stream->cap_w_slot = (stream->cap_w_slot + 1) % stream->cap_n_slots;
+                    stream->cap_w_fill = 0;
+                }
             }
         }
     }
@@ -2045,6 +2172,7 @@ static NTSTATUS pipewire_create_stream(void *args)
     else
     {
         UINT32 capture_packets, unalign;
+        SIZE_T slots_offs;
 
         if ((unalign = bufsize_bytes % stream->period_bytes))
             bufsize_bytes += stream->period_bytes - unalign;
@@ -2071,13 +2199,35 @@ static NTSTATUS pipewire_create_stream(void *args)
                 data += stream->period_bytes;
             }
 
-            /* staging ring fed by the process callback */
-            size = stream->capture_ring_size = stream->real_bufsize_bytes;
+            /* Staging ring carved into period-sized slots with the state
+             * array appended.  The array has to start aligned: the ring
+             * length is a multiple of period_bytes, which need not be a
+             * multiple of four (packed 24 bit stereo at 30 ms gives 7938),
+             * and misaligned atomics are undefined and not lock free
+             * everywhere. */
+            stream->cap_n_slots = stream->real_bufsize_bytes / stream->period_bytes;
+            stream->capture_ring_size = stream->real_bufsize_bytes;
+            slots_offs = (stream->capture_ring_size + _Alignof(struct cap_slot) - 1) &
+                         ~(SIZE_T)(_Alignof(struct cap_slot) - 1);
+            size = slots_offs + stream->cap_n_slots * sizeof(*stream->cap_slots);
             if (NtAllocateVirtualMemory(GetCurrentProcess(), (void **)&stream->capture_ring,
                                         zero_bits, &size, MEM_COMMIT, PAGE_READWRITE))
             {
                 WARN("Out of memory allocating capture ring (%lu bytes).\n", (unsigned long)size);
                 hr = E_OUTOFMEMORY;
+            }
+            else
+            {
+                stream->cap_slots = (struct cap_slot *)(stream->capture_ring + slots_offs);
+                /* The allocator hands back page-aligned memory and the offset
+                 * above is rounded, so this cannot trip; refuse the stream
+                 * rather than run the atomics on a misaligned word if it
+                 * ever does. */
+                if ((UINT_PTR)stream->cap_slots & (_Alignof(struct cap_slot) - 1))
+                {
+                    WARN("Capture slot array misaligned at %p.\n", stream->cap_slots);
+                    hr = E_FAIL;
+                }
             }
         }
     }
@@ -2194,11 +2344,60 @@ static NTSTATUS pipewire_release_stream(void *args)
  * thread per (device, period) group)
  * ---------------------------------------------------------------------- */
 
-/* Slice period-sized packets out of the staging ring.  Runs on the Wine
- * timer thread with the loop lock held: ntdll (QPC) is legal here. */
+/* Claim the oldest published slot, if any, and return it owned by us.  Runs
+ * on the Wine timer thread.  Slots are ordered by publication sequence with a
+ * wraparound safe comparison, and the claim exchanges the whole state and
+ * sequence word, so the slot we end up owning is exactly the one the scan
+ * chose rather than whatever the producer put there since. */
+static struct cap_slot *cap_claim_slot(struct pipewire_stream *stream, UINT32 *out_idx,
+                                      UINT32 *out_seq)
+{
+    UINT32 pass;
+
+    for (pass = 0; pass < stream->cap_n_slots; pass++)
+    {
+        UINT32 best = stream->cap_n_slots, best_word = 0, i;
+
+        for (i = 0; i < stream->cap_n_slots; i++)
+        {
+            UINT32 w = __atomic_load_n(&stream->cap_slots[i].word, __ATOMIC_ACQUIRE);
+
+            if (CAP_STATE(w) != CAP_FULL)
+                continue;
+            if (best == stream->cap_n_slots || cap_seq_before(w, best_word))
+            {
+                best = i;
+                best_word = w;
+            }
+        }
+        if (best == stream->cap_n_slots)
+            return NULL;
+
+        /* Exchange the exact word the scan saw.  If the producer evicted and
+         * republished this slot in between, its sequence changed and this
+         * fails, so we rescan instead of delivering out of order. */
+        if (__atomic_compare_exchange_n(&stream->cap_slots[best].word, &best_word,
+                                        CAP_WORD(CAP_SEQ(best_word), CAP_INUSE),
+                                        FALSE, __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE))
+        {
+            *out_idx = best;
+            *out_seq = CAP_SEQ(best_word);
+            return &stream->cap_slots[best];
+        }
+        /* The producer evicted it first; rescan. */
+    }
+    return NULL;
+}
+
+/* Slice period-sized packets out of the staging ring.  Runs on the Wine timer
+ * thread with the loop lock held: ntdll (QPC) is legal here.  Only ever
+ * touches slots it has taken to CAP_INUSE. */
 static void pipewire_read(struct pipewire_stream *stream)
 {
-    while (__atomic_load_n(&stream->cap_held_bytes, __ATOMIC_ACQUIRE) >= stream->period_bytes)
+    struct cap_slot *slot;
+    UINT32 idx, seq;
+
+    while ((slot = cap_claim_slot(stream, &idx, &seq)))
     {
         ACPacket *p, *next;
         LARGE_INTEGER stamp, freq;
@@ -2206,7 +2405,11 @@ static void pipewire_read(struct pipewire_stream *stream)
         if (!(p = (ACPacket *)list_head(&stream->packet_free_head)))
         {
             p = (ACPacket *)list_head(&stream->packet_filled_head);
-            if (!p) return;
+            if (!p)
+            {
+                __atomic_store_n(&slot->word, CAP_WORD(seq, CAP_FULL), __ATOMIC_RELEASE);
+                return;
+            }
             if (!p->discont)
             {
                 next = (ACPacket *)p->entry.next;
@@ -2221,14 +2424,24 @@ static void pipewire_read(struct pipewire_stream *stream)
         }
         NtQueryPerformanceCounter(&stamp, &freq);
         p->qpcpos = (stamp.QuadPart * (INT64)10000000) / freq.QuadPart;
-        p->discont = 0;
+        /* Two kinds of loss, each attributed to the packet that follows it.
+         * An eviction removes a sequence number, so an unexpected sequence
+         * means audio was lost immediately before this packet.  A clamp or an
+         * all-slots-held drop loses audio without removing a sequence, so the
+         * producer marks the next slot it publishes.
+         *
+         * The expected sequence starts at zero, not at whatever arrives
+         * first, so opening slots evicted before the timer's first claim are
+         * reported too; a first-claim baseline would hide a loss bounded only
+         * by how long that claim is delayed. */
+        p->discont = slot->disc || seq != stream->cap_next_seq;
+        stream->cap_next_seq = (seq + 1) & CAP_SEQ_MAX;
         list_remove(&p->entry);
         list_add_tail(&stream->packet_filled_head, &p->entry);
 
-        copy_from_ring(p->data, stream->capture_ring, stream->capture_ring_size,
-                       stream->cap_read_offs, stream->period_bytes);
-        stream->cap_read_offs = (stream->cap_read_offs + stream->period_bytes) % stream->capture_ring_size;
-        __atomic_sub_fetch(&stream->cap_held_bytes, stream->period_bytes, __ATOMIC_RELEASE);
+        memcpy(p->data, stream->capture_ring + (SIZE_T)idx * stream->period_bytes,
+               stream->period_bytes);
+        __atomic_store_n(&slot->word, CAP_WORD(seq, CAP_FREE), __ATOMIC_RELEASE);
     }
 }
 
@@ -2517,6 +2730,7 @@ static NTSTATUS pipewire_reset(void *args)
 {
     struct reset_params *params = args;
     struct pipewire_stream *stream = handle_get_stream(params->stream);
+    UINT32 i;
 
     TRACE("stream %p.\n", stream);
     pw_thread_loop_lock(pw_loop_global);
@@ -2556,8 +2770,19 @@ static NTSTATUS pipewire_reset(void *args)
         ACPacket *p;
         stream->clock_written += stream->held_bytes;
         stream->held_bytes = 0;
-        stream->cap_read_offs = 0;
-        __atomic_store_n(&stream->cap_held_bytes, 0, __ATOMIC_RELEASE);
+        /* Stop's set_active(false) barrier drained the callback, so the slots
+         * are quiescent here and can be reset without an exchange. */
+        for (i = 0; i < stream->cap_n_slots; i++)
+        {
+            stream->cap_slots[i].word = CAP_WORD(0, CAP_FREE);
+            stream->cap_slots[i].disc = FALSE;
+        }
+        stream->cap_w_slot = 0;
+        stream->cap_w_fill = 0;
+        stream->cap_w_seq = 0;
+        stream->cap_filling = FALSE;
+        stream->cap_lost = FALSE;
+        stream->cap_next_seq = 0;
 
         if ((p = stream->locked_ptr))
         {
