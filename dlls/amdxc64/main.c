@@ -638,6 +638,78 @@ static const struct AmdExtD3DFactory amd_d3d_factory = {
     .IAmdExtD3DFactory_iface = { &AmdExtD3DFactory_vtable },
 };
 
+struct AmdExtD3DCreateDevice
+{
+    IAmdExtD3DCreateDevice IAmdExtD3DCreateDevice_iface;
+};
+
+HRESULT STDMETHODCALLTYPE AmdExtD3DCreateDevice_QueryInterface(IAmdExtD3DCreateDevice *iface, REFIID iid, void **out)
+{
+    FIXME("%p %s %p stub!\n", iface, debugstr_guid(iid), out);
+    return E_NOTIMPL;
+}
+
+ULONG STDMETHODCALLTYPE AmdExtD3DCreateDevice_AddRef(IAmdExtD3DCreateDevice *iface)
+{
+    return 2;
+}
+
+ULONG STDMETHODCALLTYPE AmdExtD3DCreateDevice_Release(IAmdExtD3DCreateDevice *iface)
+{
+    return 1;
+}
+
+HRESULT STDMETHODCALLTYPE AmdExtD3DCreateDevice_AmdD3D12CreateDevice(IAmdExtD3DCreateDevice *iface, IDXGIAdapter *adapter, D3D_FEATURE_LEVEL minLevel,
+                                                                     REFIID iid, void **device, AmdExtD3DCreateDeviceInfo *ext)
+{
+    HRESULT ret;
+    HMODULE d3d12 = LoadLibraryW(L"d3d12.dll");
+    static typeof(D3D12CreateDevice) *pD3D12CreateDevice;
+
+    TRACE("%p %p %u %s %p %p\n", iface, adapter, minLevel, debugstr_guid(iid), device, ext);
+
+    if (!d3d12) return E_FAIL;
+
+    pD3D12CreateDevice = (void *)GetProcAddress(d3d12, "D3D12CreateDevice");
+    if (!pD3D12CreateDevice) return E_FAIL;
+
+    ret = pD3D12CreateDevice((IUnknown *)adapter, minLevel, iid, device);
+
+    while (ext)
+    {
+        switch (ext->type)
+        {
+            case AmdExtD3DStructTypeAppRegId:
+            {
+                AmdExtAppRegInfo *info = (void *)ext;
+                /* TODO add an interface into vkd3d-proton for this */
+                TRACE("reg info %s %u %s %u\n", debugstr_w(info->appName), info->appVersion,
+                                                debugstr_w(info->pEngineName), info->engineVersion);
+                break;
+            }
+            default:
+                FIXME("Unimplemented ext type %u\n", ext->type);
+                break;
+        }
+
+        ext = (void *)ext->pNext;
+    }
+
+    FreeLibrary(d3d12);
+    return ret;
+}
+
+static const struct IAmdExtD3DCreateDeviceVtbl AmdExtD3DCreateDevice_vtable = {
+    AmdExtD3DCreateDevice_QueryInterface,
+    AmdExtD3DCreateDevice_AddRef,
+    AmdExtD3DCreateDevice_Release,
+    AmdExtD3DCreateDevice_AmdD3D12CreateDevice,
+};
+
+static const struct AmdExtD3DCreateDevice amd_d3d_create = {
+    .IAmdExtD3DCreateDevice_iface = { &AmdExtD3DCreateDevice_vtable },
+};
+
 HRESULT CDECL AmdExtD3DCreateInterface(IUnknown *outer, REFIID iid, void **obj)
 {
     TRACE("outer %p, iid %s, obj %p\n", outer, debugstr_guid(iid), obj);
@@ -655,6 +727,9 @@ HRESULT CDECL AmdExtD3DCreateInterface(IUnknown *outer, REFIID iid, void **obj)
         return ID3D12Device_QueryInterface((ID3D12Device *)outer, &IID_IAmdExtAntiLagApi, obj);
     } else if (IsEqualGUID(iid, &IID_IAmdExtD3DFactory)) {
         *obj = (void *)&amd_d3d_factory.IAmdExtD3DFactory_iface;
+        return S_OK;
+    } else if (IsEqualGUID(iid, &IID_IAmdExtD3DCreateDevice)) {
+        *obj = (void *)&amd_d3d_create.IAmdExtD3DCreateDevice_iface;
         return S_OK;
     } else {
         FIXME("unknown guid: %s\n", debugstr_guid(iid));
