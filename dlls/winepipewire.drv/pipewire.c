@@ -60,6 +60,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <sys/random.h>
 
 #include <pipewire/pipewire.h>
 #include <pipewire/extensions/metadata.h>
@@ -370,12 +371,25 @@ static WCHAR *utf8_to_wstr(const char *s)
 
 /* Render dispatch mode, read from the environment once per process.  With
  * PW_STREAM_FLAG_RT_PROCESS the process callback runs on PipeWire's realtime
- * data thread rather than the thread loop.  What that is worth in latency is
- * the graph's decision; what it removes for certain is the lock that
- * serialized the callback against the control paths.  Capture never sets it:
- * its source is its own driver, so it has nothing to win for the same
- * exposure. */
+ * data thread rather than the thread loop, and libpipewire stops asking for
+ * async scheduling on the node.  What that is worth in latency is the graph's
+ * decision; what it removes for certain is the lock that serialized the
+ * callback against the control paths.  Capture never sets it: its source is
+ * its own driver, so it has nothing to win for the same exposure. */
 static BOOL rt_render;
+
+/* Identifies one process run, so a PROTON_LOG and a core dump can be shown to
+ * describe the same run instead of assumed to: every dispatch line carries
+ * the value and the global is readable out of a core by name.
+ *
+ * Zero is the never-initialised sentinel and the live value is forced off it,
+ * so a core taken before attach finished does not compare zero against zero.
+ * Entropy is 64 bits from getrandom mixed with the pid and a monotonic
+ * nanosecond count; a bare pid would not do, since pids recycle and a
+ * collision certifies a mismatched pairing.  Treat the value as opaque.
+ *
+ * It says nothing about scheduling. */
+static UINT64 dispatch_token;
 
 static struct pipewire_stream *handle_get_stream(stream_handle h)
 {
@@ -751,16 +765,30 @@ static void pipewire_set_plugin_dirs(void)
 static NTSTATUS pipewire_process_attach(void *args)
 {
     const char *rt = getenv("WINEPIPEWIRE_RT");
+    struct timespec ts;
+    UINT64 rnd = 0;
 
     pipewire_set_plugin_dirs();
     pw_init(NULL, NULL);
     TRACE("PipeWire %s, header %s\n", pw_get_library_version(), pw_get_headers_version());
 
+    /* First unix call the driver receives (mmdevapi/main.c:94), so the token
+     * is set before any stream can connect and no dispatch line can be
+     * emitted without one. */
+    if (getrandom(&rnd, sizeof(rnd), 0) != (ssize_t)sizeof(rnd))
+        rnd = 0;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    dispatch_token = rnd ^ ((UINT64)(getpid() & 0xffff) << 48) ^
+                     ((((UINT64)ts.tv_sec * 1000000000 + ts.tv_nsec)) & 0xffffffffffffull);
+    if (!dispatch_token)
+        dispatch_token = 1;
+
     rt_render = rt && !strcmp(rt, "1");
     /* Only what was asked for.  What actually happens is not known until a
      * stream connects and the data loop can be compared, so the line that a
      * crash report is read against is emitted there, not here. */
-    TRACE("WINEPIPEWIRE_RT=%d requested\n", rt_render);
+    TRACE("WINEPIPEWIRE_RT=%d requested, session=%016llx\n", rt_render,
+          (unsigned long long)dispatch_token);
     return STATUS_SUCCESS;
 }
 
@@ -2092,41 +2120,85 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
 
     /* Where the process callback actually ended up.  RT_PROCESS asks for the
      * data thread, but node.loop.class from PIPEWIRE_PROPS or a client.conf
-     * stream.rules entry decides independently and can both grant it to a
-     * stream that did not ask and deny it to one that did.  So report the
-     * measured loop, not the request: a log that states the requested mode
-     * would certify an RT run that never touched the RT path.
+     * stream.rules entry decides independently, in both directions, so report
+     * the measured loop rather than the request.
      *
-     * Once per distinct (dataflow, requested, effective) combination, so a
-     * later stream landing differently is not swallowed by an earlier one. */
+     * node.async is reported beside it because RT_PROCESS suppresses both
+     * properties (1.4.2 stream.c:2021-2025) while rules and PIPEWIRE_PROPS
+     * are applied afterwards (2063-2074) and can restore it alone.  The value
+     * is the property pw_stream_get_properties() reports after connect, the
+     * dict those stages wrote to (1792-1795) and the node reads
+     * (impl-node.c:1234).  It is NOT the graph's scheduling mode: the link
+     * decides from the OR of both nodes and the ASYNC flag on both ports
+     * (impl-link.c:1345-1347).  This line certifies which loop the callback
+     * runs on and what the node's async property became; it does not certify
+     * latency.
+     *
+     * Every line ends with session=<16 lowercase hex>, the per-process token
+     * that pairs the log with a core dump of the same run.
+     *
+     * Once per distinct (dataflow, requested, effective, async) combination.
+     * The matched case is WARN so the A/B recipe can grep it without full
+     * tracing; anything needing action is at ERR. */
     {
         struct pw_loop *dl = pw_stream_get_data_loop(stream->pw);
+        const struct pw_properties *sprops = pw_stream_get_properties(stream->pw);
+        const char *async = sprops ? pw_properties_get(sprops, PW_KEY_NODE_ASYNC) : NULL;
         const BOOL want_data = rt_render && stream->dataflow == eRender;
         const BOOL got_data = dl != pw_thread_loop_get_loop(pw_loop_global);
-        const UINT32 bit = 1u << ((stream->dataflow == eRender ? 4 : 0) |
-                                  (want_data ? 2 : 0) | (got_data ? 1 : 0));
+        const BOOL async_on = async && pw_properties_parse_bool(async);
+        const UINT32 bit = 1u << ((stream->dataflow == eRender ? 8 : 0) |
+                                  (want_data ? 4 : 0) | (got_data ? 2 : 0) |
+                                  (async_on ? 1 : 0));
         static UINT32 reported;
 
         if (!(reported & bit))
         {
-            reported |= bit;
-            ERR("audio dispatch: %s requested %s, effective %s, loop \"%s\"%s\n",
-                stream->dataflow == eRender ? "render" : "capture",
-                want_data ? "data-thread" : "driver-loop",
-                got_data ? "data-thread" : "driver-loop",
-                dl && dl->name ? dl->name : "?",
-                want_data == got_data ? "" :
-                    " -- MISMATCH, the requested mode is NOT in force");
+            const char *flow = stream->dataflow == eRender ? "render" : "capture";
+            const char *req = want_data ? "data-thread" : "driver-loop";
+            const char *eff = got_data ? "data-thread" : "driver-loop";
+            const char *name = dl && dl->name ? dl->name : "?";
 
-            if (want_data && !got_data)
-                ERR("audio dispatch: PW_STREAM_FLAG_RT_PROCESS did not take effect.  "
-                    "node.loop.class is pinned to the main loop, so this run does "
-                    "not exercise the realtime path and must not be reported as "
-                    "one.\n");
-            else if (!want_data && got_data)
-                ERR("audio dispatch: processing was redirected off the driver loop "
-                    "by node.loop.class; this configuration is not validated and "
-                    "can corrupt audio.\n");
+            reported |= bit;
+            if (want_data != got_data)
+            {
+                ERR("audio dispatch: %s requested %s, effective %s, node.async=%s, "
+                    "loop \"%s\" -- MISMATCH, the requested mode is NOT in force, "
+                    "session=%016llx\n", flow, req, eff, async ? async : "unset", name,
+                    (unsigned long long)dispatch_token);
+
+                if (want_data)
+                    ERR("audio dispatch: PW_STREAM_FLAG_RT_PROCESS did not take effect.  "
+                        "node.loop.class is pinned to the main loop, so this run does "
+                        "not exercise the realtime path and must not be reported as "
+                        "one.  session=%016llx\n", (unsigned long long)dispatch_token);
+                else
+                    ERR("audio dispatch: processing was redirected off the driver loop "
+                        "by node.loop.class; this configuration is not validated and "
+                        "can corrupt audio.  session=%016llx\n",
+                        (unsigned long long)dispatch_token);
+            }
+            else
+            {
+                WARN("audio dispatch: %s requested %s, effective %s, node.async=%s, "
+                     "loop \"%s\", session=%016llx\n", flow, req, eff,
+                     async ? async : "unset", name, (unsigned long long)dispatch_token);
+
+                if (want_data && async_on)
+                    ERR("audio dispatch: RT_PROCESS suppresses node.async, so the "
+                        "property being set means a stream.rules entry or "
+                        "PIPEWIRE_PROPS put it back.  An override is fighting the "
+                        "flag: the callback is on the data thread, but the scheduling "
+                        "the flag asks for must not be assumed for this run.  "
+                        "session=%016llx\n", (unsigned long long)dispatch_token);
+                else if (!want_data && !async_on)
+                    ERR("audio dispatch: libpipewire sets node.async for a stream "
+                        "without RT_PROCESS, so the property being %s means an "
+                        "override cleared it.  The callback runs on the driver loop, "
+                        "which is not realtime scheduled, with nothing asking the "
+                        "graph for slack in front of it.  session=%016llx\n",
+                        async ? async : "absent", (unsigned long long)dispatch_token);
+            }
         }
     }
 
