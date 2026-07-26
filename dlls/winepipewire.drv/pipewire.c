@@ -188,6 +188,8 @@ struct pipewire_stream
     INT64 clock_lastpos, clock_written;
     /* atomic: process callback relaxed-increments, timer/control relaxed-load */
     UINT32 underrun_count, overrun_count, bad_buffer_count;
+    UINT32 cb_seq;        /* callback-private: callbacks entered */
+    UINT32 cb_mark;       /* diagnostic breadcrumb, never read by the driver */
     BOOL underrun_logged, overrun_logged, bad_buffer_logged;
 
     struct list packet_free_head;
@@ -334,6 +336,21 @@ static WCHAR *utf8_to_wstr(const char *s)
     w[n] = '\0';
     return w;
 }
+
+/* Post-mortem breadcrumb.  The process callback publishes how far it got into
+ * stream->cb_mark, which the driver never reads; it exists to be recovered
+ * from a core file.  Zero means the callback has never run for this stream,
+ * otherwise the low bits give the phase and the rest a callback count.
+ *
+ * The stores are relaxed, so this is a HINT and not a happens-before witness:
+ * a mark can be published earlier or later than the code it brackets.
+ * Release ordering would fix that and is not worth paying for on the hot
+ * path.  Read the value as "roughly here", not as proof. */
+#define CB_ENTER 1  /* in the callback, buffer not yet validated */
+#define CB_BODY  2  /* buffer validated, moving audio */
+#define CB_DONE  3  /* buffer queued back, callback returning */
+#define CB_MARK(s, ph) \
+    __atomic_store_n(&(s)->cb_mark, ((s)->cb_seq << 2) | (ph), __ATOMIC_RELAXED)
 
 /* Render dispatch mode, read from the environment once per process.  With
  * PW_STREAM_FLAG_RT_PROCESS the process callback runs on PipeWire's realtime
@@ -1819,6 +1836,9 @@ static void on_stream_process(void *data)
     struct spa_buffer *buf;
     struct spa_data *d;
 
+    stream->cb_seq++;
+    CB_MARK(stream, CB_ENTER);
+
     if (!(b = pw_stream_dequeue_buffer(stream->pw)))
         return;
     buf = b->buffer;
@@ -1837,6 +1857,7 @@ static void on_stream_process(void *data)
         pw_stream_queue_buffer(stream->pw, b);
         return;
     }
+    CB_MARK(stream, CB_BODY);
 
     if (stream->dataflow == eRender)
     {
@@ -1937,6 +1958,7 @@ static void on_stream_process(void *data)
     }
 
     pw_stream_queue_buffer(stream->pw, b);
+    CB_MARK(stream, CB_DONE);
 }
 
 static const struct pw_stream_events stream_events = {
