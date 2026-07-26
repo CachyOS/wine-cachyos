@@ -2753,6 +2753,34 @@ static NTSTATUS pipewire_stop(void *args)
     return STATUS_SUCCESS;
 }
 
+/* The render ring's read cursor belongs to the process callback, so these run
+ * with the stream's data loop locked.  Under RT_PROCESS that loop is a
+ * separate thread the thread loop lock does not serialize against, and the
+ * invoke is the only thing between these and the callback.  Lock order is
+ * main -> data, matching pw_stream_set_active and pw_stream_flush; the
+ * callback never takes the thread loop lock, so there is no inverse path. */
+static int do_reset_ring(struct spa_loop *loop, bool async, uint32_t seq,
+                         const void *data, size_t size, void *user_data)
+{
+    struct pipewire_stream *stream = user_data;
+
+    stream->pa_offs_bytes = 0;
+    __atomic_store_n(&stream->pa_held_bytes, 0, __ATOMIC_RELEASE);
+    return 0;
+}
+
+/* Republish the writer's cursor after an overflow.  Reads the Wine-side
+ * fields, which the caller holds the thread loop lock over. */
+static int do_resync_ring(struct spa_loop *loop, bool async, uint32_t seq,
+                          const void *data, size_t size, void *user_data)
+{
+    struct pipewire_stream *stream = user_data;
+
+    stream->pa_offs_bytes = stream->lcl_offs_bytes;
+    __atomic_store_n(&stream->pa_held_bytes, stream->held_bytes, __ATOMIC_RELEASE);
+    return 0;
+}
+
 static NTSTATUS pipewire_reset(void *args)
 {
     struct reset_params *params = args;
@@ -2788,9 +2816,9 @@ static NTSTATUS pipewire_reset(void *args)
     if (stream->dataflow == eRender)
     {
         stream->clock_lastpos = stream->clock_written = 0;
-        stream->pa_offs_bytes = stream->lcl_offs_bytes = 0;
+        stream->lcl_offs_bytes = 0;
         stream->held_bytes = 0;
-        __atomic_store_n(&stream->pa_held_bytes, 0, __ATOMIC_RELEASE);
+        pw_loop_locked(pw_stream_get_data_loop(stream->pw), do_reset_ring, 0, NULL, 0, stream);
     }
     else
     {
@@ -2993,8 +3021,7 @@ static NTSTATUS pipewire_release_render_buffer(void *args)
         stream->real_bufsize_bytes)
     {
         WARN("%p PipeWire buffer overflow.\n", stream);
-        stream->pa_offs_bytes = stream->lcl_offs_bytes;
-        __atomic_store_n(&stream->pa_held_bytes, stream->held_bytes, __ATOMIC_RELEASE);
+        pw_loop_locked(pw_stream_get_data_loop(stream->pw), do_resync_ring, 0, NULL, 0, stream);
     }
     else
         __atomic_add_fetch(&stream->pa_held_bytes, written_bytes, __ATOMIC_RELEASE);
@@ -3268,18 +3295,6 @@ static NTSTATUS pipewire_set_event_handle(void *args)
     return STATUS_SUCCESS;
 }
 
-/* Runs with the stream's data loop locked, so the process callback cannot be
- * in flight and cannot start until this returns. */
-static int do_reset_ring(struct spa_loop *loop, bool async, uint32_t seq,
-                         const void *data, size_t size, void *user_data)
-{
-    struct pipewire_stream *stream = user_data;
-
-    stream->pa_offs_bytes = 0;
-    __atomic_store_n(&stream->pa_held_bytes, 0, __ATOMIC_RELEASE);
-    return 0;
-}
-
 static NTSTATUS pipewire_set_sample_rate(void *args)
 {
     struct set_sample_rate_params *params = args;
@@ -3340,14 +3355,7 @@ static NTSTATUS pipewire_set_sample_rate(void *args)
     stream->clock_lastpos = stream->clock_written = 0;
     stream->lcl_offs_bytes = 0;
     stream->held_bytes = 0;
-    /* pa_offs_bytes and pa_held_bytes belong to the process callback, so
-     * mutate them under the data loop lock rather than the thread loop lock.
-     * Lock order is main -> data, matching pw_stream_set_active and
-     * pw_stream_flush; the callback never takes the thread loop lock, so
-     * there is no inverse path.  When the callback runs on the main loop the
-     * data loop is that same loop, whose mutex is recursive.
-     *
-     * The ring is deliberately not cleared here: occupancy zero already makes
+    /* The ring is deliberately not cleared here: occupancy zero already makes
      * the callback emit silence, GetBuffer silences every region it hands
      * out, and Reset has always relied on exactly that.  Clearing storage the
      * callback may be reading would be a data race for no benefit. */
