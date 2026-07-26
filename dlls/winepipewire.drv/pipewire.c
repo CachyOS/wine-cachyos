@@ -2428,13 +2428,14 @@ static void pipewire_read(struct pipewire_stream *stream)
                 __atomic_store_n(&slot->word, CAP_WORD(seq, CAP_FULL), __ATOMIC_RELEASE);
                 return;
             }
-            if (!p->discont)
-            {
-                next = (ACPacket *)p->entry.next;
-                next->discont = 1;
-            }
-            else
-                p = (ACPacket *)list_tail(&stream->packet_filled_head);
+            /* Recycle the oldest packet, matching the ring below, and move
+             * the discontinuity onto its successor, which is the packet that
+             * gaps.  Recycling the newest instead would discard the freshest
+             * audio, leave the gap unmarked and clear a flag the application
+             * has not read.  The free list is empty here, so the successor
+             * always exists. */
+            next = (ACPacket *)p->entry.next;
+            next->discont = 1;
         }
         else
         {
