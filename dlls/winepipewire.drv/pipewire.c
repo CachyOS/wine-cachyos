@@ -149,13 +149,11 @@ struct pipewire_stream
     INT32 locked;
     BOOL started; /* atomic: control release-stores, process callback load-acquires */
     SIZE_T bufsize_frames, real_bufsize_bytes, period_bytes;
-    /* render ring bookkeeping: lcl_offs/held track the application side,
-     * pa_offs/pa_held track the process-callback reader (field names kept
-     * from the pulse.c transplant for diffability).  Both sides run under
-     * the pw_thread_loop lock today (process callbacks are dispatched on
-     * that loop), so the counters are not concurrently accessed; the
-     * atomics on pa_held_bytes are retained only as future-proofing if an
-     * RT_PROCESS path returns.  pa_offs_bytes stays plain. */
+    /* Render ring bookkeeping.  lcl_offs/held are the application side,
+     * pa_offs/pa_held the process-callback reader (names kept from the
+     * pulse.c transplant).  pa_held_bytes crosses to the callback through
+     * atomics; pa_offs_bytes is the callback's own cursor and control paths
+     * reach it only through the data loop. */
     SIZE_T lcl_offs_bytes, pa_offs_bytes;
     SIZE_T tmp_buffer_bytes, held_bytes, pa_held_bytes;
     BYTE *local_buffer, *tmp_buffer;
@@ -336,6 +334,15 @@ static WCHAR *utf8_to_wstr(const char *s)
     w[n] = '\0';
     return w;
 }
+
+/* Render dispatch mode, read from the environment once per process.  With
+ * PW_STREAM_FLAG_RT_PROCESS the process callback runs on PipeWire's realtime
+ * data thread rather than the thread loop.  What that is worth in latency is
+ * the graph's decision; what it removes for certain is the lock that
+ * serialized the callback against the control paths.  Capture never sets it:
+ * its source is its own driver, so it has nothing to win for the same
+ * exposure. */
+static BOOL rt_render;
 
 static struct pipewire_stream *handle_get_stream(stream_handle h)
 {
@@ -710,9 +717,17 @@ static void pipewire_set_plugin_dirs(void)
 
 static NTSTATUS pipewire_process_attach(void *args)
 {
+    const char *rt = getenv("WINEPIPEWIRE_RT");
+
     pipewire_set_plugin_dirs();
     pw_init(NULL, NULL);
     TRACE("PipeWire %s, header %s\n", pw_get_library_version(), pw_get_headers_version());
+
+    rt_render = rt && !strcmp(rt, "1");
+    /* Only what was asked for.  What actually happens is not known until a
+     * stream connects and the data loop can be compared, so the line that a
+     * crash report is read against is emitted there, not here. */
+    TRACE("WINEPIPEWIRE_RT=%d requested\n", rt_render);
     return STATUS_SUCCESS;
 }
 
@@ -2026,7 +2041,9 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
                           stream->dataflow == eRender ? PW_DIRECTION_OUTPUT : PW_DIRECTION_INPUT,
                           PW_ID_ANY,
                           PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS |
-                          PW_STREAM_FLAG_INACTIVE,
+                          PW_STREAM_FLAG_INACTIVE |
+                          (rt_render && stream->dataflow == eRender ?
+                           PW_STREAM_FLAG_RT_PROCESS : 0),
                           params, 1);
         if (rc < 0)
         {
@@ -2035,21 +2052,43 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
         }
     }
 
-    /* Diagnostic only.  node.loop.class can be redirected by PIPEWIRE_PROPS or
-     * a client.conf stream.rules entry, which moves the process callback off
-     * the thread loop and out from under the lock that serializes it against
-     * the control paths.  Warn once per process; the condition is a
-     * configuration, not a property of an individual stream. */
-    if (pw_stream_get_data_loop(stream->pw) != pw_thread_loop_get_loop(pw_loop_global))
+    /* Where the process callback actually ended up.  RT_PROCESS asks for the
+     * data thread, but node.loop.class from PIPEWIRE_PROPS or a client.conf
+     * stream.rules entry decides independently and can both grant it to a
+     * stream that did not ask and deny it to one that did.  So report the
+     * measured loop, not the request: a log that states the requested mode
+     * would certify an RT run that never touched the RT path.
+     *
+     * Once per distinct (dataflow, requested, effective) combination, so a
+     * later stream landing differently is not swallowed by an earlier one. */
     {
-        static BOOL reported;
+        struct pw_loop *dl = pw_stream_get_data_loop(stream->pw);
+        const BOOL want_data = rt_render && stream->dataflow == eRender;
+        const BOOL got_data = dl != pw_thread_loop_get_loop(pw_loop_global);
+        const UINT32 bit = 1u << ((stream->dataflow == eRender ? 4 : 0) |
+                                  (want_data ? 2 : 0) | (got_data ? 1 : 0));
+        static UINT32 reported;
 
-        if (!reported)
+        if (!(reported & bit))
         {
-            reported = TRUE;
-            ERR("Stream processing was redirected off the driver loop by "
-                "node.loop.class; this configuration is not validated and can "
-                "corrupt audio.\n");
+            reported |= bit;
+            ERR("audio dispatch: %s requested %s, effective %s, loop \"%s\"%s\n",
+                stream->dataflow == eRender ? "render" : "capture",
+                want_data ? "data-thread" : "driver-loop",
+                got_data ? "data-thread" : "driver-loop",
+                dl && dl->name ? dl->name : "?",
+                want_data == got_data ? "" :
+                    " -- MISMATCH, the requested mode is NOT in force");
+
+            if (want_data && !got_data)
+                ERR("audio dispatch: PW_STREAM_FLAG_RT_PROCESS did not take effect.  "
+                    "node.loop.class is pinned to the main loop, so this run does "
+                    "not exercise the realtime path and must not be reported as "
+                    "one.\n");
+            else if (!want_data && got_data)
+                ERR("audio dispatch: processing was redirected off the driver loop "
+                    "by node.loop.class; this configuration is not validated and "
+                    "can corrupt audio.\n");
         }
     }
 
