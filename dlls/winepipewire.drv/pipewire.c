@@ -209,6 +209,10 @@ typedef struct _ACPacket
     UINT32 discont;
 } ACPacket;
 
+/* As for the slot array: an aligned base only keeps every element aligned if
+ * the stride is a whole number of alignments. */
+C_ASSERT(sizeof(ACPacket) % _Alignof(ACPacket) == 0);
+
 struct pw_phys_device
 {
     struct list entry;
@@ -2172,7 +2176,7 @@ static NTSTATUS pipewire_create_stream(void *args)
     else
     {
         UINT32 capture_packets, unalign;
-        SIZE_T slots_offs;
+        SIZE_T slots_offs, packets_offs;
 
         if ((unalign = bufsize_bytes % stream->period_bytes))
             bufsize_bytes += stream->period_bytes - unalign;
@@ -2180,16 +2184,30 @@ static NTSTATUS pipewire_create_stream(void *args)
         stream->real_bufsize_bytes = bufsize_bytes;
         capture_packets = stream->real_bufsize_bytes / stream->period_bytes;
 
-        size = stream->real_bufsize_bytes + capture_packets * sizeof(ACPacket);
+        /* The packet array follows the audio, so it needs the same rounding
+         * the slot array gets: real_bufsize_bytes is a multiple of
+         * period_bytes, which is a frame count times a frame size that can be
+         * 1, 3 or 6 bytes for packed 8 and 24 bit formats.  ACPacket holds
+         * list pointers, so a misaligned array is undefined and faults on
+         * targets that do not fix up unaligned loads. */
+        packets_offs = (stream->real_bufsize_bytes + _Alignof(ACPacket) - 1) &
+                       ~(SIZE_T)(_Alignof(ACPacket) - 1);
+        size = packets_offs + capture_packets * sizeof(ACPacket);
         if (NtAllocateVirtualMemory(GetCurrentProcess(), (void **)&stream->local_buffer,
                                     zero_bits, &size, MEM_COMMIT, PAGE_READWRITE))
         {
             WARN("Out of memory allocating capture buffer (%lu bytes).\n", (unsigned long)size);
             hr = E_OUTOFMEMORY;
         }
+        else if ((UINT_PTR)((char *)stream->local_buffer + packets_offs) & (_Alignof(ACPacket) - 1))
+        {
+            WARN("Capture packet array misaligned at %p.\n",
+                 (char *)stream->local_buffer + packets_offs);
+            hr = E_FAIL;
+        }
         else
         {
-            ACPacket *cur_packet = (ACPacket *)((char *)stream->local_buffer + stream->real_bufsize_bytes);
+            ACPacket *cur_packet = (ACPacket *)((char *)stream->local_buffer + packets_offs);
             BYTE *data = stream->local_buffer;
             silence_buffer(stream->info.format, stream->local_buffer, stream->real_bufsize_bytes);
             for (i = 0; i < capture_packets; ++i, ++cur_packet)
