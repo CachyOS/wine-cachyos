@@ -1811,6 +1811,14 @@ static void on_stream_process(void *data)
         !(d = &buf->datas[0])->data || !d->chunk)
     {
         __atomic_add_fetch(&stream->bad_buffer_count, 1, __ATOMIC_RELAXED);
+        if (stream->dataflow == eCapture)
+        {
+            /* The buffer is discarded, so audio was lost.  Charge it to the
+             * next slot published, the same as a clamp or an all-slots-held
+             * drop; without this the application sees the gap with nothing to
+             * explain it.  Producer-private, so a plain store is right. */
+            stream->cap_lost = TRUE;
+        }
         pw_stream_queue_buffer(stream->pw, b);
         return;
     }
