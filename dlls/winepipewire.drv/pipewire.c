@@ -26,6 +26,20 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
+/* Requires libpipewire-0.3 >= 1.2.0: pw_stream_get_data_loop() and struct
+ * pw_loop::name.  The floor is the minimum API this file consumes, not the
+ * version the ship vehicle carries; configure.ac records what it excludes.
+ * An older library disables the driver there rather than failing the build,
+ * so do not paper one over with version conditionals here.
+ *
+ * pw_loop_locked() arrived in 1.6.0, above the 1.4.2 steamrt4 ships, so
+ * stream_loop_locked() below reconstructs it.  Check any newer entry point
+ * exists in the runtime, not merely in the headers: most are static inlines
+ * dispatching through a SPA interface, and spa_api_method_r returns its
+ * default when the method is missing, so the call compiles, links, runs and
+ * silently does nothing.  The i386 unixlib compounds this, building against
+ * the container's own PipeWire while resolving against the runtime's. */
+
 #if 0
 #pragma makedep unix
 #endif
@@ -45,6 +59,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <errno.h>
 
 #include <pipewire/pipewire.h>
 #include <pipewire/extensions/metadata.h>
@@ -188,6 +203,7 @@ struct pipewire_stream
     INT64 clock_lastpos, clock_written;
     /* atomic: process callback relaxed-increments, timer/control relaxed-load */
     UINT32 underrun_count, overrun_count, bad_buffer_count;
+    UINT32 ring_warned;   /* RING_OP_* bits already reported for this stream */
     UINT32 cb_seq;        /* callback-private: callbacks entered */
     UINT32 cb_mark;       /* diagnostic breadcrumb, never read by the driver */
     BOOL underrun_logged, overrun_logged, bad_buffer_logged;
@@ -2814,12 +2830,63 @@ static NTSTATUS pipewire_stop(void *args)
     return STATUS_SUCCESS;
 }
 
-/* The render ring's read cursor belongs to the process callback, so these run
- * with the stream's data loop locked.  Under RT_PROCESS that loop is a
- * separate thread the thread loop lock does not serialize against, and the
- * invoke is the only thing between these and the callback.  Lock order is
- * main -> data, matching pw_stream_set_active and pw_stream_flush; the
- * callback never takes the thread loop lock, so there is no inverse path. */
+/* Run fn with the stream's process callback excluded, from a control path
+ * that already holds the thread loop lock.  pw_loop_locked() does this in one
+ * call but needs 1.6.0.  The two cases are not symmetric:
+ *
+ *   - Data loop IS the thread loop, which is every stream without
+ *     RT_PROCESS: the caller already holds the recursive mutex the callback
+ *     is dispatched under, so fn runs inline.  A blocking invoke would
+ *     deadlock, waiting on the loop thread that waits for the caller's lock.
+ *
+ *   - Otherwise the callback is on a data thread the lock does not hold off,
+ *     so fn is marshalled onto it and runs between dispatches.
+ *
+ * The inline branch cannot fail; the invoke can, on queue allocation.  A
+ * negative return means the cursors were not touched, and no caller may
+ * publish state that assumes the marshalled step ran.  -ENODEV is not a
+ * marshal failure but a pw_stream already destroyed by a core reconnect,
+ * which the callers map to a different HRESULT. */
+static int stream_loop_locked(struct pipewire_stream *stream, spa_invoke_func_t fn)
+{
+    struct pw_loop *data_loop;
+
+    if (!stream->pw || !(data_loop = pw_stream_get_data_loop(stream->pw)))
+        return -ENODEV;
+
+    if (data_loop == pw_thread_loop_get_loop(pw_loop_global))
+        return fn(data_loop->loop, false, 0, NULL, 0, stream);
+
+    return pw_loop_invoke(data_loop, fn, 0, NULL, 0, true, stream);
+}
+
+/* The device is gone only when the stream object itself is; a loop that could
+ * not be reached is a transient service failure and the ring is intact. */
+static HRESULT ring_op_hresult(int res)
+{
+    return res == -ENODEV ? AUDCLNT_E_DEVICE_INVALIDATED : AUDCLNT_E_SERVICE_NOT_RUNNING;
+}
+
+/* Operations that reach the render ring's read cursor.  Used to report a
+ * failed marshal once per stream per operation, so a loop that cannot take an
+ * invoke cannot flood the log. */
+#define RING_OP_RESET   0
+#define RING_OP_RESYNC  1
+#define RING_OP_RATE    2
+
+/* Runs on a Wine control thread under the loop lock, so logging is legal. */
+static void ring_op_failed(struct pipewire_stream *stream, unsigned int op,
+                           const char *what, int res)
+{
+    if (stream->ring_warned & (1u << op))
+        return;
+    stream->ring_warned |= 1u << op;
+    WARN("stream %p: %s could not be run against the data loop (%d); the "
+         "operation was abandoned and the ring is unchanged.\n", stream, what, res);
+}
+
+/* The render ring's read cursor belongs to the process callback; these run
+ * through stream_loop_locked so the callback cannot be in flight. */
 static int do_reset_ring(struct spa_loop *loop, bool async, uint32_t seq,
                          const void *data, size_t size, void *user_data)
 {
@@ -2876,10 +2943,21 @@ static NTSTATUS pipewire_reset(void *args)
 
     if (stream->dataflow == eRender)
     {
+        /* Clear the read cursor before the cursors that describe it, so a
+         * failed marshal leaves every one of them as it was rather than a
+         * zeroed half. */
+        int res = stream_loop_locked(stream, do_reset_ring);
+
+        if (res < 0)
+        {
+            ring_op_failed(stream, RING_OP_RESET, "the render ring reset", res);
+            pw_thread_loop_unlock(pw_loop_global);
+            params->result = ring_op_hresult(res);
+            return STATUS_SUCCESS;
+        }
         stream->clock_lastpos = stream->clock_written = 0;
         stream->lcl_offs_bytes = 0;
         stream->held_bytes = 0;
-        pw_loop_locked(pw_stream_get_data_loop(stream->pw), do_reset_ring, 0, NULL, 0, stream);
     }
     else
     {
@@ -3081,8 +3159,23 @@ static NTSTATUS pipewire_release_render_buffer(void *args)
     if (__atomic_load_n(&stream->pa_held_bytes, __ATOMIC_RELAXED) + written_bytes >
         stream->real_bufsize_bytes)
     {
+        int res;
+
         WARN("%p PipeWire buffer overflow.\n", stream);
-        pw_loop_locked(pw_stream_get_data_loop(stream->pw), do_resync_ring, 0, NULL, 0, stream);
+        if ((res = stream_loop_locked(stream, do_resync_ring)) < 0)
+        {
+            /* Without the repair the read cursor does not describe the ring,
+             * so publishing would hand the callback a byte count its offset
+             * does not match.  Take the write back instead: the bytes stay
+             * unpublished for the next GetBuffer to overwrite, which loses
+             * this buffer but leaves every cursor as it was on entry. */
+            stream->held_bytes -= written_bytes;
+            ring_op_failed(stream, RING_OP_RESYNC, "the render ring overflow repair", res);
+            stream->locked = 0;
+            pw_thread_loop_unlock(pw_loop_global);
+            params->result = ring_op_hresult(res);
+            return STATUS_SUCCESS;
+        }
     }
     else
         __atomic_add_fetch(&stream->pa_held_bytes, written_bytes, __ATOMIC_RELEASE);
@@ -3363,6 +3456,7 @@ static NTSTATUS pipewire_set_sample_rate(void *args)
     HRESULT hr = S_OK;
     float ratio;
     SIZE_T period_bytes;
+    int rc;
 
     TRACE("stream %p rate %u.\n", stream, (unsigned)params->rate);
     pw_thread_loop_lock(pw_loop_global);
@@ -3402,10 +3496,30 @@ static NTSTATUS pipewire_set_sample_rate(void *args)
         goto exit;
     }
 
+    /* Empty the ring before changing the rate.  The control cannot be put
+     * back once set, so the step that can fail comes first: if the read
+     * cursor cannot be reached, nothing has moved and the stream is still
+     * coherent at the old rate.
+     *
+     * The storage is deliberately not cleared: occupancy zero already makes
+     * the callback emit silence and GetBuffer silences what it hands out, so
+     * clearing bytes the callback may be reading would race for no gain. */
+    if ((rc = stream_loop_locked(stream, do_reset_ring)) < 0)
+    {
+        ring_op_failed(stream, RING_OP_RATE, "the render ring reset for a rate change", rc);
+        hr = ring_op_hresult(rc);
+        goto exit;
+    }
+    stream->clock_lastpos = stream->clock_written = 0;
+    stream->lcl_offs_bytes = 0;
+    stream->held_bytes = 0;
+
     ratio = params->rate / (float)stream->rate_connected;
     if (pw_stream_set_control(stream->pw, SPA_PROP_rate, 1, &ratio, 0) < 0)
     {
-        /* needs PipeWire >= 1.2.6 and an active adaptive resampler */
+        /* needs PipeWire >= 1.2.6 and an active adaptive resampler.  The ring
+         * is empty and every cursor agrees on that, so the stream is coherent
+         * at the old rate; only the buffered audio is gone. */
         WARN("pw_stream_set_control(rate) failed for stream %p.\n", stream);
         hr = E_NOTIMPL;
         goto exit;
@@ -3413,14 +3527,6 @@ static NTSTATUS pipewire_set_sample_rate(void *args)
 
     pw_stream_flush(stream->pw, false);
 
-    stream->clock_lastpos = stream->clock_written = 0;
-    stream->lcl_offs_bytes = 0;
-    stream->held_bytes = 0;
-    /* The ring is deliberately not cleared here: occupancy zero already makes
-     * the callback emit silence, GetBuffer silences every region it hands
-     * out, and Reset has always relied on exactly that.  Clearing storage the
-     * callback may be reading would be a data race for no benefit. */
-    pw_loop_locked(pw_stream_get_data_loop(stream->pw), do_reset_ring, 0, NULL, 0, stream);
     stream->period_bytes = period_bytes;
     stream->info.rate = params->rate;
 
