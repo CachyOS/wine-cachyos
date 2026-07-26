@@ -1711,11 +1711,24 @@ then
     WINE_PACKAGE_FLAGS(PIPEWIRE,[libpipewire-0.3],,,,
         [AC_CHECK_HEADERS([pipewire/pipewire.h],,[PIPEWIRE_LIBS=""])
          AS_IF([test -n "$PIPEWIRE_LIBS"],
-            [AC_CHECK_DECL([pw_stream_get_time_n],,[PIPEWIRE_LIBS=""],
+            [dnl The newest APIs the driver uses are pw_stream_get_data_loop and
+             dnl struct pw_loop::name, both from 1.2.0; everything else it
+             dnl touches is 0.3.x or older.  The floor is the minimum API the
+             dnl driver consumes, not the version its ship vehicle carries, so
+             dnl steamrt4's 1.4.2 clears it with room for a runtime downgrade.
+             dnl
+             dnl It does exclude native builds on Ubuntu 22.04 and 24.04 LTS
+             dnl and derivatives, Debian 12 without backports, openSUSE Leap
+             dnl 15.5 and 15.6, and steamrt3 sniper at 0.3.65.  Each gets the
+             dnl notice below and a disabled driver, not a broken build.
+             AC_CHECK_DECL([pw_stream_get_data_loop],,[PIPEWIRE_LIBS=""],
+                [[#include <pipewire/pipewire.h>]])])
+         AS_IF([test -n "$PIPEWIRE_LIBS"],
+            [AC_CHECK_MEMBER([struct pw_loop.name],,[PIPEWIRE_LIBS=""],
                 [[#include <pipewire/pipewire.h>]])])])
 fi
 WINE_NOTICE_WITH(pipewire, [test -z "$PIPEWIRE_LIBS"],
-        [libpipewire-0.3 ${notice_platform}development files not found, PipeWire won't be supported.],
+        [libpipewire-0.3 1.2.0 or later ${notice_platform}development files not found, PipeWire won't be supported.],
         [enable_winepipewire_drv])
 
 dnl **** Check for FFmpeg ****
