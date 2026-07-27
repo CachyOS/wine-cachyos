@@ -440,6 +440,7 @@ static void pointer_handle_axis_value120(void *data, struct wl_pointer *wl_point
     struct wayland_pointer_frame *frame = &pointer->frame;
     HWND hwnd;
 
+    if (!value120) return;
     if (!(hwnd = wayland_pointer_get_focused_hwnd())) return;
 
     pthread_mutex_lock(&pointer->mutex);
