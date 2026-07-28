@@ -264,9 +264,8 @@ struct wayland
     struct wayland_touch touch;
     struct wayland_text_input text_input;
     struct wayland_data_device data_device;
-    struct wl_list output_list;
-    struct wl_array output_info_array;
-    /* Protects the output_list, output_info_array, and the wayland_output.current states. */
+    struct wl_array output_array;
+    /* Protects the output_array, and the wayland_output.current states. */
     pthread_mutex_t output_mutex;
     LONG input_serial;
     BOOL supports_win_scrgb;
@@ -304,11 +303,12 @@ struct wayland_output_state
     char *model;
     int logical_x, logical_y;
     int logical_w, logical_h;
+    int physical_x, physical_y;
     int physical_w, physical_h;
     int transform;
     uint32_t max_fall;
     uint32_t max_cll;
-    uint32_t max_target_lum;
+    uint32_t max_lum;
     uint32_t ref_lum;
     BOOL supports_hdr;
 };
@@ -325,12 +325,6 @@ struct wayland_output
     unsigned int pending_flags;
     LONG ref;
     struct wayland_output_state pending, current;
-};
-
-struct output_info
-{
-    int x, y;
-    struct wayland_output_state *output;
 };
 
 struct wayland_surface_config
@@ -436,12 +430,11 @@ BOOL wayland_process_init(void);
 void wayland_output_add_ref(struct wayland_output *output);
 BOOL wayland_output_create(uint32_t id, uint32_t version);
 void wayland_output_release(struct wayland_output *output);
-void wayland_output_remove(struct wayland_output *output);
+void wayland_output_remove(struct wayland_output **output);
 void wayland_output_use_xdg_extension(struct wayland_output *output);
 void wayland_output_use_image_description(struct wayland_output *output);
 struct wayland_output *wayland_output_for_rect(const RECT *rect);
-void output_info_array_update(void);
-void wayland_color_manager_init(void);
+void wayland_output_array_arrange_physical_coords(void);
 
 /**********************************************************************
  *          Wayland surface

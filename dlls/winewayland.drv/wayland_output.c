@@ -43,8 +43,7 @@ static uint32_t next_output_id = 0;
 #define WAYLAND_OUTPUT_CHANGED_PRIMARIES    0x20
 #define WAYLAND_OUTPUT_CHANGED_FALL         0x40
 #define WAYLAND_OUTPUT_CHANGED_CLL          0x80
-#define WAYLAND_OUTPUT_CHANGED_REF_L        0x100
-#define WAYLAND_OUTPUT_CHANGED_MAX_TARGET_L 0x200
+#define WAYLAND_OUTPUT_CHANGED_LUMINANCES   0x100
 
 /**********************************************************************
  *          Output handling
@@ -206,18 +205,14 @@ static void wayland_output_done(struct wayland_output *output)
         output->current.max_cll = output->pending.max_cll;
     }
 
-    if (output->pending_flags & WAYLAND_OUTPUT_CHANGED_MAX_TARGET_L)
+    if (output->pending_flags & WAYLAND_OUTPUT_CHANGED_LUMINANCES)
     {
-        output->current.max_target_lum = output->pending.max_target_lum;
-    }
-
-    if (output->pending_flags & WAYLAND_OUTPUT_CHANGED_REF_L)
-    {
+        output->current.max_lum = output->pending.max_lum;
         output->current.ref_lum = output->pending.ref_lum;
     }
 
     output->current.supports_hdr = process_wayland.supports_win_scrgb &&
-                                    (output->current.max_target_lum > output->current.ref_lum);
+                                    (output->current.max_lum > output->current.ref_lum);
 
     output->pending_flags = 0;
 
@@ -229,10 +224,7 @@ static void wayland_output_done(struct wayland_output *output)
         output->current.logical_h = output->current.current_mode->height;
     }
 
-    /* update the process output info array since pUpdateDisplayDevices
-     * is only called on desktop window process */
-    output_info_array_update();
-
+    wayland_output_array_arrange_physical_coords();
     pthread_mutex_unlock(&process_wayland.output_mutex);
 
     TRACE("name=%s logical=%d,%d+%dx%d hdr=%u\n",
@@ -402,60 +394,38 @@ static void wayland_image_description_info_v1_luminance(void *data,
 {
     struct wayland_output *output = data;
 
-    TRACE("reference luminance: %u\n", ref);
+    TRACE("ref_lum: %u max_lum: %u\n", ref, max);
 
     output->pending.ref_lum = ref;
-    output->pending_flags |= WAYLAND_OUTPUT_CHANGED_REF_L;
+    output->pending.max_lum = max;
+    output->pending_flags |= WAYLAND_OUTPUT_CHANGED_LUMINANCES;
 }
 
 static void wayland_image_description_info_v1_primaries(void *data,
-                                                   struct wp_image_description_info_v1 *info,
-                                                   int32_t r_x, int32_t r_y, int32_t g_x,
-                                                   int32_t g_y, int32_t b_x, int32_t b_y,
-                                                   int32_t w_x, int32_t w_y)
+                                            struct wp_image_description_info_v1 *info,
+                                            int32_t r_x, int32_t r_y, int32_t g_x,
+                                            int32_t g_y, int32_t b_x, int32_t b_y,
+                                            int32_t w_x, int32_t w_y)
 {
-    struct wayland_output *output = data;
-
-    if (!(output->pending_flags & WAYLAND_OUTPUT_CHANGED_PRIMARIES))
-    {
-#define COPY(name) output->pending.primaries.name = round((name * 1e-6) * 1024)
-        COPY(r_x);
-        COPY(r_y);
-        COPY(g_x);
-        COPY(g_y);
-        COPY(b_x);
-        COPY(b_y);
-        COPY(w_x);
-        COPY(w_y);
-#undef COPY
-
-        TRACE("primaries: {%lf, %lf, %lf, %lf, %lf, %lf, %lf, %lf}\n",
-            r_x * 1e-6, r_y * 1e-6, g_x * 1e-6, g_y * 1e-6,
-            b_x * 1e-6, b_y * 1e-6, w_x * 1e-6, w_y * 1e-6);
-
-        output->pending_flags |= WAYLAND_OUTPUT_CHANGED_PRIMARIES;
-    }
 }
 
 static void wayland_image_description_info_v1_target_primaries(void *data,
-				 struct wp_image_description_info_v1 *info,
-				 int32_t r_x, int32_t r_y,
-				 int32_t g_x, int32_t g_y,
-				 int32_t b_x, int32_t b_y,
-				 int32_t w_x, int32_t w_y)
+                               	            struct wp_image_description_info_v1 *info,
+                                   	        int32_t r_x, int32_t r_y, int32_t g_x,
+                                            int32_t g_y, int32_t b_x, int32_t b_y,
+                                            int32_t w_x, int32_t w_y)
 {
     struct wayland_output *output = data;
+    struct wayland_primaries *primaries = &output->pending.primaries;
 
-#define COPY(name) output->pending.primaries.name = round((name * 1e-6) * 1024)
-    COPY(r_x);
-    COPY(r_y);
-    COPY(g_x);
-    COPY(g_y);
-    COPY(b_x);
-    COPY(b_y);
-    COPY(w_x);
-    COPY(w_y);
-#undef COPY
+    primaries->r_x = round((r_x * 1e-6) * 1024);
+    primaries->r_y = round((r_y * 1e-6) * 1024);
+    primaries->g_x = round((g_x * 1e-6) * 1024);
+    primaries->g_y = round((g_y * 1e-6) * 1024);
+    primaries->b_x = round((b_x * 1e-6) * 1024);
+    primaries->b_y = round((b_y * 1e-6) * 1024);
+    primaries->w_x = round((b_x * 1e-6) * 1024);
+    primaries->w_y = round((b_y * 1e-6) * 1024);
 
     TRACE("primaries: {%lf, %lf, %lf, %lf, %lf, %lf, %lf, %lf}\n",
             r_x * 1e-6, r_y * 1e-6, g_x * 1e-6, g_y * 1e-6,
@@ -468,12 +438,6 @@ static void wayland_image_description_info_v1_target_luminance(void *data,
                             struct wp_image_description_info_v1 *info,
                             uint32_t min, uint32_t max)
 {
-    struct wayland_output *output = data;
-
-    TRACE("max target luminance: %u\n", max);
-
-    output->pending.max_target_lum = max;
-    output->pending_flags |= WAYLAND_OUTPUT_CHANGED_MAX_TARGET_L;
 }
 
 static void wayland_image_description_info_v1_target_max_cll(void *data,
@@ -619,7 +583,7 @@ void wayland_output_use_image_description(struct wayland_output *output)
  */
 BOOL wayland_output_create(uint32_t id, uint32_t version)
 {
-    struct wayland_output *output = calloc(1, sizeof(*output));
+    struct wayland_output **elem, *output = calloc(1, sizeof(*output));
     int name_len;
 
     if (!output)
@@ -675,7 +639,13 @@ BOOL wayland_output_create(uint32_t id, uint32_t version)
     output->ref = 1;
 
     pthread_mutex_lock(&process_wayland.output_mutex);
-    wl_list_insert(process_wayland.output_list.prev, &output->link);
+    if (!(elem = wl_array_add(&process_wayland.output_array, sizeof(struct wayland_output *))))
+    {
+        ERR("Failed to add output to output array!\n");
+        pthread_mutex_unlock(&process_wayland.output_mutex);
+        goto err;
+    }
+    *elem = output;
     pthread_mutex_unlock(&process_wayland.output_mutex);
 
     return TRUE;
@@ -696,14 +666,26 @@ static void wayland_output_state_deinit(struct wayland_output_state *state)
  *
  *  Drops ref of wayland output from the output list, and updates display devices.
  */
-void wayland_output_remove(struct wayland_output *output)
+void wayland_output_remove(struct wayland_output **output)
 {
+    struct wl_array *output_array = &process_wayland.output_array;
+    struct wayland_output **end, *temp;
+
     pthread_mutex_lock(&process_wayland.output_mutex);
-    wl_list_remove(&output->link);
-    output_info_array_update();
+    if ((end = output_array->data) && output_array->size)
+    {
+        end += (output_array->size / sizeof(*output)) - 1;
+        /* swap current element and back element */
+        temp = *end;
+        *end = *output;
+        *output = temp;
+        /* then reduce the size of the array */
+        output_array->size -= sizeof(*output);
+    }
+    wayland_output_array_arrange_physical_coords();
     pthread_mutex_unlock(&process_wayland.output_mutex);
 
-    wayland_output_release(output);
+    wayland_output_release(*output);
 
     maybe_init_display_devices();
 }
@@ -741,8 +723,7 @@ void wayland_output_release(struct wayland_output *output)
  */
 struct wayland_output *wayland_output_for_rect(const RECT *window_rect)
 {
-    struct wayland_output *best = NULL;
-    struct output_info *output_info;
+    struct wayland_output *best = NULL, **output;
     HMONITOR target = NtUserMonitorFromRect(window_rect, 0);
 
     TRACE("window %s\n", wine_dbgstr_rect(window_rect));
@@ -751,24 +732,25 @@ struct wayland_output *wayland_output_for_rect(const RECT *window_rect)
 
     pthread_mutex_lock(&process_wayland.output_mutex);
 
-    wl_array_for_each(output_info, &process_wayland.output_info_array)
+    wl_array_for_each(output, &process_wayland.output_array)
     {
+        struct wayland_output_state *current = &(*output)->current;
         RECT rect;
+
+        if (!current->current_mode) continue;
+
         SetRect(&rect, 0, 0,
-                output_info->output->current_mode->width,
-                output_info->output->current_mode->height);
-        OffsetRect(&rect, output_info->x, output_info->y);
+                current->current_mode->width,
+                current->current_mode->height);
+        OffsetRect(&rect, current->physical_x, current->physical_y);
 
         TRACE("output %s: %s\n",
-              debugstr_a(output_info->output->name),
+              debugstr_a(current->name),
               wine_dbgstr_rect(&rect));
 
         if (NtUserMonitorFromRect(&rect, 0) == target)
         {
-            best = CONTAINING_RECORD(output_info->output,
-                                     struct wayland_output,
-                                     current);
-            wayland_output_add_ref(best);
+            wayland_output_add_ref((best = *output));
             break;
         }
     }
