@@ -41,7 +41,6 @@ struct wayland process_wayland =
                             &process_wayland.touch.touch_points },
     .text_input.mutex = PTHREAD_MUTEX_INITIALIZER,
     .data_device.mutex = PTHREAD_MUTEX_INITIALIZER,
-    .output_list = {&process_wayland.output_list, &process_wayland.output_list},
     .output_mutex = PTHREAD_MUTEX_INITIALIZER,
 };
 
@@ -164,15 +163,15 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
     }
     else if (strcmp(interface, "zxdg_output_manager_v1") == 0)
     {
-        struct wayland_output *output;
+        struct wayland_output **output;
 
         process_wayland.zxdg_output_manager_v1 =
             wl_registry_bind(registry, id, &zxdg_output_manager_v1_interface,
                              version < 3 ? version : 3);
 
         /* Add zxdg_output_v1 to existing outputs. */
-        wl_list_for_each(output, &process_wayland.output_list, link)
-            wayland_output_use_xdg_extension(output);
+        wl_array_for_each(output, &process_wayland.output_array)
+            wayland_output_use_xdg_extension(*output);
     }
     else if (strcmp(interface, "wl_compositor") == 0)
     {
@@ -300,7 +299,7 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
     }
     else if (strcmp(interface, "wp_color_manager_v1") == 0)
     {
-        struct wayland_output *output;
+        struct wayland_output **output;
 
         process_wayland.wp_color_manager_v1 =
             wl_registry_bind(registry, id, &wp_color_manager_v1_interface,
@@ -308,8 +307,8 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
         wp_color_manager_v1_add_listener(process_wayland.wp_color_manager_v1,
                                          &wp_color_manager_listener, NULL);
         /* Add image descriptions to existing outputs. */
-        wl_list_for_each(output, &process_wayland.output_list, link)
-            wayland_output_use_image_description(output);
+        wl_array_for_each(output, &process_wayland.output_array)
+            wayland_output_use_image_description(*output);
     }
     else if (strcmp(interface, "xdg_activation_v1") == 0)
     {
@@ -333,7 +332,7 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
 static void registry_handle_global_remove(void *data, struct wl_registry *registry,
                                           uint32_t id)
 {
-    struct wayland_output *output, *tmp;
+    struct wayland_output **output;
     struct wayland_seat *seat;
 
     TRACE("id=%u\n", id);
@@ -343,15 +342,17 @@ static void registry_handle_global_remove(void *data, struct wl_registry *regist
         wl_fixes_ack_global_remove(process_wayland.wl_fixes, registry, id);
 #endif
 
-    wl_list_for_each_safe(output, tmp, &process_wayland.output_list, link)
+    pthread_mutex_lock(&process_wayland.output_mutex);
+    wl_array_for_each(output, &process_wayland.output_array)
     {
-        if (output->global_id == id)
+        if ((*output)->global_id == id)
         {
-            TRACE("removing output->name=%s\n", output->current.name);
+            TRACE("removing output->name=%s\n", (*output)->current.name);
             wayland_output_remove(output);
             return;
         }
     }
+    pthread_mutex_unlock(&process_wayland.output_mutex);
 
     seat = &process_wayland.seat;
     if (seat->wl_seat && seat->global_id == id)
@@ -417,6 +418,7 @@ BOOL wayland_process_init(void)
 
     /* initialize win data mutex */
     wayland_window_init();
+    wl_array_init(&process_wayland.output_array);
 
     /* Populate registry */
     wl_registry_add_listener(process_wayland.wl_registry, &registry_listener, NULL);
