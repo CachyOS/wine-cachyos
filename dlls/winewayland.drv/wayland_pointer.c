@@ -182,8 +182,8 @@ static void pointer_handle_motion(void *data, struct wl_pointer *wl_pointer,
 {
     struct wayland_pointer *pointer = &process_wayland.pointer;
 
-    /* Ignore absolute motion events if in relative mode. */
-    if (pointer->relative_mode) return;
+    /* If the pointer is locked then it may not respect the win32u position */
+    if (pointer->zwp_locked_pointer_v1) return;
 
     pointer_handle_motion_internal(sx, sy);
 }
@@ -999,7 +999,7 @@ static void wayland_pointer_update_constraint(struct wl_surface *wl_surface,
                                               BOOL force_lock)
 {
     struct wayland_pointer *pointer = &process_wayland.pointer;
-    BOOL needs_relative, needs_lock, needs_confine, is_visible;
+    BOOL needs_lock, needs_confine, is_visible;
     static unsigned int once;
 
     if (!process_wayland.zwp_pointer_constraints_v1)
@@ -1089,26 +1089,7 @@ static void wayland_pointer_update_constraint(struct wl_surface *wl_surface,
         }
     }
 
-    if (!process_wayland.zwp_relative_pointer_manager_v1)
-    {
-        if (!once++)
-            ERR("zwp_relative_pointer_manager_v1 isn't supported, skipping relative motion\n");
-        return;
-    }
-
-    needs_relative = !is_visible && pointer->constraint_hwnd &&
-                     pointer->constraint_hwnd == pointer->focused_hwnd;
-
-    if (needs_relative)
-    {
-        pointer->relative_mode = TRUE;
-        TRACE("Enabling relative motion\n");
-    }
-    else if (!needs_relative)
-    {
-        pointer->relative_mode = FALSE;
-        TRACE("Disabling relative motion\n");
-    }
+    TRACE("lock=%u confine=%u\n", needs_lock, needs_confine);
 }
 
 void wayland_pointer_clear_constraint(void)
@@ -1134,11 +1115,6 @@ BOOL WAYLAND_SetCursorPos(INT x, INT y)
     struct wayland_pointer *pointer = &process_wayland.pointer;
 
     pthread_mutex_lock(&pointer->mutex);
-    if (pointer->relative_mode)
-    {
-        pthread_mutex_unlock(&pointer->mutex);
-        return FALSE;
-    }
     pointer->pending_warp = TRUE;
     pointer->warp.x = x;
     pointer->warp.y = y;
@@ -1196,7 +1172,7 @@ BOOL WAYLAND_ClipCursor(const RECT *clip, BOOL reset)
                     wl_fixed_from_int(warp.y),
                     pointer->enter_serial);
             TRACE("warp_pointer hwnd=%p wayland_xy=%s screen_xy=%s\n",
-                    hwnd, wine_dbgstr_point(&warp), wine_dbgstr_point(&cursor_pos));
+                  hwnd, wine_dbgstr_point(&warp), wine_dbgstr_point(&cursor_pos));
         }
         else
         {
