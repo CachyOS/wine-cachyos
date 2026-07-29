@@ -111,7 +111,7 @@
 @ stub ADL2_Adapter_PreFlipPostProcessing_Select_LUT_Algorithm
 @ stub ADL2_Adapter_PreFlipPostProcessing_Select_LUT_Buffer
 @ stub ADL2_Adapter_PreFlipPostProcessing_Unselect_LUT_Buffer
-@ stub ADL2_Adapter_Primary_Get
+@ cdecl ADL2_Adapter_Primary_Get(ptr ptr)
 @ stub ADL2_Adapter_Primary_Set
 @ stub ADL2_Adapter_RAS_ErrorInjection_Set
 @ stub ADL2_Adapter_RegValueInt_Get
