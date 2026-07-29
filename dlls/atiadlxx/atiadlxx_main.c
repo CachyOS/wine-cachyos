@@ -1131,6 +1131,16 @@ int CDECL ADL_Adapter_Crossfire_Get(int adapter_index, ADLCrossfireComb *comb, A
     return ADL_ERR;
 }
 
+int CDECL ADL2_Adapter_Primary_Get(ADL_CONTEXT_HANDLE ctx, int *idx)
+{
+    FIXME("%p %p stub!\n", ctx, idx);
+
+    if (!ctx || !idx) return ADL_ERR_INVALID_PARAM;
+
+    *idx = 0;
+    return ADL_OK;
+}
+
 int CDECL ADL2_Adapter_ASICFamilyType_Get(ADL_CONTEXT_HANDLE ctx, int adapter_index, int *asic_type, int *valids)
 {
     FIXME("adapter %d, asic_type %p, valids %p, stub.\n", adapter_index, asic_type, valids);
