@@ -146,7 +146,7 @@
 @ stub ADL2_ApplicationProfiles_DriverAreaPrivacy_Get
 @ stub ADL2_ApplicationProfiles_GetCustomization
 @ stub ADL2_ApplicationProfiles_HitListsX2_Get
-@ stub ADL2_ApplicationProfiles_HitListsX3_Get
+@ cdecl ADL2_ApplicationProfiles_HitListsX3_Get(ptr long ptr ptr)
 @ stub ADL2_ApplicationProfiles_HitLists_Get
 @ stub ADL2_ApplicationProfiles_ProfileApplicationX2_Assign
 @ stub ADL2_ApplicationProfiles_ProfileApplication_Assign
