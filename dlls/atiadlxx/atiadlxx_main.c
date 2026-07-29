@@ -1455,6 +1455,11 @@ int CDECL ADL2_Overdrive_Caps(ADL_CONTEXT_HANDLE ctx, int adapter_index, int *su
     return ADL_ERR_NOT_SUPPORTED;
 }
 
+int CDECL ADL_Overdrive_Caps(int adapter_index, int *supported, int *enabled, int *version)
+{
+    return ADL2_Overdrive_Caps(default_ctx, adapter_index, supported, enabled, version);
+}
+
 int CDECL ADL2_Overdrive6_Capabilities_Get(ADL_CONTEXT_HANDLE ctx, int adapter_index, ADLOD6Capabilities *caps)
 {
     FIXME("ctx %p adapter_index %d caps %p stub!\n", ctx, adapter_index, caps);
