@@ -1618,3 +1618,10 @@ int CDECL ADL_Display_SourceContentAttribute_Set(int adapter_index, int display_
 {
     return ADL2_Display_SourceContentAttribute_Set(default_ctx, adapter_index, display_index, attributes);
 }
+
+int CDECL ADL2_ApplicationProfiles_HitListsX3_Get(ADL_CONTEXT_HANDLE ctx, int list_type, int *num_apps, void **list)
+{
+    FIXME("%p %d %p %p stub!\n", ctx, list_type, num_apps, list);
+
+    return ADL_ERR;
+}
