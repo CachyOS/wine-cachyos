@@ -1041,7 +1041,7 @@
 @ stub ADL_Overdrive6_VoltageControlInfo_Get
 @ stub ADL_Overdrive6_VoltageControl_Get
 @ stub ADL_Overdrive6_VoltageControl_Set
-@ stub ADL_Overdrive_Caps
+@ cdecl ADL_Overdrive_Caps(long ptr ptr ptr)
 @ stub ADL_PowerXpress_AncillaryDevices_Get
 @ stub ADL_PowerXpress_Config_Caps
 @ stub ADL_PowerXpress_ExtendedBatteryMode_Caps
