@@ -2890,6 +2890,30 @@ BOOL WINAPI SetupDiEnumDeviceInterfaces(HDEVINFO devinfo,
 }
 
 /***********************************************************************
+ *		SetupDiGetDeviceInterfaceAlias (SETUPAPI.@)
+ *
+ * Two device interfaces are aliases of each other when the same device instance
+ * exposes them under the same reference string, but in different interface
+ * classes. Nothing registers such aliases here, so report that none exists,
+ * which is what Windows does for a device that has no alias.
+ *
+ * Reporting it this way matters: as an unimplemented stub this raises a
+ * noncontinuable exception and takes the process down. PortAudio's WDM/KS
+ * backend calls this for every KSCATEGORY_AUDIO interface it finds in order to
+ * tell playback and capture devices apart, so a game using PortAudio aborted on
+ * startup instead of falling back to one of its other backends.
+ */
+BOOL WINAPI SetupDiGetDeviceInterfaceAlias(HDEVINFO devinfo, SP_DEVICE_INTERFACE_DATA *iface_data,
+        const GUID *alias_class, SP_DEVICE_INTERFACE_DATA *alias_data)
+{
+    FIXME("devinfo %p, iface_data %p, alias_class %s, alias_data %p: stub\n",
+            devinfo, iface_data, debugstr_guid(alias_class), alias_data);
+
+    SetLastError(ERROR_NO_SUCH_DEVICE_INTERFACE);
+    return FALSE;
+}
+
+/***********************************************************************
  *		SetupDiDestroyDeviceInfoList (SETUPAPI.@)
   *
  * Destroy a DeviceInfoList and free all used memory of the list.
