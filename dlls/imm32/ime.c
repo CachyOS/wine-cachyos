@@ -670,7 +670,7 @@ BOOL WINAPI NotifyIME( HIMC himc, DWORD action, DWORD index, DWORD value )
     INPUTCONTEXT *ctx;
     UINT msg;
 
-    TRACE( "himc %p, action %#lx, index %#lx, value %#lx stub!\n", himc, action, index, value );
+    TRACE( "himc %p, action %#lx, index %#lx, value %#lx\n", himc, action, index, value );
 
     if (!(ctx = ImmLockIMC( himc ))) return FALSE;
 
