@@ -1089,14 +1089,19 @@ struct probe_node
     enum pw_device_bus bus;
 };
 
-/* Vendor/product ids live on the Device object, not the node, so the probe
- * records devices too and matches them to nodes by device.id. */
+/* Vendor/product ids live on the Device object, not the node.  PipeWire
+ * 1.6.8 carries them only on the bound device's info.props, not on the
+ * registry global, so the probe binds each device and reads them from its
+ * info event. */
 struct probe_device
 {
     struct list entry;
     uint32_t id;
     enum pw_device_bus bus;
     UINT16 vendor_id, product_id;
+    struct pw_device *proxy;
+    struct spa_hook listener;
+    BOOL listener_added;
 };
 
 struct probe
@@ -1217,6 +1222,27 @@ static enum pw_device_bus parse_device_bus(const char *bus)
     return PW_BUS_OTHER;
 }
 
+/* Vendor/product ids arrive as 0x-prefixed hex strings. */
+static void on_probe_device_info(void *data, const struct pw_device_info *info)
+{
+    struct probe_device *pd = data;
+    const char *bus, *vid, *pid;
+
+    if (!info || !info->props)
+        return;
+    bus = spa_dict_lookup(info->props, PW_KEY_DEVICE_BUS);
+    vid = spa_dict_lookup(info->props, PW_KEY_DEVICE_VENDOR_ID);
+    pid = spa_dict_lookup(info->props, PW_KEY_DEVICE_PRODUCT_ID);
+    pd->bus = parse_device_bus(bus);
+    pd->vendor_id = vid ? (UINT16)strtoul(vid, NULL, 16) : 0;
+    pd->product_id = pid ? (UINT16)strtoul(pid, NULL, 16) : 0;
+}
+
+static const struct pw_device_events probe_device_events = {
+    PW_VERSION_DEVICE_EVENTS,
+    .info = on_probe_device_info,
+};
+
 static void on_probe_registry_global(void *data, uint32_t id, uint32_t permissions,
                                       const char *type, uint32_t version,
                                       const struct spa_dict *props)
@@ -1273,19 +1299,23 @@ static void on_probe_registry_global(void *data, uint32_t id, uint32_t permissio
     }
     else if (!strcmp(type, PW_TYPE_INTERFACE_Device))
     {
-        const char *bus = spa_dict_lookup(props, PW_KEY_DEVICE_BUS);
-        const char *vid = spa_dict_lookup(props, PW_KEY_DEVICE_VENDOR_ID);
-        const char *pid = spa_dict_lookup(props, PW_KEY_DEVICE_PRODUCT_ID);
         struct probe_device *pd;
 
+        /* Failed bind keeps PW_BUS_OTHER and zero ids.  The path falls back
+         * to ROOT\MEDIA. */
         if (!(pd = calloc(1, sizeof(*pd))))
             return;
         pd->id = id;
-        pd->bus = parse_device_bus(bus);
-        /* Vendor/product ids arrive as 0x-prefixed hex strings. */
-        pd->vendor_id = vid ? (UINT16)strtoul(vid, NULL, 16) : 0;
-        pd->product_id = pid ? (UINT16)strtoul(pid, NULL, 16) : 0;
+        pd->bus = PW_BUS_OTHER;
         list_add_tail(&p->devices, &pd->entry);
+
+        pd->proxy = pw_registry_bind(p->registry, id, PW_TYPE_INTERFACE_Device,
+                                     PW_VERSION_DEVICE, 0);
+        if (pd->proxy)
+        {
+            pw_device_add_listener(pd->proxy, &pd->listener, &probe_device_events, pd);
+            pd->listener_added = TRUE;
+        }
     }
     else if (!strcmp(type, PW_TYPE_INTERFACE_Metadata))
     {
@@ -1313,6 +1343,29 @@ static void on_probe_registry_global(void *data, uint32_t id, uint32_t permissio
 
 static void on_probe_registry_global_remove(void *data, uint32_t id)
 {
+    struct probe *p = data;
+    struct probe_device *pd, *next;
+
+    /* A device that disappears mid-probe is gone from the graph: destroy its
+     * proxy and drop its entry so later lookups do not see stale data. */
+    LIST_FOR_EACH_ENTRY_SAFE(pd, next, &p->devices, struct probe_device, entry)
+    {
+        if (pd->id != id)
+            continue;
+        if (pd->listener_added)
+        {
+            spa_hook_remove(&pd->listener);
+            pd->listener_added = FALSE;
+        }
+        if (pd->proxy)
+        {
+            pw_proxy_destroy((struct pw_proxy *)pd->proxy);
+            pd->proxy = NULL;
+        }
+        list_remove(&pd->entry);
+        free(pd);
+        return;
+    }
 }
 
 static const struct pw_registry_events probe_registry_events = {
@@ -1517,6 +1570,7 @@ static void build_device_cache(struct probe *p)
 static void probe_teardown(struct probe *p)
 {
     struct probe_node *pn;
+    struct probe_device *pd;
 
     LIST_FOR_EACH_ENTRY(pn, &p->nodes, struct probe_node, entry)
     {
@@ -1525,6 +1579,19 @@ static void probe_teardown(struct probe *p)
             spa_hook_remove(&pn->listener);
             pw_proxy_destroy((struct pw_proxy *)pn->proxy);
             pn->proxy = NULL;
+        }
+    }
+    LIST_FOR_EACH_ENTRY(pd, &p->devices, struct probe_device, entry)
+    {
+        if (pd->listener_added)
+        {
+            spa_hook_remove(&pd->listener);
+            pd->listener_added = FALSE;
+        }
+        if (pd->proxy)
+        {
+            pw_proxy_destroy((struct pw_proxy *)pd->proxy);
+            pd->proxy = NULL;
         }
     }
     if (p->meta_default)
