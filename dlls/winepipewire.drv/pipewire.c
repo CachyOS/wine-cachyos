@@ -393,53 +393,56 @@ static WCHAR *utf8_to_wstr(const char *s)
 
 #define MAX_DEVICE_NAME_LEN 62
 
-/* The name cap is measured in WCHARs, as winepulse measures it. */
-static unsigned name_wchar_len(const char *s)
-{
-    size_t len = strlen(s);
-    WCHAR tmp[MAX_DEVICE_NAME_LEN + 1];
-
-    if (len > MAX_DEVICE_NAME_LEN)
-        return MAX_DEVICE_NAME_LEN + 1;  /* certainly over the limit */
-    return ntdll_umbstowcs(s, len, tmp, ARRAY_SIZE(tmp));
-}
-
 /* Mirror winepulse get_device_name: some broken apps (Split/Second with
- * fmodex) crash on endpoint names longer than 62 chars, even on native.
- * When no shorter candidate fits, keep the long name rather than truncate,
- * matching pulse. */
-static char *pick_device_name(const char *desc, const char *nick, const char *node_name)
+ * fmodex) crash on endpoint names longer than 62 chars, even on native.  The
+ * cap is on UTF-16 length, so it is checked here on the unix-call thread
+ * where ntdll_umbstowcs is legal, not on the probe thread.  When no shorter
+ * candidate fits, keep the long name rather than truncate, matching pulse. */
+static WCHAR *utf8_to_wstr_capped(const char *desc, const char *nick, const char *node_name)
 {
     const char *chosen = desc ? desc : (nick ? nick : node_name);
+    WCHAR *w = utf8_to_wstr(chosen);
 
-    if (name_wchar_len(chosen) > MAX_DEVICE_NAME_LEN)
+    if (w && lstrlenW(w) > MAX_DEVICE_NAME_LEN)
     {
-        if (nick && nick[0] && name_wchar_len(nick) <= MAX_DEVICE_NAME_LEN)
-            chosen = nick;
-        else if (node_name)
+        WCHAR *alt = NULL;
+
+        if (nick && nick[0])
+            alt = utf8_to_wstr(nick);
+        if (!alt || lstrlenW(alt) > MAX_DEVICE_NAME_LEN)
         {
-            const char *tail = strrchr(node_name, '.');
+            const char *tail = node_name ? strrchr(node_name, '.') : NULL;
+
+            free(alt);
+            alt = NULL;
             tail = tail ? tail + 1 : node_name;
-            if (tail[0] && name_wchar_len(tail) <= MAX_DEVICE_NAME_LEN)
-                chosen = tail;
+            if (tail && tail[0])
+                alt = utf8_to_wstr(tail);
         }
+        if (alt && lstrlenW(alt) <= MAX_DEVICE_NAME_LEN)
+        {
+            free(w);
+            w = alt;
+        }
+        else
+            free(alt);
     }
-    return strdup(chosen);
+    return w;
 }
 
 /* winepulse prefixes monitor source descriptions with an unlocalized
  * "Monitor of ", so match it.  The result may exceed MAX_DEVICE_NAME_LEN,
- * the same non-guarantee as pick_device_name. */
-static char *monitor_name_from(const char *sink_display)
+ * the same non-guarantee as utf8_to_wstr_capped. */
+static WCHAR *monitor_name_from(const WCHAR *sink_display)
 {
-    static const char monitor_of[] = "Monitor of ";
-    size_t len = strlen(monitor_of) + strlen(sink_display);
-    char *out = malloc(len + 1);
+    static const WCHAR monitor_of[] = {'M','o','n','i','t','o','r',' ','o','f',' '};
+    size_t pre = ARRAY_SIZE(monitor_of), len = lstrlenW(sink_display);
+    WCHAR *out = malloc((pre + len + 1) * sizeof(WCHAR));
 
     if (!out)
         return NULL;
-    memcpy(out, monitor_of, strlen(monitor_of));
-    strcpy(out + strlen(monitor_of), sink_display);
+    memcpy(out, monitor_of, sizeof(monitor_of));
+    memcpy(out + pre, sink_display, (len + 1) * sizeof(WCHAR));
     return out;
 }
 
@@ -734,20 +737,23 @@ static void build_format(WAVEFORMATEXTENSIBLE *fmt, uint32_t rate, uint32_t chan
     fmt->SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
 }
 
-static struct pw_phys_device *add_device(struct list *list, const char *pw_name, const char *display,
+/* Takes ownership of display, already converted on the unix-call thread, and
+ * frees it on failure. */
+static struct pw_phys_device *add_device(struct list *list, const char *pw_name, WCHAR *display,
                                          EndpointFormFactor form, uint32_t rate, uint32_t channels, UINT mask,
                                          REFERENCE_TIME min_period)
 {
     size_t len = strlen(pw_name);
-    struct pw_phys_device *dev = malloc(offsetof(struct pw_phys_device, pw_name) + len + 1);
+    struct pw_phys_device *dev;
 
-    if (!dev)
+    if (!display)
         return NULL;
-    if (!(dev->display = utf8_to_wstr(display)))
+    if (!(dev = malloc(offsetof(struct pw_phys_device, pw_name) + len + 1)))
     {
-        free(dev);
+        free(display);
         return NULL;
     }
+    dev->display = display;
     dev->form = form;
     build_format(&dev->fmt, rate, channels, mask);
     dev->channel_mask = dev->fmt.dwChannelMask;
@@ -1072,7 +1078,8 @@ struct probe_node
     uint32_t id;
     EDataFlow flow;
     char *node_name;
-    char *display;
+    char *display;         /* raw UTF-8 description candidate (probe thread) */
+    char *nick;
     struct pw_node *proxy;
     struct spa_hook listener;
     uint32_t channels;
@@ -1239,12 +1246,16 @@ static void on_probe_registry_global(void *data, uint32_t id, uint32_t permissio
         pn->flow = !strcmp(media_class, "Audio/Sink") ? eRender : eCapture;
         pn->device_id = dev_id ? (uint32_t)strtoul(dev_id, NULL, 10) : SPA_ID_INVALID;
         pn->bus = parse_device_bus(spa_dict_lookup(props, "device.bus"));
+        /* Probe thread: keep everything UTF-8, no ntdll/WCHAR work.  The name
+         * cap is applied later, in utf8_to_wstr_capped on the unix-call thread. */
         pn->node_name = strdup(node_name);
-        pn->display = pick_device_name(desc, nick, node_name);
+        pn->display = strdup(desc ? desc : (nick ? nick : node_name));
+        pn->nick = nick ? strdup(nick) : NULL;
         if (!pn->node_name || !pn->display)
         {
             free(pn->node_name);
             free(pn->display);
+            free(pn->nick);
             free(pn);
             return;
         }
@@ -1477,8 +1488,9 @@ static void build_device_cache(struct probe *p)
                                     : (SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT);
         UINT *idx = (pn->flow == eRender) ? &render_idx : &capture_idx;
         struct pw_phys_device *dev;
+        WCHAR *name = utf8_to_wstr_capped(pn->display, pn->nick, pn->node_name);
 
-        dev = add_device(list, pn->node_name, pn->display, form, rate, channels, mask, min_period);
+        dev = add_device(list, pn->node_name, name, form, rate, channels, mask, min_period);
         fill_device_path_info(dev, p, pn, (*idx)++);
 
         /* PipeWire has no separate monitor nodes, so synthesize one capture
@@ -1486,15 +1498,14 @@ static void build_device_cache(struct probe *p)
          * form winepulse gives monitor sources.  Capture streams that name a
          * sink already connect through PW_KEY_STREAM_CAPTURE_SINK (see
          * pipewire_stream_connect). */
-        if (pn->flow == eRender)
+        if (pn->flow == eRender && dev)
         {
-            char *mon = monitor_name_from(pn->display);
+            WCHAR *mon = monitor_name_from(dev->display);
             if (mon)
             {
                 struct pw_phys_device *md = add_device(&g_capture_devices, pn->node_name, mon,
                                                        LineLevel, rate, channels, mask, min_period);
                 fill_device_path_info(md, p, pn, capture_idx++);
-                free(mon);
             }
         }
     }
@@ -1621,6 +1632,7 @@ static NTSTATUS pipewire_test_connect(void *args)
         list_remove(&pn->entry);
         free(pn->node_name);
         free(pn->display);
+        free(pn->nick);
         free(pn);
     }
     {
