@@ -375,6 +375,42 @@ static WCHAR *utf8_to_wstr(const char *s)
     return w;
 }
 
+#define MAX_DEVICE_NAME_LEN 62
+
+/* The name cap is measured in WCHARs, as winepulse measures it. */
+static unsigned name_wchar_len(const char *s)
+{
+    size_t len = strlen(s);
+    WCHAR tmp[MAX_DEVICE_NAME_LEN + 1];
+
+    if (len > MAX_DEVICE_NAME_LEN)
+        return MAX_DEVICE_NAME_LEN + 1;  /* certainly over the limit */
+    return ntdll_umbstowcs(s, len, tmp, ARRAY_SIZE(tmp));
+}
+
+/* Mirror winepulse get_device_name: some broken apps (Split/Second with
+ * fmodex) crash on endpoint names longer than 62 chars, even on native.
+ * When no shorter candidate fits, keep the long name rather than truncate,
+ * matching pulse. */
+static char *pick_device_name(const char *desc, const char *nick, const char *node_name)
+{
+    const char *chosen = desc ? desc : (nick ? nick : node_name);
+
+    if (name_wchar_len(chosen) > MAX_DEVICE_NAME_LEN)
+    {
+        if (nick && nick[0] && name_wchar_len(nick) <= MAX_DEVICE_NAME_LEN)
+            chosen = nick;
+        else if (node_name)
+        {
+            const char *tail = strrchr(node_name, '.');
+            tail = tail ? tail + 1 : node_name;
+            if (tail[0] && name_wchar_len(tail) <= MAX_DEVICE_NAME_LEN)
+                chosen = tail;
+        }
+    }
+    return strdup(chosen);
+}
+
 /* Post-mortem breadcrumb.  The process callback publishes how far it got into
  * stream->cb_mark, which the driver never reads; it exists to be recovered
  * from a core file.  Zero means the callback has never run for this stream,
@@ -1145,7 +1181,7 @@ static void on_probe_registry_global(void *data, uint32_t id, uint32_t permissio
         pn->id = id;
         pn->flow = !strcmp(media_class, "Audio/Sink") ? eRender : eCapture;
         pn->node_name = strdup(node_name);
-        pn->display = strdup(desc ? desc : (nick ? nick : node_name));
+        pn->display = pick_device_name(desc, nick, node_name);
         if (!pn->node_name || !pn->display)
         {
             free(pn->node_name);
