@@ -4508,6 +4508,7 @@ static NTSTATUS pipewire_wow64_get_prop_value(void *args)
             value32->ulVal = value.ulVal;
             break;
         case VT_LPWSTR:
+        case VT_CLSID:
             value32->ptr = params32->buffer;
             break;
         default:
