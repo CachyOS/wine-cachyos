@@ -1226,7 +1226,9 @@ static void add_default_device(struct list *list, EndpointFormFactor form, const
     }
     if (!(def = malloc(offsetof(struct pw_phys_device, pw_name) + 1)))
         return;
-    if (!(def->display = utf8_to_wstr("PipeWire")))
+    /* Burnout Paradise Remastered crashes on a device name with no space,
+     * so mirror winepulse's "PulseAudio Output" placeholder (pulse.c). */
+    if (!(def->display = utf8_to_wstr(form == Speakers ? "PipeWire Output" : "PipeWire Input")))
     {
         free(def);
         return;
