@@ -2463,7 +2463,7 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
     uint8_t buffer[1024];
     struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
     const struct spa_pod *params[1];
-    uint32_t period_frames = stream->period_bytes / stream->frame_size;
+    SIZE_T period_frames;
     enum pw_stream_state st;
     char *app;
     int tries;
@@ -2484,7 +2484,19 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
     }
     else
         pw_properties_set(props, PW_KEY_NODE_NAME, "winepipewire");
-    pw_properties_setf(props, PW_KEY_NODE_LATENCY, "%u/%u", period_frames, stream->info.rate);
+    /* calc_period_bytes already rejects a period_bytes that cannot fit
+     * SIZE_T, which on 32-bit also covers the UINT32 PW_KEY_NODE_LATENCY
+     * bound.  On 64-bit the frame count can still exceed UINT32_MAX, so
+     * refuse rather than narrow. */
+    period_frames = stream->period_bytes / stream->frame_size;
+    if (period_frames > UINT32_MAX)
+    {
+        free(app);
+        pw_properties_free(props);
+        return E_INVALIDARG;
+    }
+    pw_properties_setf(props, PW_KEY_NODE_LATENCY, "%u/%u",
+                       (UINT32)period_frames, stream->info.rate);
     if (device && device[0])
         pw_properties_set(props, PW_KEY_TARGET_OBJECT, device);
     if (stream->dataflow == eCapture &&
@@ -2635,6 +2647,27 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
     }
 }
 
+/* Checked SIZE_T arithmetic for the buffer sizing below.  mmdevapi's
+ * adjust_timing never clamps the requested duration down, so the derived
+ * byte sizes can overflow SIZE_T, which is 32-bit under WoW64 and faulted
+ * the heap on i386.  On overflow the caller rejects the stream with
+ * E_OUTOFMEMORY, like winealsa and winepulse. */
+static BOOL size_mul(SIZE_T a, SIZE_T b, SIZE_T *out)
+{
+    if (b && a > SIZE_MAX / b)
+        return FALSE;
+    *out = a * b;
+    return TRUE;
+}
+
+static BOOL size_add(SIZE_T a, SIZE_T b, SIZE_T *out)
+{
+    if (a > SIZE_MAX - b)
+        return FALSE;
+    *out = a + b;
+    return TRUE;
+}
+
 static NTSTATUS pipewire_create_stream(void *args)
 {
     struct create_stream_params *params = args;
@@ -2715,9 +2748,32 @@ static NTSTATUS pipewire_create_stream(void *args)
         goto exit;
     }
 
-    stream->bufsize_frames =
-        (SIZE_T)(((UINT64)params->duration * stream->info.rate + 9999999) / 10000000);
-    bufsize_bytes = stream->bufsize_frames * stream->frame_size;
+    {
+        UINT64 frames;
+        BOOL ok = params->duration >= 0 && stream->info.rate &&
+                  (UINT64)params->duration <= (UINT64_MAX - 9999999) / stream->info.rate;
+
+        /* Ceiling of duration*rate/1e7, safe only after the check above.  A
+         * wrapped product used to yield a tiny frame count and let Initialize
+         * succeed with a corrupt buffer. */
+        if (ok)
+        {
+            frames = ((UINT64)params->duration * stream->info.rate + 9999999) / 10000000;
+            /* get_buffer_size and the ring cursors narrow the frame count to
+             * UINT32, so a buffer only fits if the count does too. */
+            ok = frames <= UINT32_MAX;
+        }
+        if (ok)
+            ok = size_mul((SIZE_T)frames, stream->frame_size, &bufsize_bytes);
+        if (!ok)
+        {
+            WARN("Buffer duration %lld hns at %u Hz is too large.\n",
+                 (long long)params->duration, stream->info.rate);
+            hr = E_OUTOFMEMORY;
+            goto exit;
+        }
+        stream->bufsize_frames = (SIZE_T)frames;
+    }
 
     hr = pipewire_stream_connect(stream, params->device, params->name);
     if (FAILED(hr))
@@ -2729,7 +2785,15 @@ static NTSTATUS pipewire_create_stream(void *args)
     list_init(&stream->packet_filled_head);
     if (stream->dataflow == eRender)
     {
-        size = stream->real_bufsize_bytes = stream->bufsize_frames * 2 * stream->frame_size;
+        if (!size_mul(bufsize_bytes, 2, &stream->real_bufsize_bytes) ||
+            stream->real_bufsize_bytes > UINT32_MAX)
+        {
+            WARN("Render buffer size too large (%lu frames).\n",
+                 (unsigned long)stream->bufsize_frames);
+            hr = E_OUTOFMEMORY;
+            goto exit;
+        }
+        size = stream->real_bufsize_bytes;
         if (NtAllocateVirtualMemory(GetCurrentProcess(), (void **)&stream->local_buffer,
                                     zero_bits, &size, MEM_COMMIT, PAGE_READWRITE))
         {
@@ -2739,13 +2803,27 @@ static NTSTATUS pipewire_create_stream(void *args)
     }
     else
     {
-        UINT32 capture_packets, unalign;
-        SIZE_T slots_offs, packets_offs;
+        UINT32 capture_packets;
+        SIZE_T slots_offs, packets_offs, unalign;
 
         if ((unalign = bufsize_bytes % stream->period_bytes))
-            bufsize_bytes += stream->period_bytes - unalign;
+        {
+            if (!size_add(bufsize_bytes, stream->period_bytes - unalign, &bufsize_bytes))
+            {
+                WARN("Capture buffer size overflows aligning to the period.\n");
+                hr = E_OUTOFMEMORY;
+                goto exit;
+            }
+        }
         stream->bufsize_frames = bufsize_bytes / stream->frame_size;
         stream->real_bufsize_bytes = bufsize_bytes;
+        if (stream->real_bufsize_bytes > UINT32_MAX)
+        {
+            WARN("Capture buffer size too large (%lu frames).\n",
+                 (unsigned long)stream->bufsize_frames);
+            hr = E_OUTOFMEMORY;
+            goto exit;
+        }
         capture_packets = stream->real_bufsize_bytes / stream->period_bytes;
 
         /* The packet array follows the audio, so it needs the same rounding
@@ -2754,9 +2832,24 @@ static NTSTATUS pipewire_create_stream(void *args)
          * 1, 3 or 6 bytes for packed 8 and 24 bit formats.  ACPacket holds
          * list pointers, so a misaligned array is undefined and faults on
          * targets that do not fix up unaligned loads. */
-        packets_offs = (stream->real_bufsize_bytes + _Alignof(ACPacket) - 1) &
-                       ~(SIZE_T)(_Alignof(ACPacket) - 1);
-        size = packets_offs + capture_packets * sizeof(ACPacket);
+        {
+            SIZE_T packets_bytes;
+            BOOL ok = size_add(stream->real_bufsize_bytes, _Alignof(ACPacket) - 1, &packets_offs);
+
+            if (ok)
+            {
+                packets_offs &= ~(SIZE_T)(_Alignof(ACPacket) - 1);
+                ok = size_mul(capture_packets, sizeof(ACPacket), &packets_bytes);
+            }
+            if (ok)
+                ok = size_add(packets_offs, packets_bytes, &size);
+            if (!ok)
+            {
+                WARN("Capture buffer size overflows (%u packets).\n", capture_packets);
+                hr = E_OUTOFMEMORY;
+                goto exit;
+            }
+        }
         if (NtAllocateVirtualMemory(GetCurrentProcess(), (void **)&stream->local_buffer,
                                     zero_bits, &size, MEM_COMMIT, PAGE_READWRITE))
         {
@@ -2789,9 +2882,25 @@ static NTSTATUS pipewire_create_stream(void *args)
              * everywhere. */
             stream->cap_n_slots = stream->real_bufsize_bytes / stream->period_bytes;
             stream->capture_ring_size = stream->real_bufsize_bytes;
-            slots_offs = (stream->capture_ring_size + _Alignof(struct cap_slot) - 1) &
-                         ~(SIZE_T)(_Alignof(struct cap_slot) - 1);
-            size = slots_offs + stream->cap_n_slots * sizeof(*stream->cap_slots);
+            {
+                SIZE_T slots_bytes;
+                BOOL ok = size_add(stream->capture_ring_size, _Alignof(struct cap_slot) - 1,
+                                   &slots_offs);
+
+                if (ok)
+                {
+                    slots_offs &= ~(SIZE_T)(_Alignof(struct cap_slot) - 1);
+                    ok = size_mul(stream->cap_n_slots, sizeof(*stream->cap_slots), &slots_bytes);
+                }
+                if (ok)
+                    ok = size_add(slots_offs, slots_bytes, &size);
+                if (!ok)
+                {
+                    WARN("Capture ring size overflows (%u slots).\n", stream->cap_n_slots);
+                    hr = E_OUTOFMEMORY;
+                    goto exit;
+                }
+            }
             if (NtAllocateVirtualMemory(GetCurrentProcess(), (void **)&stream->capture_ring,
                                         zero_bits, &size, MEM_COMMIT, PAGE_READWRITE))
             {
