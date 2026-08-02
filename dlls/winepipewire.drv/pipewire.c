@@ -411,6 +411,22 @@ static char *pick_device_name(const char *desc, const char *nick, const char *no
     return strdup(chosen);
 }
 
+/* winepulse prefixes monitor source descriptions with an unlocalized
+ * "Monitor of ", so match it.  The result may exceed MAX_DEVICE_NAME_LEN,
+ * the same non-guarantee as pick_device_name. */
+static char *monitor_name_from(const char *sink_display)
+{
+    static const char monitor_of[] = "Monitor of ";
+    size_t len = strlen(monitor_of) + strlen(sink_display);
+    char *out = malloc(len + 1);
+
+    if (!out)
+        return NULL;
+    memcpy(out, monitor_of, strlen(monitor_of));
+    strcpy(out + strlen(monitor_of), sink_display);
+    return out;
+}
+
 /* Post-mortem breadcrumb.  The process callback publishes how far it got into
  * stream->cb_mark, which the driver never reads; it exists to be recovered
  * from a core file.  Zero means the callback has never run for this stream,
@@ -1342,6 +1358,22 @@ static void build_device_cache(struct probe *p)
         UINT mask = pn->have_format ? positions_to_mask(pn->position, pn->channels)
                                     : (SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT);
         add_device(list, pn->node_name, pn->display, form, rate, channels, mask, min_period);
+
+        /* PipeWire has no separate monitor nodes, so synthesize one capture
+         * endpoint per sink under the sink's own name, with the LineLevel
+         * form winepulse gives monitor sources.  Capture streams that name a
+         * sink already connect through PW_KEY_STREAM_CAPTURE_SINK (see
+         * pipewire_stream_connect). */
+        if (pn->flow == eRender)
+        {
+            char *mon = monitor_name_from(pn->display);
+            if (mon)
+            {
+                add_device(&g_capture_devices, pn->node_name, mon, LineLevel,
+                           rate, channels, mask, min_period);
+                free(mon);
+            }
+        }
     }
 
     add_default_device(&g_render_devices, Speakers, g_default_sink, rate, min_period);
