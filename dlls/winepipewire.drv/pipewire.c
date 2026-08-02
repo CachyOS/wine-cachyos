@@ -76,6 +76,7 @@
 #include "mmdeviceapi.h"
 #include "initguid.h"
 #include "audioclient.h"
+#include "devpkey.h"
 
 #include "wine/debug.h"
 #include "wine/list.h"
@@ -251,6 +252,15 @@ typedef struct _ACPacket
  * the stride is a whole number of alignments. */
 C_ASSERT(sizeof(ACPacket) % _Alignof(ACPacket) == 0);
 
+/* PipeWire node.bus / device.bus values we translate into a Windows device
+ * path (mirrors winepulse's phys_device_bus_type). */
+enum pw_device_bus
+{
+    PW_BUS_OTHER = 0,
+    PW_BUS_PCI,
+    PW_BUS_USB,
+};
+
 struct pw_phys_device
 {
     struct list entry;
@@ -259,6 +269,12 @@ struct pw_phys_device
     UINT channel_mask;
     REFERENCE_TIME min_period, def_period;
     WAVEFORMATEXTENSIBLE fmt;
+    /* Device-path inputs (winepulse get_device_path parity).  index is a
+     * per-list running counter. */
+    enum pw_device_bus bus;
+    UINT16 vendor_id, product_id;
+    UINT index;
+    GUID container_id;
     char pw_name[];
 };
 
@@ -1062,6 +1078,18 @@ struct probe_node
     uint32_t channels;
     uint32_t position[SPA_AUDIO_MAX_CHANNELS];
     int have_format;
+    uint32_t device_id;    /* parent device.id, or SPA_ID_INVALID */
+    enum pw_device_bus bus;
+};
+
+/* Vendor/product ids live on the Device object, not the node, so the probe
+ * records devices too and matches them to nodes by device.id. */
+struct probe_device
+{
+    struct list entry;
+    uint32_t id;
+    enum pw_device_bus bus;
+    UINT16 vendor_id, product_id;
 };
 
 struct probe
@@ -1074,6 +1102,7 @@ struct probe
     struct spa_hook registry_listener;
     int sync_seq;
     struct list nodes;
+    struct list devices;
     struct pw_metadata *meta_default;
     struct pw_metadata *meta_settings;
     struct spa_hook meta_default_listener;
@@ -1170,6 +1199,17 @@ static const struct pw_metadata_events probe_settings_events = {
     .property = on_probe_settings_property,
 };
 
+static enum pw_device_bus parse_device_bus(const char *bus)
+{
+    if (!bus)
+        return PW_BUS_OTHER;
+    if (!strcmp(bus, "pci"))
+        return PW_BUS_PCI;
+    if (!strcmp(bus, "usb"))
+        return PW_BUS_USB;
+    return PW_BUS_OTHER;
+}
+
 static void on_probe_registry_global(void *data, uint32_t id, uint32_t permissions,
                                       const char *type, uint32_t version,
                                       const struct spa_dict *props)
@@ -1185,6 +1225,7 @@ static void on_probe_registry_global(void *data, uint32_t id, uint32_t permissio
         const char *node_name = spa_dict_lookup(props, PW_KEY_NODE_NAME);
         const char *desc = spa_dict_lookup(props, PW_KEY_NODE_DESCRIPTION);
         const char *nick = spa_dict_lookup(props, PW_KEY_NODE_NICK);
+        const char *dev_id = spa_dict_lookup(props, PW_KEY_DEVICE_ID);
         struct probe_node *pn;
 
         if (!media_class || !node_name)
@@ -1196,6 +1237,8 @@ static void on_probe_registry_global(void *data, uint32_t id, uint32_t permissio
             return;
         pn->id = id;
         pn->flow = !strcmp(media_class, "Audio/Sink") ? eRender : eCapture;
+        pn->device_id = dev_id ? (uint32_t)strtoul(dev_id, NULL, 10) : SPA_ID_INVALID;
+        pn->bus = parse_device_bus(spa_dict_lookup(props, "device.bus"));
         pn->node_name = strdup(node_name);
         pn->display = pick_device_name(desc, nick, node_name);
         if (!pn->node_name || !pn->display)
@@ -1216,6 +1259,22 @@ static void on_probe_registry_global(void *data, uint32_t id, uint32_t permissio
             pw_node_add_listener(pn->proxy, &pn->listener, &probe_node_events, pn);
             pw_node_enum_params(pn->proxy, 0, SPA_PARAM_EnumFormat, 0, UINT32_MAX, NULL);
         }
+    }
+    else if (!strcmp(type, PW_TYPE_INTERFACE_Device))
+    {
+        const char *bus = spa_dict_lookup(props, PW_KEY_DEVICE_BUS);
+        const char *vid = spa_dict_lookup(props, PW_KEY_DEVICE_VENDOR_ID);
+        const char *pid = spa_dict_lookup(props, PW_KEY_DEVICE_PRODUCT_ID);
+        struct probe_device *pd;
+
+        if (!(pd = calloc(1, sizeof(*pd))))
+            return;
+        pd->id = id;
+        pd->bus = parse_device_bus(bus);
+        /* Vendor/product ids arrive as 0x-prefixed hex strings. */
+        pd->vendor_id = vid ? (UINT16)strtoul(vid, NULL, 16) : 0;
+        pd->product_id = pid ? (UINT16)strtoul(pid, NULL, 16) : 0;
+        list_add_tail(&p->devices, &pd->entry);
     }
     else if (!strcmp(type, PW_TYPE_INTERFACE_Metadata))
     {
@@ -1297,7 +1356,10 @@ static void add_default_device(struct list *list, EndpointFormFactor form, const
         LIST_FOR_EACH_ENTRY(dev, list, struct pw_phys_device, entry)
             if (!strcmp(dev->pw_name, match)) { def_src = dev; break; }
     }
-    if (!(def = malloc(offsetof(struct pw_phys_device, pw_name) + 1)))
+    /* calloc a full struct, +1 for the empty pw_name: the placeholder's
+     * device-path fields must read back as zero, and the full size keeps
+     * -Warray-bounds quiet on the flexible array member. */
+    if (!(def = calloc(1, sizeof(*def) + 1)))
         return;
     /* Burnout Paradise Remastered crashes on a device name with no space,
      * so mirror winepulse's "PulseAudio Output" placeholder (pulse.c). */
@@ -1323,11 +1385,67 @@ static void add_default_device(struct list *list, EndpointFormFactor form, const
     list_add_head(list, &def->entry);
 }
 
+static struct probe_device *probe_find_device(struct probe *p, uint32_t device_id)
+{
+    struct probe_device *pd;
+
+    if (device_id == SPA_ID_INVALID)
+        return NULL;
+    LIST_FOR_EACH_ENTRY(pd, &p->devices, struct probe_device, entry)
+        if (pd->id == device_id)
+            return pd;
+    return NULL;
+}
+
+/* A ContainerId stable across reboots.  winepulse derives it from udev sysfs,
+ * which we lack, so hash the vendor/product ids plus the reboot-stable
+ * PipeWire node name.  A bus-less device gets a zero GUID, as pulse leaves it
+ * without sysfs. */
+static GUID make_container_id(enum pw_device_bus bus, UINT16 vendor_id, UINT16 product_id,
+                              const char *node_name)
+{
+    GUID id = {0};
+    UINT64 h = 1469598103934665603ull; /* FNV-1a offset basis */
+    const char *c;
+
+    if (bus == PW_BUS_OTHER)
+        return id;
+    for (c = node_name; c && *c; c++)
+        h = (h ^ (unsigned char)*c) * 1099511628211ull;
+    id.Data1 = MAKELONG(vendor_id, product_id);
+    id.Data2 = (UINT16)(h >> 48);
+    id.Data3 = (UINT16)(h >> 32);
+    id.Data4[0] = (BYTE)(h >> 24);
+    id.Data4[1] = (BYTE)(h >> 16);
+    id.Data4[2] = (BYTE)(h >> 8);
+    id.Data4[3] = (BYTE)h;
+    id.Data4[4] = (BYTE)(vendor_id >> 8);
+    id.Data4[5] = (BYTE)vendor_id;
+    id.Data4[6] = (BYTE)(product_id >> 8);
+    id.Data4[7] = (BYTE)product_id;
+    return id;
+}
+
+static void fill_device_path_info(struct pw_phys_device *dev, struct probe *p,
+                                  struct probe_node *pn, UINT index)
+{
+    struct probe_device *pd = probe_find_device(p, pn->device_id);
+
+    if (!dev)
+        return;
+    dev->bus = pd ? pd->bus : pn->bus;
+    dev->vendor_id = pd ? pd->vendor_id : 0;
+    dev->product_id = pd ? pd->product_id : 0;
+    dev->index = index;
+    dev->container_id = make_container_id(dev->bus, dev->vendor_id, dev->product_id, pn->node_name);
+}
+
 static void build_device_cache(struct probe *p)
 {
     struct probe_node *pn;
     uint32_t rate = p->clock_rate ? p->clock_rate : 48000;
     REFERENCE_TIME min_period = 30000;
+    UINT render_idx = 0, capture_idx = 0;
 
     /* IAudioClient3 shared-mode floor.  The graph cannot deliver cycles
      * below clock.min-quantum (clock.force-quantum pins it outright), and
@@ -1357,7 +1475,11 @@ static void build_device_cache(struct probe *p)
         uint32_t channels = pn->have_format ? pn->channels : 2;
         UINT mask = pn->have_format ? positions_to_mask(pn->position, pn->channels)
                                     : (SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT);
-        add_device(list, pn->node_name, pn->display, form, rate, channels, mask, min_period);
+        UINT *idx = (pn->flow == eRender) ? &render_idx : &capture_idx;
+        struct pw_phys_device *dev;
+
+        dev = add_device(list, pn->node_name, pn->display, form, rate, channels, mask, min_period);
+        fill_device_path_info(dev, p, pn, (*idx)++);
 
         /* PipeWire has no separate monitor nodes, so synthesize one capture
          * endpoint per sink under the sink's own name, with the LineLevel
@@ -1369,8 +1491,9 @@ static void build_device_cache(struct probe *p)
             char *mon = monitor_name_from(pn->display);
             if (mon)
             {
-                add_device(&g_capture_devices, pn->node_name, mon, LineLevel,
-                           rate, channels, mask, min_period);
+                struct pw_phys_device *md = add_device(&g_capture_devices, pn->node_name, mon,
+                                                       LineLevel, rate, channels, mask, min_period);
+                fill_device_path_info(md, p, pn, capture_idx++);
                 free(mon);
             }
         }
@@ -1434,6 +1557,7 @@ static NTSTATUS pipewire_test_connect(void *args)
 
     memset(&p, 0, sizeof(p));
     list_init(&p.nodes);
+    list_init(&p.devices);
 
     if (!(p.loop = pw_thread_loop_new("winepipewire-probe", NULL)))
     {
@@ -1498,6 +1622,14 @@ static NTSTATUS pipewire_test_connect(void *args)
         free(pn->node_name);
         free(pn->display);
         free(pn);
+    }
+    {
+        struct probe_device *pd, *pdnext;
+        LIST_FOR_EACH_ENTRY_SAFE(pd, pdnext, &p.devices, struct probe_device, entry)
+        {
+            list_remove(&pd->entry);
+            free(pd);
+        }
     }
 
     TRACE("probe for %s: %u sinks default=%s, %u sources default=%s, rate=%u\n",
@@ -1632,6 +1764,48 @@ static NTSTATUS pipewire_is_format_supported(void *args)
     return STATUS_SUCCESS;
 }
 
+/* Synthesize a Windows device path, mirroring winepulse get_device_path.
+ * Most audio devices have no serial number, so substitute the low 8 hex
+ * digits of the endpoint GUID, which mmdevapi derives from the device name
+ * and is stable per device. */
+static void get_device_path(struct pw_phys_device *dev, struct get_prop_value_params *params)
+{
+    const GUID *guid = params->guid;
+    PROPVARIANT *out = params->value;
+    UINT serial_number;
+    char path[128];
+    int len;
+
+    serial_number = (guid->Data4[4] << 24) | (guid->Data4[5] << 16) |
+                    (guid->Data4[6] << 8) | guid->Data4[7];
+
+    switch (dev->bus)
+    {
+    case PW_BUS_PCI:
+        len = sprintf(path, "{1}.HDAUDIO\\FUNC_01&VEN_%04X&DEV_%04X\\%u&%08X",
+                      dev->vendor_id, dev->product_id, dev->index, serial_number);
+        break;
+    case PW_BUS_USB:
+        len = sprintf(path, "{1}.USB\\VID_%04X&PID_%04X\\%u&%08X",
+                      dev->vendor_id, dev->product_id, dev->index, serial_number);
+        break;
+    default:
+        len = sprintf(path, "{1}.ROOT\\MEDIA\\%04u", dev->index);
+        break;
+    }
+
+    if (*params->buffer_size < ++len * sizeof(WCHAR))
+    {
+        params->result = E_NOT_SUFFICIENT_BUFFER;
+        *params->buffer_size = len * sizeof(WCHAR);
+        return;
+    }
+    out->vt = VT_LPWSTR;
+    out->pwszVal = params->buffer;
+    ntdll_umbstowcs(path, len, out->pwszVal, len);
+    params->result = S_OK;
+}
+
 static NTSTATUS pipewire_get_prop_value(void *args)
 {
     static const GUID PKEY_AudioEndpoint_GUID = {
@@ -1650,8 +1824,23 @@ static NTSTATUS pipewire_get_prop_value(void *args)
     }
     if (IsEqualPropertyKey(*params->prop, devicepath_key))
     {
-        /* PipeWire nodes do not reliably carry vendor/product ids. */
-        params->result = E_NOTIMPL;
+        get_device_path(dev, params);
+        return STATUS_SUCCESS;
+    }
+    if (IsEqualGUID(&params->prop->fmtid, &DEVPKEY_Device_ContainerId))
+    {
+        if (!params->buffer || *params->buffer_size < sizeof(*params->value->puuid))
+        {
+            *params->buffer_size = sizeof(*params->value->puuid);
+            params->result = E_NOT_SUFFICIENT_BUFFER;
+        }
+        else
+        {
+            params->value->vt = VT_CLSID;
+            params->value->puuid = params->buffer;
+            *params->value->puuid = dev->container_id;
+            params->result = S_OK;
+        }
         return STATUS_SUCCESS;
     }
     if (IsEqualGUID(&params->prop->fmtid, &PKEY_AudioEndpoint_GUID))
