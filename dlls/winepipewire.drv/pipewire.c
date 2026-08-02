@@ -142,6 +142,21 @@ static BOOL cap_seq_before(UINT32 a, UINT32 b)
     return (INT32)((a & ~CAP_STATE_MASK) - (b & ~CAP_STATE_MASK)) < 0;
 }
 
+/* Per-stream state-transition journal.  pw_stream_state_changed fires on a
+ * foreign PipeWire thread with no Wine TEB, so it only records here and Wine
+ * threads drain and log later.  The ring is lock-free and drop-oldest:
+ * overflow loses the oldest unread transitions rather than blocking. */
+#define STATE_JOURNAL_LEN 8
+
+struct stream_journal_entry
+{
+    UINT32 seq;         /* atomic: 0 = empty, else write index + 1 */
+    int old_state;
+    int new_state;
+    int res;
+    char error[96];
+};
+
 struct pipewire_stream
 {
     EDataFlow dataflow;
@@ -208,6 +223,12 @@ struct pipewire_stream
     UINT32 cb_seq;        /* callback-private: callbacks entered */
     UINT32 cb_mark;       /* diagnostic breadcrumb, never read by the driver */
     BOOL underrun_logged, overrun_logged, bad_buffer_logged;
+
+    /* journal_w: producer counter, atomic, bumped from the PW callback.
+     * journal_r: consumer cursor, Wine threads only, under the loop lock. */
+    struct stream_journal_entry journal[STATE_JOURNAL_LEN];
+    UINT32 journal_w;
+    UINT32 journal_r;
 
     struct list packet_free_head;
     struct list packet_filled_head;
@@ -1860,12 +1881,59 @@ static void apply_volume(const struct pipewire_stream *stream, const float *vol,
     }
 }
 
+/* Foreign PipeWire thread: no Wine calls.  The release store to seq publishes
+ * the slot, so the consumer never sees a half-filled entry. */
+static void stream_journal_record(struct pipewire_stream *stream, enum pw_stream_state old,
+                                  enum pw_stream_state state, int res, const char *error)
+{
+    UINT32 w = __atomic_fetch_add(&stream->journal_w, 1, __ATOMIC_RELAXED);
+    struct stream_journal_entry *e = &stream->journal[w % STATE_JOURNAL_LEN];
+
+    e->old_state = old;
+    e->new_state = state;
+    e->res = res;
+    copy_cstr(e->error, sizeof(e->error), error);
+    __atomic_store_n(&e->seq, w + 1, __ATOMIC_RELEASE);
+}
+
+/* Wine threads only, loop lock held, so logging is safe here. */
+static void stream_journal_flush(struct pipewire_stream *stream)
+{
+    UINT32 w = __atomic_load_n(&stream->journal_w, __ATOMIC_ACQUIRE);
+    UINT32 r = stream->journal_r;
+
+    if (w - r > STATE_JOURNAL_LEN)
+        r = w - STATE_JOURNAL_LEN;  /* drop-oldest: producer outran us */
+
+    for (; r != w; r++)
+    {
+        struct stream_journal_entry *e = &stream->journal[r % STATE_JOURNAL_LEN];
+        UINT32 seq = __atomic_load_n(&e->seq, __ATOMIC_ACQUIRE);
+        const char *msg;
+
+        if (seq != r + 1)
+            continue;  /* producer lapped this slot mid-read */
+        msg = e->error[0] ? e->error : NULL;
+        if (e->new_state == PW_STREAM_STATE_ERROR)
+            WARN("stream %p state %s -> %s res %d: %s.\n", stream,
+                 pw_stream_state_as_string(e->old_state),
+                 pw_stream_state_as_string(e->new_state), e->res, debugstr_a(msg));
+        else
+            TRACE("stream %p state %s -> %s res %d%s%s.\n", stream,
+                  pw_stream_state_as_string(e->old_state),
+                  pw_stream_state_as_string(e->new_state), e->res,
+                  msg ? ": " : "", msg ? msg : "");
+    }
+    stream->journal_r = w;
+}
+
 static void on_stream_state_changed(void *data, enum pw_stream_state old,
                                     enum pw_stream_state state, const char *error)
 {
     struct pipewire_stream *stream = data;
 
     /* PW loop thread, lock held: record only, no Wine logging. */
+    stream_journal_record(stream, old, state, 0, error);
     if (state == PW_STREAM_STATE_ERROR)
     {
         copy_cstr(stream->last_error, sizeof(stream->last_error), error);
@@ -2024,6 +2092,7 @@ static BOOL stream_valid(struct pipewire_stream *stream)
 
     if (!stream)
         return FALSE;
+    stream_journal_flush(stream);
     if (stream->pending_error)
     {
         if (stream->pw)
@@ -2453,13 +2522,21 @@ static NTSTATUS pipewire_release_stream(void *args)
 
     pw_thread_loop_lock(pw_loop_global);
     TRACE("stream %p.\n", stream);
-    if (__atomic_load_n(&stream->underrun_count, __ATOMIC_RELAXED) ||
-        __atomic_load_n(&stream->overrun_count, __ATOMIC_RELAXED) ||
-        __atomic_load_n(&stream->bad_buffer_count, __ATOMIC_RELAXED))
-        WARN("stream %p underran %u times, overran %u times, bad buffers %u.\n", stream,
-             __atomic_load_n(&stream->underrun_count, __ATOMIC_RELAXED),
-             __atomic_load_n(&stream->overrun_count, __ATOMIC_RELAXED),
-             __atomic_load_n(&stream->bad_buffer_count, __ATOMIC_RELAXED));
+    {
+        UINT32 under = __atomic_load_n(&stream->underrun_count, __ATOMIC_RELAXED);
+        UINT32 over = __atomic_load_n(&stream->overrun_count, __ATOMIC_RELAXED);
+        UINT32 bad = __atomic_load_n(&stream->bad_buffer_count, __ATOMIC_RELAXED);
+        UINT32 mark = __atomic_load_n(&stream->cb_mark, __ATOMIC_RELAXED);
+        const char *err = stream->last_error[0] ? stream->last_error : NULL;
+
+        stream_journal_flush(stream);
+        TRACE("stream %p final cb_seq %u last phase %u last_error %s.\n", stream,
+              stream->cb_seq, mark & 3, debugstr_a(err));
+        if (under || over || bad)
+            WARN("stream %p underran %u times, overran %u times, bad buffers %u, "
+                 "cb_seq %u last phase %u last_error %s.\n", stream,
+                 under, over, bad, stream->cb_seq, mark & 3, debugstr_a(err));
+    }
     if (stream->period)
     {
         struct pipewire_period *period = stream->period;
@@ -2737,6 +2814,10 @@ static void pipewire_period_timer_loop(void *args)
         LIST_FOR_EACH_ENTRY(stream, &period->streams, struct pipewire_stream, period_entry)
         {
             UINT32 n;
+
+            /* Drain each tick so an error surfaces promptly even when no
+             * control op touches this stream. */
+            stream_journal_flush(stream);
 
             if ((n = __atomic_load_n(&stream->underrun_count, __ATOMIC_RELAXED)) &&
                 !stream->underrun_logged)
