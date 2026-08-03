@@ -714,21 +714,20 @@ void WAYLAND_SetWindowIcons(HWND hwnd, HICON icon, const ICONINFO *ii, HICON ico
     struct wayland_surface *surface;
     struct wayland_win_data *data;
 
+    if (!process_wayland.xdg_toplevel_icon_manager_v1) return;
+
     TRACE("hwnd=%p icon=%p ii=%p icon_small=%p ii_small=%p\n", hwnd, icon, ii, icon_small, ii_small);
 
-    if (process_wayland.xdg_toplevel_icon_manager_v1)
+    if (!(data = wayland_win_data_get(hwnd))) return;
+
+    if ((surface = data->wayland_surface))
     {
-        if ((data = wayland_win_data_get(hwnd)))
-        {
-            if ((surface = data->wayland_surface))
-            {
-                wayland_surface_set_icon_buffer(surface, ICON_BIG, ii);
-                if (icon_small) wayland_surface_set_icon_buffer(surface, ICON_SMALL, ii_small);
-                if (wayland_surface_is_toplevel(surface)) wayland_surface_assign_icon(surface);
-            }
-            wayland_win_data_release(data);
-        }
+        wayland_surface_set_icon_buffer(surface, ICON_BIG, ii);
+        if (icon_small) wayland_surface_set_icon_buffer(surface, ICON_SMALL, ii_small);
+        if (wayland_surface_is_toplevel(surface)) wayland_surface_assign_icon(surface);
     }
+
+    wayland_win_data_release(data);
 }
 
 /***********************************************************************
