@@ -1089,9 +1089,8 @@ struct probe_node
     enum pw_device_bus bus;
 };
 
-/* Vendor/product ids live on the Device object, not the node.  PipeWire
- * 1.6.8 carries them only on the bound device's info.props, not on the
- * registry global, so the probe binds each device and reads them from its
+/* Vendor/product ids live on the Device object, not the node.  Registry
+ * globals omit them, so the probe binds each device and reads them from its
  * info event. */
 struct probe_device
 {
@@ -4117,9 +4116,8 @@ static NTSTATUS pipewire_set_sample_rate(void *args)
     ratio = params->rate / (float)stream->rate_connected;
     if (pw_stream_set_control(stream->pw, SPA_PROP_rate, 1, &ratio, 0) < 0)
     {
-        /* needs PipeWire >= 1.2.6 and an active adaptive resampler.  The ring
-         * is empty and every cursor agrees on that, so the stream is coherent
-         * at the old rate; only the buffered audio is gone. */
+        /* The ring is already empty.  On failure the cursors still describe
+         * the old rate and the buffered audio is gone. */
         WARN("pw_stream_set_control(rate) failed for stream %p.\n", stream);
         hr = E_NOTIMPL;
         goto exit;
