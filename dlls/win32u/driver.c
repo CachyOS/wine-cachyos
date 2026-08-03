@@ -683,6 +683,10 @@ static BOOL nulldrv_SetIMECompositionRect( HWND hwnd, RECT rect )
     return FALSE;
 }
 
+static void nulldrv_EnableIMEContext( HWND hwnd, BOOL enabled )
+{
+}
+
 static LRESULT nulldrv_DesktopWindowProc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
 {
     return default_window_proc( hwnd, msg, wparam, lparam, FALSE );
@@ -1116,6 +1120,11 @@ static BOOL loaderdrv_SetIMECompositionRect( HWND hwnd, RECT rect )
     return load_driver()->pSetIMECompositionRect( hwnd, rect );
 }
 
+static void loaderdrv_EnableIMEContext( HWND hwnd, BOOL enabled )
+{
+    return load_driver()->pEnableIMEContext( hwnd, enabled );
+}
+
 static LONG loaderdrv_ChangeDisplaySettings( LPDEVMODEW displays, LPCWSTR primary_name, HWND hwnd,
                                              DWORD flags, LPVOID lparam )
 {
@@ -1266,6 +1275,7 @@ static const struct user_driver_funcs lazy_load_driver =
     loaderdrv_ImeProcessKey,
     loaderdrv_NotifyIMEStatus,
     loaderdrv_SetIMECompositionRect,
+    loaderdrv_EnableIMEContext,
     /* cursor/icon functions */
     nulldrv_DestroyCursorIcon,
     loaderdrv_SetCursor,
@@ -1371,6 +1381,7 @@ void __wine_set_user_driver( const struct user_driver_funcs *funcs, UINT version
     SET_USER_FUNC(ImeProcessKey);
     SET_USER_FUNC(NotifyIMEStatus);
     SET_USER_FUNC(SetIMECompositionRect);
+    SET_USER_FUNC(EnableIMEContext);
     SET_USER_FUNC(DestroyCursorIcon);
     SET_USER_FUNC(SetCursor);
     SET_USER_FUNC(GetCursorPos);
