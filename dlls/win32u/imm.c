@@ -186,6 +186,7 @@ UINT WINAPI NtUserAssociateInputContext( HWND hwnd, HIMC ctx, ULONG flags )
 {
     WND *win;
     UINT ret = AICR_OK;
+    HIMC old;
 
     TRACE( "%p %p %x\n", hwnd, ctx, flags );
 
@@ -214,11 +215,13 @@ UINT WINAPI NtUserAssociateInputContext( HWND hwnd, HIMC ctx, ULONG flags )
     if (ctx && !is_current_thread_window( hwnd )) return AICR_FAILED;
     if (!(win = get_win_ptr( hwnd )) || win == WND_OTHER_PROCESS || win == WND_DESKTOP) return AICR_FAILED;
 
-    if (flags != IACE_IGNORENOCONTEXT || win->imc)
+    if ((old = win->imc) || flags != IACE_IGNORENOCONTEXT)
     {
         if (win->imc != ctx && get_focus() == hwnd) ret = AICR_FOCUS_CHANGED;
         win->imc = ctx;
     }
+
+    if (!old ^ !win->imc) user_driver->pEnableIMEContext( hwnd, !!win->imc );
 
     release_win_ptr( win );
     return ret;
@@ -313,6 +316,8 @@ BOOL register_imm_window( HWND hwnd )
                                                           0, 0, 1, 1, 0, 0, 0, 0, 0, 0, NULL, FALSE );
     }
 
+    user_driver->pEnableIMEContext( hwnd, TRUE );
+
     return TRUE;
 }
 
@@ -336,6 +341,8 @@ void unregister_imm_window( HWND hwnd )
         HWND destroy_hwnd = detach_default_window( thread_data );
         if (destroy_hwnd) NtUserDestroyWindow( destroy_hwnd );
     }
+
+    user_driver->pEnableIMEContext( hwnd, FALSE );
 }
 
 /***********************************************************************
