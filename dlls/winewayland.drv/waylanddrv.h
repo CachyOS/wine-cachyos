@@ -193,6 +193,7 @@ struct wayland_text_input
     WCHAR *commit_string;
     HWND focused_hwnd;
     pthread_mutex_t mutex;
+    BOOL enabled;
 };
 
 struct wayland_seat
@@ -516,6 +517,7 @@ struct wayland_win_data
     BOOL resizeable;
     BOOL managed;
     BOOL layered_attribs_set;
+    int ime_ref;
 };
 
 struct wayland_win_data *wayland_win_data_get(HWND hwnd);
@@ -606,6 +608,7 @@ LRESULT WAYLAND_DesktopWindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
 void WAYLAND_DestroyWindow(HWND hwnd);
 void WAYLAND_FlashWindowEx(FLASHWINFO *info);
 BOOL WAYLAND_SetIMECompositionRect(HWND hwnd, RECT rect);
+void WAYLAND_EnableIMEContext(HWND hwnd, BOOL enabled);
 void WAYLAND_SetCursor(HWND hwnd, HCURSOR hcursor);
 BOOL WAYLAND_SetCursorPos(INT x, INT y);
 void WAYLAND_SetLayeredWindowAttributes(HWND hwnd, COLORREF key, BYTE alpha, DWORD flags);
