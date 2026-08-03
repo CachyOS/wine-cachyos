@@ -956,7 +956,7 @@ BOOL WAYLAND_GetWindowStateUpdates(HWND hwnd, UINT *state_cmd, UINT *swp_flags,
     if ((style & WS_MINIMIZE) && focused_hwnd == hwnd && old_foreground != hwnd)
         *state_cmd = MAKELONG(SC_RESTORE, 1);
 
-    TRACE("hwnd=%p foreground=%p state_low=%#x\n", hwnd, *foreground, LOWORD(*state_cmd));
+    TRACE("hwnd=%p foreground=%p state=%#x\n", hwnd, *foreground, *state_cmd);
 
     return TRUE;
 }
