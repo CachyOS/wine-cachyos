@@ -77,25 +77,55 @@ static void wayland_text_input_reset_all_state(struct wayland_text_input *text_i
     wayland_text_input_reset_pending_state(text_input);
 }
 
-static void text_input_enter(void *data, struct zwp_text_input_v3 *zwp_text_input_v3,
-        struct wl_surface *surface)
+static void wayland_text_input_enable(struct wayland_text_input *text_input)
 {
-    struct wayland_text_input *text_input = data;
-    HWND hwnd;
+    TRACE("enabled %u\n", text_input->enabled);
 
-    if (!surface) return;
+    if (text_input->enabled) return;
 
-    hwnd = wl_surface_get_user_data(surface);
-    TRACE("data %p, text_input %p, hwnd %p.\n", data, zwp_text_input_v3, hwnd);
-
-    pthread_mutex_lock(&text_input->mutex);
-    text_input->focused_hwnd = hwnd;
     zwp_text_input_v3_enable(text_input->zwp_text_input_v3);
     zwp_text_input_v3_set_content_type(text_input->zwp_text_input_v3,
             ZWP_TEXT_INPUT_V3_CONTENT_HINT_NONE,
             ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_NORMAL);
     zwp_text_input_v3_set_cursor_rectangle(text_input->zwp_text_input_v3, 0, 0, 0, 0);
     zwp_text_input_v3_commit(text_input->zwp_text_input_v3);
+    text_input->enabled = TRUE;
+}
+
+static void wayland_text_input_disable(struct wayland_text_input *text_input)
+{
+    TRACE("enabled %u\n", text_input->enabled);
+
+    if (!text_input->enabled) return;
+
+    zwp_text_input_v3_disable(text_input->zwp_text_input_v3);
+    zwp_text_input_v3_commit(text_input->zwp_text_input_v3);
+    wayland_text_input_reset_all_state(text_input);
+    text_input->enabled = FALSE;
+}
+
+static void text_input_enter(void *private, struct zwp_text_input_v3 *zwp_text_input_v3,
+        struct wl_surface *surface)
+{
+    struct wayland_win_data *data;
+    struct wayland_text_input *text_input = private;
+    HWND hwnd;
+
+    if (!surface) return;
+
+    hwnd = wl_surface_get_user_data(surface);
+    TRACE("hwnd %p.\n", hwnd);
+
+    pthread_mutex_lock(&text_input->mutex);
+
+    if (!(data = wayland_win_data_get(hwnd))) goto done;
+
+    text_input->focused_hwnd = hwnd;
+    if (data->ime_ref) wayland_text_input_enable(text_input);
+
+    wayland_win_data_release(data);
+
+done:
     pthread_mutex_unlock(&text_input->mutex);
 }
 
@@ -103,17 +133,18 @@ static void text_input_leave(void *data, struct zwp_text_input_v3 *zwp_text_inpu
         struct wl_surface *surface)
 {
     struct wayland_text_input *text_input = data;
-    TRACE("data %p, text_input %p.\n", data, zwp_text_input_v3);
 
     pthread_mutex_lock(&text_input->mutex);
-    zwp_text_input_v3_disable(text_input->zwp_text_input_v3);
-    zwp_text_input_v3_commit(text_input->zwp_text_input_v3);
+
+    TRACE("focused_hwnd=%p enabled=%u\n", text_input->focused_hwnd, text_input->enabled);
+
     if (text_input->focused_hwnd)
     {
-        post_ime_update(text_input->focused_hwnd, 0, NULL, NULL);
+        /* avoid posting ime updates when there is no context associated */
+        if (text_input->enabled) post_ime_update(text_input->focused_hwnd, 0, NULL, NULL);
         text_input->focused_hwnd = NULL;
     }
-    wayland_text_input_reset_all_state(text_input);
+    wayland_text_input_disable(text_input);
     pthread_mutex_unlock(&text_input->mutex);
 }
 
@@ -124,8 +155,7 @@ static void text_input_preedit_string(void *data, struct zwp_text_input_v3 *zwp_
     DWORD begin = 0, end = 0;
     WCHAR *textW;
 
-    TRACE("data %p, text_input %p, text %s, cursor %d - %d.\n", data, zwp_text_input_v3,
-            debugstr_a(text), cursor_begin, cursor_end);
+    TRACE("text %s, cursor %d - %d.\n", debugstr_a(text), cursor_begin, cursor_end);
 
     if ((textW = strdupUtoW(text)))
     {
@@ -144,7 +174,7 @@ static void text_input_commit_string(void *data, struct zwp_text_input_v3 *zwp_t
         const char *text)
 {
     struct wayland_text_input *text_input = data;
-    TRACE("data %p, text_input %p, text %s.\n", data, zwp_text_input_v3, debugstr_a(text));
+    TRACE("text %s.\n", debugstr_a(text));
 
     pthread_mutex_lock(&text_input->mutex);
     free(text_input->commit_string);
@@ -161,7 +191,7 @@ static void text_input_done(void *data, struct zwp_text_input_v3 *zwp_text_input
         uint32_t serial)
 {
     struct wayland_text_input *text_input = data;
-    TRACE("data %p, text_input %p, serial %u.\n", data, zwp_text_input_v3, serial);
+    TRACE("serial %u.\n", serial);
 
     pthread_mutex_lock(&text_input->mutex);
     /* Some compositors will send a done event for every commit, regardless of
@@ -200,6 +230,7 @@ void wayland_text_input_init(void)
     struct wayland_text_input *text_input = &process_wayland.text_input;
 
     pthread_mutex_lock(&text_input->mutex);
+    text_input->enabled = FALSE;
     text_input->zwp_text_input_v3 = zwp_text_input_manager_v3_get_text_input(
             process_wayland.zwp_text_input_manager_v3, process_wayland.seat.wl_seat);
     zwp_text_input_v3_add_listener(text_input->zwp_text_input_v3, &text_input_listener, text_input);
@@ -214,6 +245,7 @@ void wayland_text_input_deinit(void)
     zwp_text_input_v3_destroy(text_input->zwp_text_input_v3);
     text_input->zwp_text_input_v3 = NULL;
     text_input->focused_hwnd = NULL;
+    text_input->enabled = FALSE;
     wayland_text_input_reset_all_state(text_input);
     pthread_mutex_unlock(&text_input->mutex);
 };
@@ -232,18 +264,17 @@ BOOL WAYLAND_SetIMECompositionRect(HWND hwnd, RECT rect)
 
     pthread_mutex_lock(&text_input->mutex);
 
-    if (!text_input->zwp_text_input_v3 || hwnd != text_input->focused_hwnd)
+    if (!text_input->zwp_text_input_v3 || !text_input->enabled || hwnd != text_input->focused_hwnd)
         goto err;
 
     if (!(data = wayland_win_data_get(hwnd)))
         goto err;
 
-    if (!(surface = data->wayland_surface))
+    if (!(surface = data->wayland_surface) || !data->ime_ref)
     {
         wayland_win_data_release(data);
         goto err;
     }
-
 
     OffsetRect(&rect, -surface->window.rect.left, -surface->window.rect.top);
     surface_rect = map_rect_to_surface(surface, rect);
@@ -260,4 +291,31 @@ BOOL WAYLAND_SetIMECompositionRect(HWND hwnd, RECT rect)
 err:
     pthread_mutex_unlock(&text_input->mutex);
     return FALSE;
+}
+
+void WAYLAND_EnableIMEContext(HWND hwnd, BOOL enabled)
+{
+    struct wayland_text_input *text_input = &process_wayland.text_input;
+    struct wayland_win_data *data;
+    HWND toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
+
+    TRACE("hwnd=%p enabled=%u\n", hwnd, enabled);
+
+    pthread_mutex_lock(&text_input->mutex);
+
+    if (!text_input->zwp_text_input_v3) goto done;
+    if (!(data = wayland_win_data_get(toplevel))) goto done;
+
+    if (enabled) data->ime_ref++;
+    else data->ime_ref--;
+
+    TRACE("toplevel=%p ref=%d\n", toplevel, data->ime_ref);
+
+    if (data->ime_ref > 0) wayland_text_input_enable(text_input);
+    else wayland_text_input_disable(text_input);
+
+    wayland_win_data_release(data);
+
+done:
+    pthread_mutex_unlock(&text_input->mutex);
 }
