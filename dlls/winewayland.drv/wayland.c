@@ -146,6 +146,17 @@ static int wayland_disable_ssd(void)
     return disabled;
 }
 
+static int wayland_use_ime(void)
+{
+    static int enabled = -1;
+    const char *env;
+
+    if (enabled == -1)
+        enabled = (env = getenv("WAYLANDDRV_IME")) && !strcmp(env, "1");
+
+    return enabled;
+}
+
 /**********************************************************************
  *          Registry handling
  */
@@ -235,6 +246,7 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
     }
     else if (strcmp(interface, "zwp_text_input_manager_v3") == 0)
     {
+        if (!wayland_use_ime()) return;
         process_wayland.zwp_text_input_manager_v3 =
             wl_registry_bind(registry, id, &zwp_text_input_manager_v3_interface, 1);
         if (process_wayland.seat.wl_seat) wayland_text_input_init();
