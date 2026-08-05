@@ -1010,6 +1010,7 @@
 @ stdcall -import IsDBCSLeadByteEx(long long)
 @ stdcall -import IsDebuggerPresent()
 @ stub -i386 IsLSCallback
+@ stdcall IsNativeVhdBoot(ptr)
 @ stdcall -import IsNLSDefinedString(long long ptr wstr long)
 @ stdcall -import IsNormalizedString(long wstr long)
 @ stdcall -import IsProcessInJob(long long ptr)
