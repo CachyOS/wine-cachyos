@@ -954,7 +954,7 @@ BOOL WAYLAND_GetWindowStateUpdates(HWND hwnd, UINT *state_cmd, UINT *swp_flags,
     /* we can't track if the host window is minimized or unminimized, but
      * if we have keyboard focus on this window we can treat it as restored. */
     if ((style & WS_MINIMIZE) && focused_hwnd == hwnd && old_foreground != hwnd)
-        *state_cmd = MAKELONG(SC_RESTORE, 1);
+        *state_cmd = MAKELONG(SC_RESTORE, 0);
 
     TRACE("hwnd=%p foreground=%p state=%#x\n", hwnd, *foreground, *state_cmd);
 
