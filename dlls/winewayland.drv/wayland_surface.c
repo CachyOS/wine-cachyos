@@ -34,16 +34,6 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(waylanddrv);
 
-/* rountrip through WindowPosChanged to refresh the host window state */
-static void update_window_state(HWND hwnd)
-{
-    static const UINT swp_flags = SWP_NOSIZE | SWP_NOMOVE | SWP_NOCLIENTSIZE | SWP_NOCLIENTMOVE |
-                                  SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW;
-    static const RECT rect;
-
-    NtUserSetRawWindowPos(hwnd, rect, swp_flags, FALSE);
-}
-
 static void xdg_surface_handle_configure(void *private, struct xdg_surface *xdg_surface,
                                          uint32_t serial)
 {
@@ -205,8 +195,7 @@ static void xdg_popup_handle_done(void *private, struct xdg_popup *xdg_popup)
     }
     wayland_win_data_release(data);
 
-    update_window_state(hwnd);
-    NtUserExposeWindowSurface(hwnd, 0, NULL, 0);
+    NtUserPostMessage(hwnd, WM_WINE_UPDATEWINDOWSTATE, 0, 0);
 }
 
 static void xdg_popup_handle_reposition(void *private, struct xdg_popup *xdg_popup, uint32_t token)
@@ -248,7 +237,7 @@ void wp_fractional_scale_handle_scale(void* user_data,
     wayland_win_data_release(data);
 
     NtUserExposeWindowSurface(hwnd, 0, NULL, 0);
-    update_window_state(hwnd);
+    NtUserPostMessage(hwnd, WM_WINE_UPDATEWINDOWSTATE, 0, 0);
 }
 
 static const struct wp_fractional_scale_v1_listener wp_fractional_scale_listener =
