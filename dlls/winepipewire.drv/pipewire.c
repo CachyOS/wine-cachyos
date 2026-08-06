@@ -2466,6 +2466,8 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
     enum pw_stream_state st;
     char *app;
     int tries;
+    static LONG stream_number;
+    char media_name[32];
 
     props = pw_properties_new(PW_KEY_MEDIA_TYPE, "Audio",
                               PW_KEY_MEDIA_CATEGORY,
@@ -2503,7 +2505,11 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
          (device && device[0] && device_is_sink(device))))
         pw_properties_set(props, PW_KEY_STREAM_CAPTURE_SINK, "true");
 
-    stream->pw = pw_stream_new(pw_core_global, app ? app : "winepipewire", props);
+    /* libpipewire copies this into media.name, which applets print next to
+     * application.name, so the app name here would show up twice. */
+    snprintf(media_name, sizeof(media_name), "audio stream #%d",
+             (int)InterlockedIncrement(&stream_number));
+    stream->pw = pw_stream_new(pw_core_global, media_name, props);
     free(app);
     if (!stream->pw)
     {
