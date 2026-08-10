@@ -474,8 +474,9 @@ static BOOL rt_render;
 /* Realtime CPU budget below which arming RT_PROCESS is a process kill rather
  * than a latency choice.  RLIMIT_RTTIME counts only CPU burned without a
  * blocking syscall and an audio callback blocks every quantum, so the floor
- * sits well above any sane callback and well below PipeWire's own 200 ms
- * default. */
+ * sits well above any sane callback and well below the 200 ms a working rtkit
+ * grants.  module-rt itself defaults rt.time.soft/hard to unlimited, so a
+ * small value here is always something the environment imposed. */
 #define RT_TIME_FLOOR_USEC 20000
 
 /* The process-wide budget every SCHED_FIFO/RR thread here is judged against.
@@ -2622,9 +2623,11 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
         /* Arming RT_PROCESS asks module-rt to promote the data loop thread to
          * a realtime policy, after which the kernel judges it against the
          * process-wide RLIMIT_RTTIME.  A zero budget kills that thread on its
-         * first quantum, and with soft and hard tripping on the same tick it
-         * is SIGKILL, not SIGXCPU: no core, no handler, nothing in a crash
-         * report.
+         * first quantum: the kernel tests the hard limit first and sends
+         * SIGKILL outright, never reaching the catchable SIGXCPU
+         * (posix-cpu-timers.c, check_thread_timers), and module-rt writes the
+         * advertised value to soft and hard alike.  No core, no handler,
+         * nothing in a crash report.
          *
          * Zero arrives by inheritance.  module-rt on the RTKit path clamps
          * rt.time.soft and rt.time.hard to what the desktop portal
