@@ -61,6 +61,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <sys/random.h>
+#include <sys/resource.h>
 
 #include <pipewire/pipewire.h>
 #include <pipewire/extensions/metadata.h>
@@ -469,6 +470,37 @@ static WCHAR *monitor_name_from(const WCHAR *sink_display)
  * callback against the control paths.  Capture never sets it: its source is
  * its own driver, so it has nothing to win for the same exposure. */
 static BOOL rt_render;
+
+/* Realtime CPU budget below which arming RT_PROCESS is a process kill rather
+ * than a latency choice.  RLIMIT_RTTIME counts only CPU burned without a
+ * blocking syscall and an audio callback blocks every quantum, so the floor
+ * sits well above any sane callback and well below PipeWire's own 200 ms
+ * default. */
+#define RT_TIME_FLOOR_USEC 20000
+
+/* The process-wide budget every SCHED_FIFO/RR thread here is judged against.
+ * Either pointer may be NULL.  A failed read reports unlimited: not knowing
+ * the budget is no reason to refuse the mode. */
+static void rt_time_limit(UINT64 *soft, UINT64 *hard)
+{
+    struct rlimit rl;
+
+    if (getrlimit(RLIMIT_RTTIME, &rl) < 0)
+        rl.rlim_cur = rl.rlim_max = RLIM_INFINITY;
+    if (soft)
+        *soft = (UINT64)rl.rlim_cur;
+    if (hard)
+        *hard = (UINT64)rl.rlim_max;
+}
+
+static const char *rt_time_str(char *buf, size_t len, UINT64 usec)
+{
+    if (usec == (UINT64)RLIM_INFINITY)
+        snprintf(buf, len, "unlimited");
+    else
+        snprintf(buf, len, "%llu us", (unsigned long long)usec);
+    return buf;
+}
 
 /* Identifies one process run, so a PROTON_LOG and a core dump can be shown to
  * describe the same run instead of assumed to: every dispatch line carries
@@ -2454,6 +2486,59 @@ static BOOL device_is_sink(const char *device)
     return FALSE;
 }
 
+/* Called with the loop lock held.  Waits out CONNECTING so the caller sees a
+ * stream that has either negotiated or failed, never one still in flight. */
+static HRESULT stream_await_ready(struct pipewire_stream *stream)
+{
+    enum pw_stream_state st;
+    const char *error = NULL;
+    int tries;
+
+    for (tries = 0; tries < 10; tries++)
+    {
+        st = pw_stream_get_state(stream->pw, NULL);
+        if (st == PW_STREAM_STATE_PAUSED || st == PW_STREAM_STATE_STREAMING)
+            return S_OK;
+        if (st == PW_STREAM_STATE_ERROR || st == PW_STREAM_STATE_UNCONNECTED)
+        {
+            pw_stream_get_state(stream->pw, &error);
+            WARN("stream %p connect failed: %s.\n", stream, debugstr_a(error));
+            return AUDCLNT_E_ENDPOINT_CREATE_FAILED;
+        }
+        if (pw_thread_loop_timed_wait(pw_loop_global, 1) != 0)
+            break;
+    }
+    st = pw_stream_get_state(stream->pw, &error);
+    if (st == PW_STREAM_STATE_PAUSED || st == PW_STREAM_STATE_STREAMING)
+        return S_OK;
+    WARN("stream %p connect timed out in state %d: %s.\n", stream, st, debugstr_a(error));
+    return AUDCLNT_E_ENDPOINT_CREATE_FAILED;
+}
+
+/* At ERR because the alternative is a process the kernel kills without a
+ * diagnostic, and the reporter will not have set WINEDEBUG. */
+static void rt_gate_report(UINT64 soft, UINT64 hard, BOOL late)
+{
+    char buf[32];
+
+    ERR("audio dispatch: realtime CPU budget is %s, under the %u us floor, so a "
+        "realtime data thread would be killed by the kernel on its first "
+        "quantum.  %s  This process keeps the driver loop for every stream from "
+        "here.  session=%016llx\n",
+        rt_time_str(buf, sizeof(buf), soft), RT_TIME_FLOOR_USEC,
+        late ? "The budget was written while the stream was connecting, so it is "
+               "being reconnected without RT_PROCESS."
+             : "Connecting without RT_PROCESS.",
+        (unsigned long long)dispatch_token);
+
+    if (hard < RT_TIME_FLOOR_USEC)
+        ERR("audio dispatch: the hard limit is %s, so nothing unprivileged can "
+            "raise it.  Install rtkit and restart xdg-desktop-portal so it "
+            "re-reads the provider, or launch with WINEPIPEWIRE_RT=0.  "
+            "session=%016llx\n", rt_time_str(buf, sizeof(buf), hard),
+            (unsigned long long)dispatch_token);
+}
+
 /* Called with the loop lock held. */
 static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const char *device,
                                        const WCHAR *appname)
@@ -2463,9 +2548,7 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
     struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
     const struct spa_pod *params[1];
     SIZE_T period_frames;
-    enum pw_stream_state st;
     char *app;
-    int tries;
     static LONG stream_number;
     char media_name[32];
 
@@ -2527,18 +2610,80 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
     }
 
     {
-        int rc = pw_stream_connect(stream->pw,
-                          stream->dataflow == eRender ? PW_DIRECTION_OUTPUT : PW_DIRECTION_INPUT,
-                          PW_ID_ANY,
-                          PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS |
-                          PW_STREAM_FLAG_INACTIVE |
-                          (rt_render && stream->dataflow == eRender ?
-                           PW_STREAM_FLAG_RT_PROCESS : 0),
-                          params, 1);
+        enum pw_stream_flags flags = PW_STREAM_FLAG_AUTOCONNECT |
+                                     PW_STREAM_FLAG_MAP_BUFFERS |
+                                     PW_STREAM_FLAG_INACTIVE;
+        enum pw_direction dir = stream->dataflow == eRender ?
+                                PW_DIRECTION_OUTPUT : PW_DIRECTION_INPUT;
+        UINT64 rt_soft, rt_hard;
+        HRESULT hr;
+        int rc;
+
+        /* Arming RT_PROCESS asks module-rt to promote the data loop thread to
+         * a realtime policy, after which the kernel judges it against the
+         * process-wide RLIMIT_RTTIME.  A zero budget kills that thread on its
+         * first quantum, and with soft and hard tripping on the same tick it
+         * is SIGKILL, not SIGXCPU: no core, no handler, nothing in a crash
+         * report.
+         *
+         * Zero arrives by inheritance.  module-rt on the RTKit path clamps
+         * rt.time.soft and rt.time.hard to what the desktop portal
+         * advertises, and a portal exporting Realtime with no rtkit behind it
+         * advertises zero.  The clamp is process-wide, lowers the hard limit
+         * and survives exec, so a launcher that opened audio first hands
+         * every process it spawns a budget of zero.
+         *
+         * Read before arming, not after: the loop runs during negotiation, so
+         * a stream checked once it has settled can be killed before it can be
+         * reconnected, while a thread that was never promoted cannot. */
+        rt_time_limit(&rt_soft, &rt_hard);
+        if (rt_render && stream->dataflow == eRender)
+        {
+            if (rt_soft < RT_TIME_FLOOR_USEC)
+            {
+                rt_gate_report(rt_soft, rt_hard, FALSE);
+                rt_render = FALSE;
+            }
+            else
+                flags |= PW_STREAM_FLAG_RT_PROCESS;
+        }
+
+        rc = pw_stream_connect(stream->pw, dir, PW_ID_ANY, flags, params, 1);
         if (rc < 0)
         {
             WARN("pw_stream_connect failed for stream %p: %d.\n", stream, rc);
             return AUDCLNT_E_ENDPOINT_CREATE_FAILED;
+        }
+
+        if (FAILED(hr = stream_await_ready(stream)))
+            return hr;
+
+        /* Covers the process that started with a healthy budget and was
+         * clamped by module-rt while this connect was in flight.  Best
+         * effort: the promotion has already happened, so this loses the same
+         * race described above, but it bounds the damage to one stream, and
+         * clearing rt_render latches the decision for every later stream in
+         * the process.  Read and written under the loop lock. */
+        rt_time_limit(&rt_soft, &rt_hard);
+        if ((flags & PW_STREAM_FLAG_RT_PROCESS) && rt_soft < RT_TIME_FLOOR_USEC)
+        {
+            rt_gate_report(rt_soft, rt_hard, TRUE);
+            rt_render = FALSE;
+            rc = pw_stream_disconnect(stream->pw);
+            if (rc < 0)
+            {
+                WARN("pw_stream_disconnect failed for stream %p: %d.\n", stream, rc);
+                return AUDCLNT_E_ENDPOINT_CREATE_FAILED;
+            }
+            rc = pw_stream_connect(stream->pw, dir, PW_ID_ANY,
+                                   flags & ~PW_STREAM_FLAG_RT_PROCESS, params, 1);
+            if (rc < 0)
+            {
+                WARN("pw_stream_connect failed for stream %p: %d.\n", stream, rc);
+                return AUDCLNT_E_ENDPOINT_CREATE_FAILED;
+            }
+            if (FAILED(hr = stream_await_ready(stream)))
+                return hr;
         }
     }
 
@@ -2558,6 +2703,10 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
      * runs on and what the node's async property became; it does not certify
      * latency.
      *
+     * rttime= is the process-wide RLIMIT_RTTIME soft limit after connect: the
+     * same "data-loop.0" is a latency win with a 200 ms budget and a process
+     * kill with none.
+     *
      * Every line ends with session=<16 lowercase hex>, the per-process token
      * that pairs the log with a core dump of the same run.
      *
@@ -2575,6 +2724,10 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
                                   (want_data ? 4 : 0) | (got_data ? 2 : 0) |
                                   (async_on ? 1 : 0));
         static UINT32 reported;
+        UINT64 rt_soft;
+        char rt_buf[32];
+
+        rt_time_limit(&rt_soft, NULL);
 
         if (!(reported & bit))
         {
@@ -2587,8 +2740,10 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
             if (want_data != got_data)
             {
                 ERR("audio dispatch: %s requested %s, effective %s, node.async=%s, "
-                    "loop \"%s\" -- MISMATCH, the requested mode is NOT in force, "
-                    "session=%016llx\n", flow, req, eff, async ? async : "unset", name,
+                    "loop \"%s\", rttime=%s -- MISMATCH, the requested mode is NOT "
+                    "in force, session=%016llx\n", flow, req, eff,
+                    async ? async : "unset", name,
+                    rt_time_str(rt_buf, sizeof(rt_buf), rt_soft),
                     (unsigned long long)dispatch_token);
 
                 if (want_data)
@@ -2605,8 +2760,10 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
             else
             {
                 WARN("audio dispatch: %s requested %s, effective %s, node.async=%s, "
-                     "loop \"%s\", session=%016llx\n", flow, req, eff,
-                     async ? async : "unset", name, (unsigned long long)dispatch_token);
+                     "loop \"%s\", rttime=%s, session=%016llx\n", flow, req, eff,
+                     async ? async : "unset", name,
+                     rt_time_str(rt_buf, sizeof(rt_buf), rt_soft),
+                     (unsigned long long)dispatch_token);
 
                 if (want_data && async_on)
                     ERR("audio dispatch: RT_PROCESS suppresses node.async, so the "
@@ -2626,30 +2783,7 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
         }
     }
 
-    for (tries = 0; tries < 10; tries++)
-    {
-        st = pw_stream_get_state(stream->pw, NULL);
-        if (st == PW_STREAM_STATE_PAUSED || st == PW_STREAM_STATE_STREAMING)
-            return S_OK;
-        if (st == PW_STREAM_STATE_ERROR || st == PW_STREAM_STATE_UNCONNECTED)
-        {
-            const char *error = NULL;
-            pw_stream_get_state(stream->pw, &error);
-            WARN("stream %p connect failed: %s.\n", stream, debugstr_a(error));
-            return AUDCLNT_E_ENDPOINT_CREATE_FAILED;
-        }
-        if (pw_thread_loop_timed_wait(pw_loop_global, 1) != 0)
-            break;
-    }
-    st = pw_stream_get_state(stream->pw, NULL);
-    if (st == PW_STREAM_STATE_PAUSED || st == PW_STREAM_STATE_STREAMING)
-        return S_OK;
-    {
-        const char *error = NULL;
-        st = pw_stream_get_state(stream->pw, &error);
-        WARN("stream %p connect timed out in state %d: %s.\n", stream, st, debugstr_a(error));
-        return AUDCLNT_E_ENDPOINT_CREATE_FAILED;
-    }
+    return S_OK;
 }
 
 /* Checked SIZE_T arithmetic for the buffer sizing below.  mmdevapi's
