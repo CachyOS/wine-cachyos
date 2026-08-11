@@ -1694,6 +1694,8 @@ static NTSTATUS pipewire_test_connect(void *args)
     struct test_connect_params *params = args;
     struct probe p;
     struct probe_node *pn, *next;
+    struct probe_device *pd, *pdnext;
+    BOOL failed;
 
     free_device_lists();
     list_init(&g_render_devices);
@@ -1754,14 +1756,14 @@ static NTSTATUS pipewire_test_connect(void *args)
     pw_context_destroy(p.context);
     pw_thread_loop_destroy(p.loop);
 
-    if (p.core_error && list_empty(&p.nodes))
-    {
+    /* Both probe lists are freed on every path: the error return below used
+     * to sit above the cleanup and leak p.devices. */
+    failed = p.core_error && list_empty(&p.nodes);
+    if (failed)
         WARN("PipeWire core reported an error during the probe\n");
-        return STATUS_SUCCESS;
-    }
-
-    /* The pw loop is fully stopped: safe to do Wine string conversion. */
-    build_device_cache(&p);
+    else
+        /* The pw loop is fully stopped: safe to do Wine string conversion. */
+        build_device_cache(&p);
 
     LIST_FOR_EACH_ENTRY_SAFE(pn, next, &p.nodes, struct probe_node, entry)
     {
@@ -1771,14 +1773,14 @@ static NTSTATUS pipewire_test_connect(void *args)
         free(pn->nick);
         free(pn);
     }
+    LIST_FOR_EACH_ENTRY_SAFE(pd, pdnext, &p.devices, struct probe_device, entry)
     {
-        struct probe_device *pd, *pdnext;
-        LIST_FOR_EACH_ENTRY_SAFE(pd, pdnext, &p.devices, struct probe_device, entry)
-        {
-            list_remove(&pd->entry);
-            free(pd);
-        }
+        list_remove(&pd->entry);
+        free(pd);
     }
+
+    if (failed)
+        return STATUS_SUCCESS;
 
     TRACE("probe for %s: %u sinks default=%s, %u sources default=%s, rate=%u\n",
           debugstr_w(params->name), list_count(&g_render_devices), debugstr_a(g_default_sink),
