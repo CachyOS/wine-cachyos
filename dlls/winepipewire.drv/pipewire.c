@@ -2443,6 +2443,20 @@ static void on_stream_process(void *data)
             const BYTE *src = (const BYTE *)d->data + offs;
             SIZE_T n = avail;
 
+            /* Framing is relative to the start of the valid region, so only
+             * the length matters.  cap_w_fill is producer-private and carried
+             * across callbacks, so one chunk that is not a whole number of
+             * frames would rotate every later frame across channels for the
+             * life of the stream.  Drop the partial tail and report it rather
+             * than silently rotating.  Must precede the ring clamp below,
+             * which subtracts a length from src. */
+            if (n % stream->frame_size)
+            {
+                n -= n % stream->frame_size;
+                __atomic_add_fetch(&stream->bad_buffer_count, 1, __ATOMIC_RELAXED);
+                stream->cap_lost = TRUE;
+            }
+
             /* A chunk larger than the whole ring can only be represented by
              * its tail, which is the newest audio in it. */
             if (n > stream->capture_ring_size)
