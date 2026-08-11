@@ -281,6 +281,16 @@ struct wayland_output_mode
     int32_t refresh;
 };
 
+#define WAYLAND_OUTPUT_MODES        0x01
+#define WAYLAND_OUTPUT_NAME         0x02
+#define WAYLAND_OUTPUT_LOGICAL_XY   0x04
+#define WAYLAND_OUTPUT_LOGICAL_WH   0x08
+#define WAYLAND_OUTPUT_GEOMETRY     0x10
+#define WAYLAND_OUTPUT_PRIMARIES    0x20
+#define WAYLAND_OUTPUT_FALL         0x40
+#define WAYLAND_OUTPUT_CLL          0x80
+#define WAYLAND_OUTPUT_LUMINANCES   0x100
+
 struct wayland_primaries
 {
     int32_t r_x;
@@ -312,6 +322,7 @@ struct wayland_output_state
     uint32_t max_lum;
     uint32_t ref_lum;
     BOOL supports_hdr;
+    unsigned int flags;
 };
 
 struct wayland_output
@@ -323,7 +334,6 @@ struct wayland_output
     struct wp_image_description_info_v1 *wp_image_description_info_v1;
     struct wp_color_management_output_v1 *wp_color_management_output_v1;
     uint32_t global_id;
-    unsigned int pending_flags;
     LONG ref;
     struct wayland_output_state pending, current;
 };
