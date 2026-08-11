@@ -455,15 +455,11 @@ static WCHAR *monitor_name_from(const WCHAR *sink_display)
     return out;
 }
 
-/* Post-mortem breadcrumb.  The process callback publishes how far it got into
- * stream->cb_mark, which the driver never reads; it exists to be recovered
- * from a core file.  Zero means the callback has never run for this stream,
- * otherwise the low bits give the phase and the rest a callback count.
- *
- * The stores are relaxed, so this is a HINT and not a happens-before witness:
- * a mark can be published earlier or later than the code it brackets.
- * Release ordering would fix that and is not worth paying for on the hot
- * path.  Read the value as "roughly here", not as proof. */
+/* Post-mortem breadcrumb recovered from a core file; the driver never reads
+ * it.  Zero means the callback has never run for this stream, otherwise the
+ * low bits give the phase and the rest a callback count.  The stores are
+ * relaxed, so a mark can be published either side of the code it brackets:
+ * read it as "roughly here", not as proof. */
 #define CB_ENTER 1  /* in the callback, buffer not yet validated */
 #define CB_BODY  2  /* buffer validated, moving audio */
 #define CB_DONE  3  /* buffer queued back, callback returning */
@@ -471,12 +467,11 @@ static WCHAR *monitor_name_from(const WCHAR *sink_display)
     __atomic_store_n(&(s)->cb_mark, ((s)->cb_seq << 2) | (ph), __ATOMIC_RELAXED)
 
 /* Render dispatch mode, read from the environment once per process.  With
- * PW_STREAM_FLAG_RT_PROCESS the process callback runs on PipeWire's realtime
- * data thread rather than the thread loop, and libpipewire stops asking for
- * async scheduling on the node.  What that is worth in latency is the graph's
- * decision; what it removes for certain is the lock that serialized the
- * callback against the control paths.  Capture never sets it: its source is
- * its own driver, so it has nothing to win for the same exposure. */
+ * PW_STREAM_FLAG_RT_PROCESS the callback runs on PipeWire's realtime data
+ * thread rather than the thread loop, which removes the lock that serialized
+ * it against the control paths; what that is worth in latency is the graph's
+ * decision.  Capture never sets it: its source is its own driver, so it has
+ * nothing to win for the same exposure. */
 static BOOL rt_render;
 
 /* Realtime CPU budget below which arming RT_PROCESS is a process kill rather
@@ -513,15 +508,10 @@ static const char *rt_time_str(char *buf, size_t len, UINT64 usec)
 
 /* Identifies one process run, so a PROTON_LOG and a core dump can be shown to
  * describe the same run instead of assumed to: every dispatch line carries
- * the value and the global is readable out of a core by name.
- *
- * Zero is the never-initialised sentinel and the live value is forced off it,
- * so a core taken before attach finished does not compare zero against zero.
- * Entropy is 64 bits from getrandom mixed with the pid and a monotonic
- * nanosecond count; a bare pid would not do, since pids recycle and a
- * collision certifies a mismatched pairing.  Treat the value as opaque.
- *
- * It says nothing about scheduling. */
+ * the value and the global is readable out of a core by name.  Zero is the
+ * never-initialised sentinel and the live value is forced off it.  Entropy is
+ * getrandom mixed with the pid and a monotonic count, since pids recycle and
+ * a collision would certify a mismatched pairing.  Treat it as opaque. */
 static UINT64 dispatch_token;
 
 static struct pipewire_stream *handle_get_stream(stream_handle h)
@@ -560,7 +550,7 @@ static void silence_buffer(enum spa_audio_format format, BYTE *buffer, UINT32 by
  * is taken outright; otherwise the oldest FULL slot is evicted, which is what
  * makes the policy drop-oldest.  Either transition is a compare-exchange, so
  * a slot the consumer has already claimed can never be taken from under it,
- * and the producer simply moves on to the next one.  Runs on the process
+ * and the producer moves on to the next one.  Runs on the process
  * callback: no allocation, no logging, no Wine calls. */
 static BOOL cap_acquire_slot(struct pipewire_stream *stream)
 {
@@ -1119,7 +1109,7 @@ static NTSTATUS pipewire_main_loop_stop(void *args)
  *
  * All registry / node / metadata / core callbacks below run on the probe
  * thread loop's own (foreign) thread.  They may only call libc, spa and pw
- * APIs -- never ntdll/Wine (no TRACE).  Strings are kept as UTF-8 and
+ * APIs, never ntdll/Wine (no TRACE).  Strings are kept as UTF-8 and
  * converted to UTF-16 later, on the unix-call thread.
  * ---------------------------------------------------------------------- */
 
@@ -1364,8 +1354,8 @@ static void on_probe_registry_global(void *data, uint32_t id, uint32_t permissio
         }
         list_add_tail(&p->nodes, &pn->entry);
 
-        /* Bind the node and ask for its supported formats so we can report
-         * the real channel layout.  The param events arrive during the sync
+        /* Bind the node and ask for its supported formats, which carry the
+         * real channel layout.  The param events arrive during the sync
          * round-trips below. */
         pn->proxy = pw_registry_bind(p->registry, id, PW_TYPE_INTERFACE_Node, PW_VERSION_NODE, 0);
         if (pn->proxy)
@@ -3622,23 +3612,22 @@ static NTSTATUS pipewire_stop(void *args)
     return STATUS_SUCCESS;
 }
 
-/* Run fn with the stream's process callback excluded, from a control path
- * that already holds the thread loop lock.  pw_loop_locked() does this in one
- * call but needs 1.6.0.  The two cases are not symmetric:
+/* Run fn with the stream's process callback excluded, from a control path that
+ * already holds the thread loop lock.  pw_loop_locked() does this in one call
+ * but needs 1.6.0.
  *
- *   - Data loop IS the thread loop, which is every stream without
- *     RT_PROCESS: the caller already holds the recursive mutex the callback
- *     is dispatched under, so fn runs inline.  A blocking invoke would
- *     deadlock, waiting on the loop thread that waits for the caller's lock.
+ * When the data loop IS the thread loop (every stream without RT_PROCESS) the
+ * caller already holds the mutex the callback is dispatched under, so fn runs
+ * inline.  A blocking invoke would also complete, but it releases that lock
+ * around its ack wait, breaking the operation's atomicity; below 1.6 it
+ * releases only one recursion level, so it would hang a nested caller.
+ * Otherwise the callback is on a data thread the lock does not hold off, and
+ * fn is marshalled to run between dispatches.
  *
- *   - Otherwise the callback is on a data thread the lock does not hold off,
- *     so fn is marshalled onto it and runs between dispatches.
- *
- * The inline branch cannot fail; the invoke can, on queue allocation.  A
- * negative return means the cursors were not touched, and no caller may
- * publish state that assumes the marshalled step ran.  -ENODEV is not a
- * marshal failure but a pw_stream already destroyed by a core reconnect,
- * which the callers map to a different HRESULT. */
+ * The invoke can fail on queue allocation.  A negative return means the
+ * cursors were not touched, so no caller may publish state assuming the step
+ * ran.  -ENODEV is a pw_stream already destroyed by a core reconnect, which
+ * callers map to a different HRESULT. */
 static int stream_loop_locked(struct pipewire_stream *stream, spa_invoke_func_t fn)
 {
     struct pw_loop *data_loop;
@@ -4574,7 +4563,7 @@ static NTSTATUS pipewire_wow64_get_capture_buffer(void *args)
     params32->result = params.result;
     *(unsigned int *)ULongToPtr(params32->data) = PtrToUlong(data);
     return STATUS_SUCCESS;
-};
+}
 
 static NTSTATUS pipewire_wow64_is_format_supported(void *args)
 {
