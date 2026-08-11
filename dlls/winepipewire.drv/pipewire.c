@@ -2023,6 +2023,11 @@ static HRESULT pipewire_info_from_waveformat(struct pipewire_stream *stream, con
     UINT mask = 0, i = 0, j;
 
     memset(info, 0, sizeof(*info));
+    if (!fmt->nSamplesPerSec || fmt->nSamplesPerSec > PW_MAX_RATE)
+    {
+        WARN("Unsupported sample rate %u.\n", fmt->nSamplesPerSec);
+        return AUDCLNT_E_UNSUPPORTED_FORMAT;
+    }
     info->rate = fmt->nSamplesPerSec;
 
     switch (fmt->wFormatTag)
@@ -4265,7 +4270,7 @@ static NTSTATUS pipewire_set_sample_rate(void *args)
      * pa_stream_update_sample_rate; mirror winepulse's observable failure
      * code for rates the resampler cannot honor (the negated comparison
      * also catches NaN). */
-    if (!(params->rate >= 1.0f && params->rate <= 384000.0f))
+    if (!(params->rate >= 1.0f && params->rate <= (float)PW_MAX_RATE))
     {
         WARN("Unsupported sample rate %u.\n", (unsigned)params->rate);
         hr = E_OUTOFMEMORY;
