@@ -1109,8 +1109,10 @@ static NTSTATUS pipewire_main_loop_stop(void *args)
         pw_thread_loop_destroy(pw_loop_global);
         pw_loop_global = NULL;
     }
-    pthread_mutex_unlock(&pw_init_mutex);
+    /* Inside the mutex: a concurrent main_loop_start would otherwise be in
+     * pw_thread_loop_new/pw_context_new while this unloads the SPA plugins. */
     pw_deinit();
+    pthread_mutex_unlock(&pw_init_mutex);
     return STATUS_SUCCESS;
 }
 
