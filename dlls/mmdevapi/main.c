@@ -196,7 +196,7 @@ static BOOL WINAPI init_driver(INIT_ONCE *once, void *param, void **context)
             "Maybe check dependencies with WINEDEBUG=warn+module.\n",
             wine_dbgstr_w(driver_list));
 
-    return drvs.module != 0;
+    return TRUE;
 }
 
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
