@@ -2605,6 +2605,89 @@ static void rt_gate_report(UINT64 soft, UINT64 hard, BOOL late)
             (unsigned long long)dispatch_token);
 }
 
+/* Certify where the process callback actually ended up.  RT_PROCESS asks for
+ * the data thread, but node.loop.class from PIPEWIRE_PROPS or a client.conf
+ * stream.rules entry decides independently, in both directions, so report the
+ * measured loop rather than the request.  node.async is reported beside it
+ * because RT_PROCESS suppresses it while rules are applied afterwards and can
+ * restore it alone.  This certifies dispatch, not latency, and not the graph's
+ * scheduling mode, which the link derives from both nodes.  rttime= is the
+ * process-wide RLIMIT_RTTIME soft limit after connect: the same "data-loop.0"
+ * is a latency win with a 200 ms budget and a process kill with none.
+ *
+ * Once per distinct (dataflow, requested, effective, async) combination.  The
+ * matched case is WARN so the A/B recipe can grep it without full tracing;
+ * anything needing action is at ERR.  Called with the loop lock held. */
+static void report_dispatch_mode(struct pipewire_stream *stream, BOOL rt_render)
+{
+    struct pw_loop *dl = pw_stream_get_data_loop(stream->pw);
+    const struct pw_properties *sprops = pw_stream_get_properties(stream->pw);
+    const char *async = sprops ? pw_properties_get(sprops, PW_KEY_NODE_ASYNC) : NULL;
+    const BOOL want_data = rt_render && stream->dataflow == eRender;
+    const BOOL got_data = dl != pw_thread_loop_get_loop(pw_loop_global);
+    const BOOL async_on = async && pw_properties_parse_bool(async);
+    const UINT32 bit = 1u << ((stream->dataflow == eRender ? 8 : 0) |
+                              (want_data ? 4 : 0) | (got_data ? 2 : 0) |
+                              (async_on ? 1 : 0));
+    static UINT32 reported;
+    const char *flow, *req, *eff, *name;
+    UINT64 rt_soft;
+    char rt_buf[32];
+
+    if (reported & bit)
+        return;
+    reported |= bit;
+
+    rt_time_limit(&rt_soft, NULL);
+    flow = stream->dataflow == eRender ? "render" : "capture";
+    req = want_data ? "data-thread" : "driver-loop";
+    eff = got_data ? "data-thread" : "driver-loop";
+    name = dl && dl->name ? dl->name : "?";
+
+    if (want_data != got_data)
+    {
+        ERR("audio dispatch: %s requested %s, effective %s, node.async=%s, "
+            "loop \"%s\", rttime=%s - MISMATCH, the requested mode is NOT "
+            "in force, session=%016llx\n", flow, req, eff,
+            async ? async : "unset", name,
+            rt_time_str(rt_buf, sizeof(rt_buf), rt_soft),
+            (unsigned long long)dispatch_token);
+
+        if (want_data)
+            ERR("audio dispatch: PW_STREAM_FLAG_RT_PROCESS did not take effect.  "
+                "node.loop.class is pinned to the main loop, so this run does "
+                "not exercise the realtime path and must not be reported as "
+                "one.  session=%016llx\n", (unsigned long long)dispatch_token);
+        else
+            ERR("audio dispatch: processing was redirected off the driver loop "
+                "by node.loop.class; this configuration is not validated and "
+                "can corrupt audio.  session=%016llx\n",
+                (unsigned long long)dispatch_token);
+        return;
+    }
+
+    WARN("audio dispatch: %s requested %s, effective %s, node.async=%s, "
+         "loop \"%s\", rttime=%s, session=%016llx\n", flow, req, eff,
+         async ? async : "unset", name,
+         rt_time_str(rt_buf, sizeof(rt_buf), rt_soft),
+         (unsigned long long)dispatch_token);
+
+    if (want_data && async_on)
+        ERR("audio dispatch: RT_PROCESS suppresses node.async, so the "
+            "property being set means a stream.rules entry or "
+            "PIPEWIRE_PROPS put it back.  An override is fighting the "
+            "flag: the callback is on the data thread, but the scheduling "
+            "the flag asks for must not be assumed for this run.  "
+            "session=%016llx\n", (unsigned long long)dispatch_token);
+    else if (!want_data && !async_on)
+        ERR("audio dispatch: libpipewire sets node.async for a stream "
+            "without RT_PROCESS, so the property being %s means an "
+            "override cleared it.  The callback runs on the driver loop, "
+            "which is not realtime scheduled, with nothing asking the "
+            "graph for slack in front of it.  session=%016llx\n",
+            async ? async : "absent", (unsigned long long)dispatch_token);
+}
+
 /* Called with the loop lock held. */
 static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const char *device,
                                        const WCHAR *appname)
@@ -2755,101 +2838,7 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
         }
     }
 
-    /* Where the process callback actually ended up.  RT_PROCESS asks for the
-     * data thread, but node.loop.class from PIPEWIRE_PROPS or a client.conf
-     * stream.rules entry decides independently, in both directions, so report
-     * the measured loop rather than the request.
-     *
-     * node.async is reported beside it because RT_PROCESS suppresses both
-     * properties (1.4.2 stream.c:2021-2025) while rules and PIPEWIRE_PROPS
-     * are applied afterwards (2063-2074) and can restore it alone.  The value
-     * is the property pw_stream_get_properties() reports after connect, the
-     * dict those stages wrote to (1792-1795) and the node reads
-     * (impl-node.c:1234).  It is NOT the graph's scheduling mode: the link
-     * decides from the OR of both nodes and the ASYNC flag on both ports
-     * (impl-link.c:1345-1347).  This line certifies which loop the callback
-     * runs on and what the node's async property became; it does not certify
-     * latency.
-     *
-     * rttime= is the process-wide RLIMIT_RTTIME soft limit after connect: the
-     * same "data-loop.0" is a latency win with a 200 ms budget and a process
-     * kill with none.
-     *
-     * Every line ends with session=<16 lowercase hex>, the per-process token
-     * that pairs the log with a core dump of the same run.
-     *
-     * Once per distinct (dataflow, requested, effective, async) combination.
-     * The matched case is WARN so the A/B recipe can grep it without full
-     * tracing; anything needing action is at ERR. */
-    {
-        struct pw_loop *dl = pw_stream_get_data_loop(stream->pw);
-        const struct pw_properties *sprops = pw_stream_get_properties(stream->pw);
-        const char *async = sprops ? pw_properties_get(sprops, PW_KEY_NODE_ASYNC) : NULL;
-        const BOOL want_data = rt_render && stream->dataflow == eRender;
-        const BOOL got_data = dl != pw_thread_loop_get_loop(pw_loop_global);
-        const BOOL async_on = async && pw_properties_parse_bool(async);
-        const UINT32 bit = 1u << ((stream->dataflow == eRender ? 8 : 0) |
-                                  (want_data ? 4 : 0) | (got_data ? 2 : 0) |
-                                  (async_on ? 1 : 0));
-        static UINT32 reported;
-        UINT64 rt_soft;
-        char rt_buf[32];
-
-        rt_time_limit(&rt_soft, NULL);
-
-        if (!(reported & bit))
-        {
-            const char *flow = stream->dataflow == eRender ? "render" : "capture";
-            const char *req = want_data ? "data-thread" : "driver-loop";
-            const char *eff = got_data ? "data-thread" : "driver-loop";
-            const char *name = dl && dl->name ? dl->name : "?";
-
-            reported |= bit;
-            if (want_data != got_data)
-            {
-                ERR("audio dispatch: %s requested %s, effective %s, node.async=%s, "
-                    "loop \"%s\", rttime=%s -- MISMATCH, the requested mode is NOT "
-                    "in force, session=%016llx\n", flow, req, eff,
-                    async ? async : "unset", name,
-                    rt_time_str(rt_buf, sizeof(rt_buf), rt_soft),
-                    (unsigned long long)dispatch_token);
-
-                if (want_data)
-                    ERR("audio dispatch: PW_STREAM_FLAG_RT_PROCESS did not take effect.  "
-                        "node.loop.class is pinned to the main loop, so this run does "
-                        "not exercise the realtime path and must not be reported as "
-                        "one.  session=%016llx\n", (unsigned long long)dispatch_token);
-                else
-                    ERR("audio dispatch: processing was redirected off the driver loop "
-                        "by node.loop.class; this configuration is not validated and "
-                        "can corrupt audio.  session=%016llx\n",
-                        (unsigned long long)dispatch_token);
-            }
-            else
-            {
-                WARN("audio dispatch: %s requested %s, effective %s, node.async=%s, "
-                     "loop \"%s\", rttime=%s, session=%016llx\n", flow, req, eff,
-                     async ? async : "unset", name,
-                     rt_time_str(rt_buf, sizeof(rt_buf), rt_soft),
-                     (unsigned long long)dispatch_token);
-
-                if (want_data && async_on)
-                    ERR("audio dispatch: RT_PROCESS suppresses node.async, so the "
-                        "property being set means a stream.rules entry or "
-                        "PIPEWIRE_PROPS put it back.  An override is fighting the "
-                        "flag: the callback is on the data thread, but the scheduling "
-                        "the flag asks for must not be assumed for this run.  "
-                        "session=%016llx\n", (unsigned long long)dispatch_token);
-                else if (!want_data && !async_on)
-                    ERR("audio dispatch: libpipewire sets node.async for a stream "
-                        "without RT_PROCESS, so the property being %s means an "
-                        "override cleared it.  The callback runs on the driver loop, "
-                        "which is not realtime scheduled, with nothing asking the "
-                        "graph for slack in front of it.  session=%016llx\n",
-                        async ? async : "absent", (unsigned long long)dispatch_token);
-            }
-        }
-    }
+    report_dispatch_mode(stream, rt_render);
 
     return S_OK;
 }
