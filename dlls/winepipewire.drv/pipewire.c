@@ -165,7 +165,6 @@ struct stream_journal_entry
     UINT32 seq;         /* atomic: 0 = empty, else write index + 1 */
     int old_state;
     int new_state;
-    int res;
     char error[96];
 };
 
@@ -187,7 +186,6 @@ struct pipewire_stream
     float vol[PW_CHANNELS_MAX];
 
     REFERENCE_TIME def_period;
-    REFERENCE_TIME duration;
 
     INT32 locked;
     BOOL started; /* atomic: control release-stores, process callback load-acquires */
@@ -2306,14 +2304,13 @@ static void apply_volume(const struct pipewire_stream *stream, const float *vol,
 /* Foreign PipeWire thread: no Wine calls.  The release store to seq publishes
  * the slot, so the consumer never sees a half-filled entry. */
 static void stream_journal_record(struct pipewire_stream *stream, enum pw_stream_state old,
-                                  enum pw_stream_state state, int res, const char *error)
+                                  enum pw_stream_state state, const char *error)
 {
     UINT32 w = __atomic_fetch_add(&stream->journal_w, 1, __ATOMIC_RELAXED);
     struct stream_journal_entry *e = &stream->journal[w % STATE_JOURNAL_LEN];
 
     e->old_state = old;
     e->new_state = state;
-    e->res = res;
     copy_cstr(e->error, sizeof(e->error), error);
     __atomic_store_n(&e->seq, w + 1, __ATOMIC_RELEASE);
 }
@@ -2337,13 +2334,13 @@ static void stream_journal_flush(struct pipewire_stream *stream)
             continue;  /* producer lapped this slot mid-read */
         msg = e->error[0] ? e->error : NULL;
         if (e->new_state == PW_STREAM_STATE_ERROR)
-            WARN("stream %p state %s -> %s res %d: %s.\n", stream,
+            WARN("stream %p state %s -> %s: %s.\n", stream,
                  pw_stream_state_as_string(e->old_state),
-                 pw_stream_state_as_string(e->new_state), e->res, debugstr_a(msg));
+                 pw_stream_state_as_string(e->new_state), debugstr_a(msg));
         else
-            TRACE("stream %p state %s -> %s res %d%s%s.\n", stream,
+            TRACE("stream %p state %s -> %s%s%s.\n", stream,
                   pw_stream_state_as_string(e->old_state),
-                  pw_stream_state_as_string(e->new_state), e->res,
+                  pw_stream_state_as_string(e->new_state),
                   msg ? ": " : "", msg ? msg : "");
     }
     stream->journal_r = w;
@@ -2355,7 +2352,7 @@ static void on_stream_state_changed(void *data, enum pw_stream_state old,
     struct pipewire_stream *stream = data;
 
     /* PW loop thread, lock held: record only, no Wine logging. */
-    stream_journal_record(stream, old, state, 0, error);
+    stream_journal_record(stream, old, state, error);
     if (state == PW_STREAM_STATE_ERROR)
     {
         copy_cstr(stream->last_error, sizeof(stream->last_error), error);
@@ -2938,7 +2935,6 @@ static NTSTATUS pipewire_create_stream(void *args)
     }
 
     stream->def_period = params->period;
-    stream->duration = params->duration;
     stream->flags = params->flags;
     stream->share = params->share;
     stream->mmdev_period_usec = params->period / 10;
