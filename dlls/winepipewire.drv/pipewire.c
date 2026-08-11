@@ -899,8 +899,12 @@ static void pipewire_set_plugin_dirs(void)
     snprintf(path, sizeof(path), "%s/spa-0.2", libdir);
     setenv("SPA_PLUGIN_DIR", path, 1);
     snprintf(path, sizeof(path), "%s/pipewire-0.3", libdir);
+    /* Overwrite: reaching here means no usable SPA_PLUGIN_DIR was inherited,
+     * so an inherited module dir is unverified and may be foreign-arch.  Both
+     * must come from the same libdir.  An explicitly configured pair keeps
+     * its values through the early return above. */
     if (!access(path, F_OK))
-        setenv("PIPEWIRE_MODULE_DIR", path, 0);
+        setenv("PIPEWIRE_MODULE_DIR", path, 1);
     TRACE("derived SPA plugin dir from %s\n", libdir);
 }
 
