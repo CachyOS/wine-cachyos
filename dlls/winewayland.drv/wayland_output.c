@@ -35,16 +35,6 @@ WINE_DEFAULT_DEBUG_CHANNEL(waylanddrv);
 static const int32_t default_refresh = 60000;
 static uint32_t next_output_id = 0;
 
-#define WAYLAND_OUTPUT_CHANGED_MODES        0x01
-#define WAYLAND_OUTPUT_CHANGED_NAME         0x02
-#define WAYLAND_OUTPUT_CHANGED_LOGICAL_XY   0x04
-#define WAYLAND_OUTPUT_CHANGED_LOGICAL_WH   0x08
-#define WAYLAND_OUTPUT_CHANGED_GEOMETRY     0x10
-#define WAYLAND_OUTPUT_CHANGED_PRIMARIES    0x20
-#define WAYLAND_OUTPUT_CHANGED_FALL         0x40
-#define WAYLAND_OUTPUT_CHANGED_CLL          0x80
-#define WAYLAND_OUTPUT_CHANGED_LUMINANCES   0x100
-
 /**********************************************************************
  *          Output handling
  */
@@ -140,7 +130,7 @@ static void wayland_output_done(struct wayland_output *output)
     /* Update current state from pending state. */
     pthread_mutex_lock(&process_wayland.output_mutex);
 
-    if (output->pending_flags & WAYLAND_OUTPUT_CHANGED_GEOMETRY)
+    if (output->pending.flags & WAYLAND_OUTPUT_GEOMETRY)
     {
         free(output->current.make);
         free(output->current.model);
@@ -151,7 +141,7 @@ static void wayland_output_done(struct wayland_output *output)
         output->current.model = output->pending.model;
     }
 
-    if (output->pending_flags & WAYLAND_OUTPUT_CHANGED_MODES)
+    if (output->pending.flags & WAYLAND_OUTPUT_MODES)
     {
         RB_FOR_EACH_ENTRY(mode, &output->pending.modes, struct wayland_output_mode, entry)
         {
@@ -171,41 +161,35 @@ static void wayland_output_done(struct wayland_output *output)
         output->pending.modes_count = 0;
     }
 
-    if (output->pending_flags & WAYLAND_OUTPUT_CHANGED_NAME)
+    if (output->pending.flags & WAYLAND_OUTPUT_NAME)
     {
         free(output->current.name);
         output->current.name = output->pending.name;
         output->pending.name = NULL;
     }
 
-    if (output->pending_flags & WAYLAND_OUTPUT_CHANGED_LOGICAL_XY)
+    if (output->pending.flags & WAYLAND_OUTPUT_LOGICAL_XY)
     {
         output->current.logical_x = output->pending.logical_x;
         output->current.logical_y = output->pending.logical_y;
     }
 
-    if (output->pending_flags & WAYLAND_OUTPUT_CHANGED_LOGICAL_WH)
+    if (output->pending.flags & WAYLAND_OUTPUT_LOGICAL_WH)
     {
         output->current.logical_w = output->pending.logical_w;
         output->current.logical_h = output->pending.logical_h;
     }
 
-    if (output->pending_flags & WAYLAND_OUTPUT_CHANGED_PRIMARIES)
-    {
+    if (output->pending.flags & WAYLAND_OUTPUT_PRIMARIES)
         output->current.primaries = output->pending.primaries;
-    }
 
-    if (output->pending_flags & WAYLAND_OUTPUT_CHANGED_FALL)
-    {
+    if (output->pending.flags & WAYLAND_OUTPUT_FALL)
         output->current.max_fall = output->pending.max_fall;
-    }
 
-    if (output->pending_flags & WAYLAND_OUTPUT_CHANGED_CLL)
-    {
+    if (output->pending.flags & WAYLAND_OUTPUT_CLL)
         output->current.max_cll = output->pending.max_cll;
-    }
 
-    if (output->pending_flags & WAYLAND_OUTPUT_CHANGED_LUMINANCES)
+    if (output->pending.flags & WAYLAND_OUTPUT_LUMINANCES)
     {
         output->current.max_lum = output->pending.max_lum;
         output->current.ref_lum = output->pending.ref_lum;
@@ -214,7 +198,8 @@ static void wayland_output_done(struct wayland_output *output)
     output->current.supports_hdr = process_wayland.supports_win_scrgb &&
                                     (output->current.max_lum > output->current.ref_lum);
 
-    output->pending_flags = 0;
+    output->current.flags |= output->pending.flags;
+    output->pending.flags = 0;
 
     /* Ensure the logical dimensions have sane values. */
     if ((!output->current.logical_w || !output->current.logical_h) &&
@@ -222,6 +207,7 @@ static void wayland_output_done(struct wayland_output *output)
     {
         output->current.logical_w = output->current.current_mode->width;
         output->current.logical_h = output->current.current_mode->height;
+        output->current.flags |= WAYLAND_OUTPUT_LOGICAL_WH;
     }
 
     wayland_output_array_arrange_physical_coords();
@@ -257,7 +243,7 @@ static void output_handle_geometry(void *data, struct wl_output *wl_output,
     output->pending.model = strdup(model);
     output->pending.make = strdup(make);
 
-    output->pending_flags |= WAYLAND_OUTPUT_CHANGED_GEOMETRY;
+    output->pending.flags |= WAYLAND_OUTPUT_GEOMETRY;
 }
 
 static void output_handle_mode(void *data, struct wl_output *wl_output,
@@ -272,7 +258,7 @@ static void output_handle_mode(void *data, struct wl_output *wl_output,
     wayland_output_state_add_mode(&output->pending, width, height, refresh,
                                   (flags & WL_OUTPUT_MODE_CURRENT));
 
-    output->pending_flags |= WAYLAND_OUTPUT_CHANGED_MODES;
+    output->pending.flags |= WAYLAND_OUTPUT_MODES;
 }
 
 static void output_handle_done(void *data, struct wl_output *wl_output)
@@ -307,7 +293,7 @@ static void zxdg_output_v1_handle_logical_position(void *data,
     TRACE("logical_x=%d logical_y=%d\n", x, y);
     output->pending.logical_x = x;
     output->pending.logical_y = y;
-    output->pending_flags |= WAYLAND_OUTPUT_CHANGED_LOGICAL_XY;
+    output->pending.flags |= WAYLAND_OUTPUT_LOGICAL_XY;
 }
 
 static void zxdg_output_v1_handle_logical_size(void *data,
@@ -319,7 +305,7 @@ static void zxdg_output_v1_handle_logical_size(void *data,
     TRACE("logical_w=%d logical_h=%d\n", width, height);
     output->pending.logical_w = width;
     output->pending.logical_h = height;
-    output->pending_flags |= WAYLAND_OUTPUT_CHANGED_LOGICAL_WH;
+    output->pending.flags |= WAYLAND_OUTPUT_LOGICAL_WH;
 }
 
 static void zxdg_output_v1_handle_done(void *data,
@@ -340,7 +326,7 @@ static void zxdg_output_v1_handle_name(void *data,
 
     free(output->pending.name);
     output->pending.name = strdup(name);
-    output->pending_flags |= WAYLAND_OUTPUT_CHANGED_NAME;
+    output->pending.flags |= WAYLAND_OUTPUT_NAME;
 }
 
 static void zxdg_output_v1_handle_description(void *data,
@@ -398,7 +384,7 @@ static void wayland_image_description_info_v1_luminance(void *data,
 
     output->pending.ref_lum = ref;
     output->pending.max_lum = max;
-    output->pending_flags |= WAYLAND_OUTPUT_CHANGED_LUMINANCES;
+    output->pending.flags |= WAYLAND_OUTPUT_LUMINANCES;
 }
 
 static void wayland_image_description_info_v1_primaries(void *data,
@@ -431,7 +417,7 @@ static void wayland_image_description_info_v1_target_primaries(void *data,
             r_x * 1e-6, r_y * 1e-6, g_x * 1e-6, g_y * 1e-6,
             b_x * 1e-6, b_y * 1e-6, w_x * 1e-6, w_y * 1e-6);
 
-    output->pending_flags |= WAYLAND_OUTPUT_CHANGED_PRIMARIES;
+    output->pending.flags |= WAYLAND_OUTPUT_PRIMARIES;
 }
 
 static void wayland_image_description_info_v1_target_luminance(void *data,
@@ -449,7 +435,7 @@ static void wayland_image_description_info_v1_target_max_cll(void *data,
     TRACE("Max CLL: %u\n", max);
 
     output->pending.max_cll = max;
-    output->pending_flags |= WAYLAND_OUTPUT_CHANGED_CLL;
+    output->pending.flags |= WAYLAND_OUTPUT_CLL;
 }
 
 static void wayland_image_description_info_v1_target_max_fall(void *data,
@@ -460,7 +446,7 @@ static void wayland_image_description_info_v1_target_max_fall(void *data,
     TRACE("Max FALL: %u\n", max);
 
     output->pending.max_fall = max;
-    output->pending_flags |= WAYLAND_OUTPUT_CHANGED_FALL;
+    output->pending.flags |= WAYLAND_OUTPUT_FALL;
 }
 
 static const struct wp_image_description_info_v1_listener image_description_info_listener = {
