@@ -339,12 +339,46 @@ struct pci_id
     UINT16 revision;
 };
 
+#define MONITOR_INFO_HAS_MONITOR_ID          0x00000001
+#define MONITOR_INFO_HAS_MONITOR_NAME        0x00000002
+#define MONITOR_INFO_HAS_PREFERRED_MODE      0x00000004
+#define MONITOR_INFO_HAS_PHYSICAL_DIMENSIONS 0x00000008
+#define MONITOR_INFO_HAS_SERIAL_NUMBER       0x00000010
+#define MONITOR_INFO_HAS_PRIMARIES           0x00000020
+#define MONITOR_INFO_HAS_CTA861_EXT          0x00000040
+
+struct edid_monitor_info
+{
+    unsigned int flags;
+    /* MONITOR_INFO_HAS_MONITOR_ID */
+    unsigned short manufacturer, product_code;
+    char monitor_id_string[8];
+    /* MONITOR_INFO_HAS_MONITOR_NAME */
+    WCHAR monitor_name[14];
+    /* MONITOR_INFO_HAS_PREFERRED_MODE */
+    unsigned int preferred_width, preferred_height;
+    double preferred_refresh;
+    /* MONITOR_INFO_HAS_SERIAL_NUMBER */
+    unsigned int serial_number;
+    /* MONITOR_INFO_HAS_PHYSICAL_DIMENSIONS */
+    unsigned int width_mm, height_mm;
+    /* MONITOR_INFO_HAS_PRIMARIES */
+    BOOL srgb;
+    unsigned int r_x, r_y;
+    unsigned int g_x, g_y;
+    unsigned int b_x, b_y;
+    unsigned int w_x, w_y;
+    /* MONITOR_INFO_HAS_CTA861_EXT */
+    float max_cll, max_fall;
+};
+
 struct gdi_monitor
 {
     RECT rc_monitor;      /* RcMonitor in MONITORINFO struct */
     RECT rc_work;         /* RcWork in MONITORINFO struct */
     unsigned char *edid;  /* Extended Device Identification Data */
     UINT edid_len;
+    struct edid_monitor_info edid_info; /* EDID info to generate an EDID */
     BOOL hdr_enabled;
 };
 
