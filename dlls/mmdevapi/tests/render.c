@@ -520,6 +520,27 @@ cleanup:
     CoTaskMemFree(pwfx);
 }
 
+static void test_invalid_sample_rate(void)
+{
+    WAVEFORMATEXTENSIBLE format = {{WAVE_FORMAT_EXTENSIBLE, 2, 0, 192000, 4, 16, 22}};
+    WAVEFORMATEX *closest = NULL;
+    IAudioClient *client;
+    HRESULT hr;
+
+    hr = IMMDevice_Activate(dev, &IID_IAudioClient, CLSCTX_INPROC_SERVER, NULL, (void **)&client);
+    ok(hr == S_OK, "Activate failed: %#lx\n", hr);
+    if (FAILED(hr)) return;
+
+    format.Samples.wValidBitsPerSample = 8;
+    format.dwChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+    format.SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
+    hr = IAudioClient_IsFormatSupported(client, AUDCLNT_SHAREMODE_SHARED, &format.Format, &closest);
+    ok(hr == E_INVALIDARG, "IsFormatSupported returned %#lx for a zero sample rate.\n", hr);
+
+    CoTaskMemFree(closest);
+    IAudioClient_Release(client);
+}
+
 static void test_formats(AUDCLNT_SHAREMODE mode, BOOL extensible)
 {
     IAudioClient *ac;
@@ -2865,6 +2886,7 @@ START_TEST(render)
     }
 
     test_audioclient();
+    test_invalid_sample_rate();
     test_references();
     test_marshal();
     if (GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), &mode))
