@@ -2875,6 +2875,26 @@ static BOOL size_add(SIZE_T a, SIZE_T b, SIZE_T *out)
     return TRUE;
 }
 
+/* Size an allocation whose tail array follows head_bytes of audio.  The array
+ * must start aligned: head_bytes is a multiple of period_bytes, which is a
+ * frame count times a frame size that can be 1, 3 or 6 bytes for packed 8 and
+ * 24 bit formats (packed 24 bit stereo at 30 ms gives 7938), and both
+ * ACPacket's list pointers and cap_slot's atomics are undefined when
+ * misaligned.  Returns the aligned tail offset and the total size, or FALSE
+ * on overflow. */
+static BOOL aligned_tail(SIZE_T head_bytes, SIZE_T align, SIZE_T count, SIZE_T elem_size,
+                         SIZE_T *tail_offs, SIZE_T *total)
+{
+    SIZE_T tail_bytes;
+
+    if (!size_add(head_bytes, align - 1, tail_offs))
+        return FALSE;
+    *tail_offs &= ~(align - 1);
+    if (!size_mul(count, elem_size, &tail_bytes))
+        return FALSE;
+    return size_add(*tail_offs, tail_bytes, total);
+}
+
 static NTSTATUS pipewire_create_stream(void *args)
 {
     struct create_stream_params *params = args;
@@ -3034,29 +3054,12 @@ static NTSTATUS pipewire_create_stream(void *args)
         }
         capture_packets = stream->real_bufsize_bytes / stream->period_bytes;
 
-        /* The packet array follows the audio, so it needs the same rounding
-         * the slot array gets: real_bufsize_bytes is a multiple of
-         * period_bytes, which is a frame count times a frame size that can be
-         * 1, 3 or 6 bytes for packed 8 and 24 bit formats.  ACPacket holds
-         * list pointers, so a misaligned array is undefined and faults on
-         * targets that do not fix up unaligned loads. */
+        if (!aligned_tail(stream->real_bufsize_bytes, _Alignof(ACPacket),
+                          capture_packets, sizeof(ACPacket), &packets_offs, &size))
         {
-            SIZE_T packets_bytes;
-            BOOL ok = size_add(stream->real_bufsize_bytes, _Alignof(ACPacket) - 1, &packets_offs);
-
-            if (ok)
-            {
-                packets_offs &= ~(SIZE_T)(_Alignof(ACPacket) - 1);
-                ok = size_mul(capture_packets, sizeof(ACPacket), &packets_bytes);
-            }
-            if (ok)
-                ok = size_add(packets_offs, packets_bytes, &size);
-            if (!ok)
-            {
-                WARN("Capture buffer size overflows (%u packets).\n", capture_packets);
-                hr = E_OUTOFMEMORY;
-                goto exit;
-            }
+            WARN("Capture buffer size overflows (%u packets).\n", capture_packets);
+            hr = E_OUTOFMEMORY;
+            goto exit;
         }
         if (NtAllocateVirtualMemory(GetCurrentProcess(), (void **)&stream->local_buffer,
                                     zero_bits, &size, MEM_COMMIT, PAGE_READWRITE))
@@ -3083,31 +3086,16 @@ static NTSTATUS pipewire_create_stream(void *args)
             }
 
             /* Staging ring carved into period-sized slots with the state
-             * array appended.  The array has to start aligned: the ring
-             * length is a multiple of period_bytes, which need not be a
-             * multiple of four (packed 24 bit stereo at 30 ms gives 7938),
-             * and misaligned atomics are undefined and not lock free
-             * everywhere. */
+             * array appended. */
             stream->cap_n_slots = stream->real_bufsize_bytes / stream->period_bytes;
             stream->capture_ring_size = stream->real_bufsize_bytes;
+            if (!aligned_tail(stream->capture_ring_size, _Alignof(struct cap_slot),
+                              stream->cap_n_slots, sizeof(*stream->cap_slots),
+                              &slots_offs, &size))
             {
-                SIZE_T slots_bytes;
-                BOOL ok = size_add(stream->capture_ring_size, _Alignof(struct cap_slot) - 1,
-                                   &slots_offs);
-
-                if (ok)
-                {
-                    slots_offs &= ~(SIZE_T)(_Alignof(struct cap_slot) - 1);
-                    ok = size_mul(stream->cap_n_slots, sizeof(*stream->cap_slots), &slots_bytes);
-                }
-                if (ok)
-                    ok = size_add(slots_offs, slots_bytes, &size);
-                if (!ok)
-                {
-                    WARN("Capture ring size overflows (%u slots).\n", stream->cap_n_slots);
-                    hr = E_OUTOFMEMORY;
-                    goto exit;
-                }
+                WARN("Capture ring size overflows (%u slots).\n", stream->cap_n_slots);
+                hr = E_OUTOFMEMORY;
+                goto exit;
             }
             if (NtAllocateVirtualMemory(GetCurrentProcess(), (void **)&stream->capture_ring,
                                         zero_bits, &size, MEM_COMMIT, PAGE_READWRITE))
