@@ -2944,14 +2944,16 @@ static NTSTATUS pipewire_create_stream(void *args)
         {
             frames = ((UINT64)params->duration * stream->info.rate + 9999999) / 10000000;
             /* get_buffer_size and the ring cursors narrow the frame count to
-             * UINT32, so a buffer only fits if the count does too. */
-            ok = frames <= UINT32_MAX;
+             * UINT32, so a buffer only fits if the count does too.  Zero is
+             * rejected here too: it would leave real_bufsize_bytes at 0 and
+             * the ring cursors divide by that. */
+            ok = frames && frames <= UINT32_MAX;
         }
         if (ok)
             ok = size_mul((SIZE_T)frames, stream->frame_size, &bufsize_bytes);
         if (!ok)
         {
-            WARN("Buffer duration %lld hns at %u Hz is too large.\n",
+            WARN("Buffer duration %lld hns at %u Hz is out of range.\n",
                  (long long)params->duration, stream->info.rate);
             hr = E_OUTOFMEMORY;
             goto exit;
