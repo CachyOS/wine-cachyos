@@ -3882,8 +3882,10 @@ static NTSTATUS pipewire_release_render_buffer(void *args)
         return STATUS_SUCCESS;
     }
 
-    if (params->written_frames * stream->frame_size >
-        (stream->locked >= 0 ? stream->locked : -stream->locked))
+    /* UINT64: the product is UINT32 x UINT32 and a wrapped value would pass
+     * the guard, so a huge written_frames could commit a tiny byte count. */
+    if ((UINT64)params->written_frames * stream->frame_size >
+        (UINT64)(stream->locked >= 0 ? stream->locked : -stream->locked))
     {
         pw_thread_loop_unlock(pw_loop_global);
         params->result = AUDCLNT_E_INVALID_SIZE;
