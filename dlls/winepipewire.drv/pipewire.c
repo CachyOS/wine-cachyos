@@ -533,7 +533,6 @@ static UINT spa_format_bytes(enum spa_audio_format f)
     case SPA_AUDIO_FORMAT_S24_LE:
         return 3;
     case SPA_AUDIO_FORMAT_S32_LE:
-    case SPA_AUDIO_FORMAT_S24_32_LE:
     case SPA_AUDIO_FORMAT_F32_LE:
         return 4;
     default:
@@ -2082,8 +2081,16 @@ static HRESULT pipewire_info_from_waveformat(struct pipewire_stream *stream, con
             case 16: if (valid == 16) spafmt = SPA_AUDIO_FORMAT_S16_LE; break;
             case 24: if (valid == 24) spafmt = SPA_AUDIO_FORMAT_S24_LE; break;
             case 32:
-                if (valid == 32) spafmt = SPA_AUDIO_FORMAT_S32_LE;
-                else if (valid == 24) spafmt = SPA_AUDIO_FORMAT_S24_32_LE;
+                /* A 32-bit container carries its wValidBitsPerSample valid
+                 * bits left-aligned, with the unused low bits zero (WDK,
+                 * WAVEFORMATEXTENSIBLE), so the container already holds a
+                 * valid 32-bit sample and S32 is bit-exact for 24 valid bits
+                 * as well as 32.  SPA_AUDIO_FORMAT_S24_32_LE is the opposite
+                 * ALSA layout, 24 bits in the low end of the word, and reads
+                 * such a container 8 bits down with the top 8 bits wrapped.
+                 * Upstream drops the pair instead (e320cfd50bd); we cannot, since
+                 * mmdevapi accepts it: IsFormatSupported says S_OK, Initialize fails. */
+                if (valid == 32 || valid == 24) spafmt = SPA_AUDIO_FORMAT_S32_LE;
                 break;
             default:
                 WARN("Unsupported PCM container %u valid %lu.\n",
@@ -2205,20 +2212,6 @@ static void apply_volume(const struct pipewire_stream *stream, const float *vol,
         PROCESS_BUFFER(float);
         break;
 #undef PROCESS_BUFFER
-    case SPA_AUDIO_FORMAT_S24_32_LE:
-    {
-        UINT32 *p = (UINT32 *)buffer;
-        do
-        {
-            for (i = 0; i < channels; i++)
-            {
-                p[i] = (INT32)((INT32)(p[i] << 8) * vol[i]);
-                p[i] >>= 8;
-            }
-            p += i;
-        } while ((BYTE *)p != end);
-        break;
-    }
     case SPA_AUDIO_FORMAT_S24_LE:
     {
         UINT32 *q = (UINT32 *)buffer;
