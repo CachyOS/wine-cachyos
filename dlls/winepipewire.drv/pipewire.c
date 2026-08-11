@@ -2884,6 +2884,33 @@ static BOOL aligned_tail(SIZE_T head_bytes, SIZE_T align, SIZE_T count, SIZE_T e
     return size_add(*tail_offs, tail_bytes, total);
 }
 
+/* Every buffer the stream owns, then the stream.  Shared by the create error
+ * path and release so a buffer added later cannot be freed in only one of
+ * them; tmp_buffer is allocated lazily by get_render_buffer, so it is always
+ * NULL on the create path. */
+static void free_stream(struct pipewire_stream *stream)
+{
+    SIZE_T size;
+
+    if (stream->tmp_buffer)
+    {
+        size = 0;
+        NtFreeVirtualMemory(GetCurrentProcess(), (void **)&stream->tmp_buffer, &size, MEM_RELEASE);
+    }
+    if (stream->local_buffer)
+    {
+        size = 0;
+        NtFreeVirtualMemory(GetCurrentProcess(), (void **)&stream->local_buffer, &size, MEM_RELEASE);
+    }
+    if (stream->capture_ring)
+    {
+        size = 0;
+        NtFreeVirtualMemory(GetCurrentProcess(), (void **)&stream->capture_ring, &size, MEM_RELEASE);
+    }
+    free(stream->device);
+    free(stream);
+}
+
 static NTSTATUS pipewire_create_stream(void *args)
 {
     struct create_stream_params *params = args;
@@ -3116,18 +3143,7 @@ exit:
             pw_stream_destroy(stream->pw);
             stream->pw = NULL;
         }
-        if (stream->local_buffer)
-        {
-            size = 0;
-            NtFreeVirtualMemory(GetCurrentProcess(), (void **)&stream->local_buffer, &size, MEM_RELEASE);
-        }
-        if (stream->capture_ring)
-        {
-            size = 0;
-            NtFreeVirtualMemory(GetCurrentProcess(), (void **)&stream->capture_ring, &size, MEM_RELEASE);
-        }
-        free(stream->device);
-        free(stream);
+        free_stream(stream);
     }
 
     if (SUCCEEDED(hr))
@@ -3148,7 +3164,6 @@ static NTSTATUS pipewire_release_stream(void *args)
     struct release_stream_params *params = args;
     struct pipewire_stream *stream = handle_get_stream(params->stream);
     struct pipewire_period *dead_period = NULL;
-    SIZE_T size;
 
     pw_thread_loop_lock(pw_loop_global);
     TRACE("stream %p.\n", stream);
@@ -3202,23 +3217,7 @@ static NTSTATUS pipewire_release_stream(void *args)
         free(dead_period);
     }
 
-    if (stream->tmp_buffer)
-    {
-        size = 0;
-        NtFreeVirtualMemory(GetCurrentProcess(), (void **)&stream->tmp_buffer, &size, MEM_RELEASE);
-    }
-    if (stream->local_buffer)
-    {
-        size = 0;
-        NtFreeVirtualMemory(GetCurrentProcess(), (void **)&stream->local_buffer, &size, MEM_RELEASE);
-    }
-    if (stream->capture_ring)
-    {
-        size = 0;
-        NtFreeVirtualMemory(GetCurrentProcess(), (void **)&stream->capture_ring, &size, MEM_RELEASE);
-    }
-    free(stream->device);
-    free(stream);
+    free_stream(stream);
     params->result = S_OK;
     return STATUS_SUCCESS;
 }
