@@ -837,7 +837,11 @@ static BOOL spa_plugin_dir_usable(const char *dir)
     int fd, n;
 
     snprintf(path, sizeof(path), "%s/support/libspa-support.so", dir);
-    if ((fd = open(path, O_RDONLY)) < 0)
+    /* O_CLOEXEC: process_attach can run with application threads already
+     * fork+exec'ing.  O_NONBLOCK: the path comes from the environment, and
+     * opening a FIFO would otherwise block the first mmdevapi unix call
+     * forever instead of failing closed. */
+    if ((fd = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK)) < 0)
         return FALSE;
     n = read(fd, ident, sizeof(ident));
     close(fd);
