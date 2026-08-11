@@ -1323,7 +1323,11 @@ static void on_probe_registry_global(void *data, uint32_t id, uint32_t permissio
         const char *dev_id = spa_dict_lookup(props, PW_KEY_DEVICE_ID);
         struct probe_node *pn;
 
-        if (!media_class || !node_name)
+        /* An empty node.name aliases the synthetic default endpoint's
+         * placeholder, so both would enumerate with an empty device string
+         * and find_device would only ever reach the first.  winepulse rejects
+         * the same case (pulse.c:757). */
+        if (!media_class || !node_name || !node_name[0])
             return;
         if (strcmp(media_class, "Audio/Sink") && strcmp(media_class, "Audio/Source"))
             return;
