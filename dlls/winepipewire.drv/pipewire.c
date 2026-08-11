@@ -3299,12 +3299,12 @@ static void pipewire_period_timer_loop(void *args)
 
     while (!__atomic_load_n(&period->please_quit, __ATOMIC_ACQUIRE))
     {
+        INT64 adjust = 0;
         int have_now = 0;
 
         NtDelayExecution(FALSE, &delay);
 
         pw_thread_loop_lock(pw_loop_global);
-        delay.QuadPart = -(INT64)period->period_usec * 10;
 
         if (period->timer_stream &&
             (!period->timer_stream->started || !period->timer_stream->pw))
@@ -3341,10 +3341,10 @@ static void pipewire_period_timer_loop(void *args)
              * corrections every tick (the wakeup cadence smears across
              * period +/- period/2 whenever the quantum does not divide the
              * period).  Extrapolate the graph clock to the sampling instant
-             * instead, like winepulse's PA_STREAM_INTERPOLATE_TIMING, and
-             * treat a graph that stopped updating as having no clock so the
-             * grid free-runs at the nominal period and re-acquires on
-             * resume. */
+             * instead, like winepulse's PA_STREAM_INTERPOLATE_TIMING.  A
+             * graph that stopped updating is treated as having no clock, so
+             * the wakeup free-runs at the nominal period and the grid
+             * re-acquires on resume. */
             if (mono_ns >= (UINT64)pwt.now && mono_ns - pwt.now < 1000000000)
             {
                 now = pwt.ticks * (UINT64)pwt.rate.num * 1000000 / pwt.rate.denom
@@ -3353,23 +3353,30 @@ static void pipewire_period_timer_loop(void *args)
             }
         }
 
+        /* The graph clock steers the wakeup only.  Audio moves on every tick
+         * regardless of what the clock reports: gating the drain on clock
+         * validity lets a graph that stops updating pwt pin held_bytes
+         * forever, so GetCurrentPadding reports a permanently full buffer
+         * and get_render_buffer fails with AUDCLNT_E_BUFFER_TOO_LARGE while
+         * the process callback drains the ring to silence.  winepulse
+         * likewise advances one period per tick regardless of what the
+         * server reports (pulse.c:1836). */
         if (!have_now)
             period->grid_valid = FALSE;
         else if (!period->grid_valid)
         {
-            /* (re)acquire the grid; start draining next tick, mirroring the
-             * one-period start absorb of the old per-stream loop */
             period->last_time = now;
             period->grid_valid = TRUE;
         }
         else
         {
-            INT64 adjust = (INT64)(period->last_time + period->period_usec) - (INT64)now;
+            adjust = (INT64)(period->last_time + period->period_usec) - (INT64)now;
 
             if (adjust > 1000000 || adjust < -1000000)
             {
                 /* graph clock stalled or jumped: re-acquire the grid next tick */
                 period->grid_valid = FALSE;
+                adjust = 0;
             }
             else
             {
@@ -3378,24 +3385,25 @@ static void pipewire_period_timer_loop(void *args)
                 else if (adjust < -(INT64)(period->period_usec / 2))
                     adjust = -(INT64)(period->period_usec / 2);
 
-                delay.QuadPart = -((INT64)period->period_usec + adjust) * 10;
                 period->last_time += period->period_usec;
-
-                LIST_FOR_EACH_ENTRY(stream, &period->streams, struct pipewire_stream, period_entry)
-                {
-                    if (!stream->started)
-                        continue;
-                    if (stream->dataflow == eRender)
-                    {
-                        UINT32 adv = min(stream->period_bytes, stream->held_bytes);
-                        stream->lcl_offs_bytes += adv;
-                        stream->lcl_offs_bytes %= stream->real_bufsize_bytes;
-                        stream->held_bytes -= adv;
-                    }
-                    else
-                        pipewire_read(stream);
-                }
             }
+        }
+        delay.QuadPart = -((INT64)period->period_usec + adjust) * 10;
+
+        LIST_FOR_EACH_ENTRY(stream, &period->streams, struct pipewire_stream, period_entry)
+        {
+            if (!stream->started)
+                continue;
+            if (stream->dataflow == eRender)
+            {
+                UINT32 adv = min(stream->period_bytes, stream->held_bytes);
+
+                stream->lcl_offs_bytes += adv;
+                stream->lcl_offs_bytes %= stream->real_bufsize_bytes;
+                stream->held_bytes -= adv;
+            }
+            else
+                pipewire_read(stream);
         }
 
         LIST_FOR_EACH_ENTRY(stream, &period->streams, struct pipewire_stream, period_entry)
