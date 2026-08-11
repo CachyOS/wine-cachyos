@@ -91,6 +91,16 @@ WINE_DEFAULT_DEBUG_CHANNEL(pipewire);
 
 #define PW_CHANNELS_MAX 64
 
+/* Bounds for sample rates and daemon-supplied clock settings.  The rate
+ * ceiling matches winepulse's effective limit (pa_sample_spec_valid rejects
+ * anything above PA_RATE_MAX): the rate reaches nSamplesPerSec in the mix
+ * format applications hand back to Initialize, where it scales every buffer
+ * allocation and wraps nAvgBytesPerSec.  The quantum only feeds the
+ * advertised IAudioClient3 minimum, which build_device_cache clamps again. */
+#define PW_MIN_CLOCK_RATE 8000
+#define PW_MAX_RATE       384000
+#define PW_MAX_QUANTUM    65536
+
 /* Constrains driver allocations to the 32-bit address space for WoW64
  * callers; left 0 for native 64-bit processes. */
 static ULONG_PTR zero_bits = 0;
@@ -1208,32 +1218,53 @@ static const struct pw_metadata_events probe_metadata_events = {
     .property = on_probe_metadata_property,
 };
 
+/* Daemon-supplied properties are free-form text: accept only a number in the
+ * given base, fully consumed, inside the range the driver can honour.  A bare
+ * strtoul takes "abc" as 0, silently truncates out-of-range values on 64-bit
+ * and saturates to ULONG_MAX on 32-bit, so one string can mean two different
+ * things across the two unixlib builds. */
+static BOOL parse_u32(const char *value, int base, uint32_t lo, uint32_t hi, uint32_t *out)
+{
+    unsigned long v;
+    char *end;
+
+    if (!value)
+        return FALSE;
+    errno = 0;
+    v = strtoul(value, &end, base);
+    if (errno || end == value || *end || v < lo || v > hi)
+        return FALSE;
+    *out = (uint32_t)v;
+    return TRUE;
+}
+
 static int on_probe_settings_property(void *data, uint32_t subject, const char *key,
                                       const char *type, const char *value)
 {
     struct probe *p = data;
+    uint32_t v;
 
     if (!key || !value)
         return 0;
     if (!strcmp(key, "clock.force-rate"))
     {
-        uint32_t r = (uint32_t)strtoul(value, NULL, 10);
-        if (r)
-            p->clock_rate = r;
+        if (parse_u32(value, 10, PW_MIN_CLOCK_RATE, PW_MAX_RATE, &v))
+            p->clock_rate = v;
     }
     else if (!strcmp(key, "clock.rate") && !p->clock_rate)
     {
-        p->clock_rate = (uint32_t)strtoul(value, NULL, 10);
+        if (parse_u32(value, 10, PW_MIN_CLOCK_RATE, PW_MAX_RATE, &v))
+            p->clock_rate = v;
     }
     else if (!strcmp(key, "clock.force-quantum"))
     {
-        uint32_t q = (uint32_t)strtoul(value, NULL, 10);
-        if (q)
-            p->min_quantum = q;
+        if (parse_u32(value, 10, 1, PW_MAX_QUANTUM, &v))
+            p->min_quantum = v;
     }
     else if (!strcmp(key, "clock.min-quantum") && !p->min_quantum)
     {
-        p->min_quantum = (uint32_t)strtoul(value, NULL, 10);
+        if (parse_u32(value, 10, 1, PW_MAX_QUANTUM, &v))
+            p->min_quantum = v;
     }
     return 0;
 }
@@ -1258,16 +1289,15 @@ static enum pw_device_bus parse_device_bus(const char *bus)
 static void on_probe_device_info(void *data, const struct pw_device_info *info)
 {
     struct probe_device *pd = data;
-    const char *bus, *vid, *pid;
+    uint32_t v;
 
     if (!info || !info->props)
         return;
-    bus = spa_dict_lookup(info->props, PW_KEY_DEVICE_BUS);
-    vid = spa_dict_lookup(info->props, PW_KEY_DEVICE_VENDOR_ID);
-    pid = spa_dict_lookup(info->props, PW_KEY_DEVICE_PRODUCT_ID);
-    pd->bus = parse_device_bus(bus);
-    pd->vendor_id = vid ? (UINT16)strtoul(vid, NULL, 16) : 0;
-    pd->product_id = pid ? (UINT16)strtoul(pid, NULL, 16) : 0;
+    pd->bus = parse_device_bus(spa_dict_lookup(info->props, PW_KEY_DEVICE_BUS));
+    pd->vendor_id = parse_u32(spa_dict_lookup(info->props, PW_KEY_DEVICE_VENDOR_ID),
+                              16, 0, 0xffff, &v) ? (UINT16)v : 0;
+    pd->product_id = parse_u32(spa_dict_lookup(info->props, PW_KEY_DEVICE_PRODUCT_ID),
+                               16, 0, 0xffff, &v) ? (UINT16)v : 0;
 }
 
 static const struct pw_device_events probe_device_events = {
@@ -1302,7 +1332,10 @@ static void on_probe_registry_global(void *data, uint32_t id, uint32_t permissio
             return;
         pn->id = id;
         pn->flow = !strcmp(media_class, "Audio/Sink") ? eRender : eCapture;
-        pn->device_id = dev_id ? (uint32_t)strtoul(dev_id, NULL, 10) : SPA_ID_INVALID;
+        /* SPA_ID_INVALID is the "no parent device" sentinel, so it must not
+         * also be what an unparsable id decays to. */
+        if (!parse_u32(dev_id, 10, 0, SPA_ID_INVALID - 1, &pn->device_id))
+            pn->device_id = SPA_ID_INVALID;
         pn->bus = parse_device_bus(spa_dict_lookup(props, "device.bus"));
         /* Probe thread: keep everything UTF-8, no ntdll/WCHAR work.  The name
          * cap is applied later, in utf8_to_wstr_capped on the unix-call thread. */
