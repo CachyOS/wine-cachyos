@@ -604,14 +604,19 @@ static int parse_json_str_field(const char *json, const char *field, char *dst, 
     struct spa_json it[2];
     char key[64];
     const char *val;
-    int len;
+    int len, res;
 
     spa_json_init(&it[0], json, strlen(json));
     if (spa_json_enter_object(&it[0], &it[1]) <= 0)
         return -1;
-    while (spa_json_get_string(&it[1], key, sizeof(key)) > 0)
+    /* -ENOSPC means the key token did not fit key[], not that the object
+     * ended: consume its value and keep scanning, or one long key hides
+     * every field behind it.  Mirrors spa_json_object_next. */
+    while ((res = spa_json_get_string(&it[1], key, sizeof(key))) != 0)
     {
-        if (!strcmp(key, field))
+        if (res < 0 && res != -ENOSPC)
+            return -1;
+        if (res > 0 && !strcmp(key, field))
             return spa_json_get_string(&it[1], dst, maxlen) > 0 ? 0 : -1;
         if ((len = spa_json_next(&it[1], &val)) <= 0)
             return -1;
@@ -1198,16 +1203,26 @@ static int on_probe_metadata_property(void *data, uint32_t subject, const char *
 {
     struct probe *p = data;
     char *dst;
+    size_t dst_size;
 
-    if (!key || !value)
+    if (!key)
         return 0;
     if (!strcmp(key, "default.audio.sink"))
+    {
         dst = p->default_sink;
+        dst_size = sizeof(p->default_sink);
+    }
     else if (!strcmp(key, "default.audio.source"))
+    {
         dst = p->default_source;
+        dst_size = sizeof(p->default_source);
+    }
     else
         return 0;
-    parse_json_str_field(value, "name", dst, 256);
+    /* A cleared default arrives as a NULL value, and a malformed one must
+     * not leave the previous name standing either. */
+    if (!value || parse_json_str_field(value, "name", dst, dst_size) < 0)
+        dst[0] = '\0';
     return 0;
 }
 
