@@ -278,8 +278,9 @@ struct pw_phys_device
     UINT channel_mask;
     REFERENCE_TIME min_period, def_period;
     WAVEFORMATEXTENSIBLE fmt;
-    /* Device-path inputs (winepulse get_device_path parity).  index is a
-     * per-list running counter. */
+    /* Device-path inputs (winepulse get_device_path parity).  index runs
+     * across both lists and the synthetic defaults, because a bus-less
+     * device path is {1}.ROOT\MEDIA\<index> and nothing else in it varies. */
     enum pw_device_bus bus;
     UINT16 vendor_id, product_id;
     UINT index;
@@ -1473,11 +1474,11 @@ static void probe_roundtrip(struct probe *p)
     pw_thread_loop_timed_wait(p->loop, 2);
 }
 
-/* Synthetic default endpoint at index 0 (empty pw_name -> session manager
- * default routing).  When the default node is known, mirror its format so
- * the default endpoint advertises the real speaker layout. */
+/* Synthetic default endpoint (empty pw_name -> session manager default
+ * routing).  When the default node is known, mirror its format so the
+ * default endpoint advertises the real speaker layout. */
 static void add_default_device(struct list *list, EndpointFormFactor form, const char *match,
-                               uint32_t rate, REFERENCE_TIME min_period)
+                               uint32_t rate, REFERENCE_TIME min_period, UINT index)
 {
     struct pw_phys_device *dev, *def_src = NULL, *def;
 
@@ -1486,9 +1487,9 @@ static void add_default_device(struct list *list, EndpointFormFactor form, const
         LIST_FOR_EACH_ENTRY(dev, list, struct pw_phys_device, entry)
             if (!strcmp(dev->pw_name, match)) { def_src = dev; break; }
     }
-    /* calloc a full struct, +1 for the empty pw_name: the placeholder's
-     * device-path fields must read back as zero, and the full size keeps
-     * -Warray-bounds quiet on the flexible array member. */
+    /* calloc a full struct, +1 for the empty pw_name: the placeholder has no
+     * bus and no vendor ids, and the full size keeps -Warray-bounds quiet on
+     * the flexible array member. */
     if (!(def = calloc(1, sizeof(*def) + 1)))
         return;
     /* Burnout Paradise Remastered crashes on a device name with no space,
@@ -1500,6 +1501,7 @@ static void add_default_device(struct list *list, EndpointFormFactor form, const
     }
     def->pw_name[0] = '\0';
     def->form = form;
+    def->index = index;
     def->def_period = 100000;
     def->min_period = min_period;
     if (def_src)
@@ -1575,7 +1577,7 @@ static void build_device_cache(struct probe *p)
     struct probe_node *pn;
     uint32_t rate = p->clock_rate ? p->clock_rate : 48000;
     REFERENCE_TIME min_period = 30000;
-    UINT render_idx = 0, capture_idx = 0;
+    UINT index = 0;
 
     /* IAudioClient3 shared-mode floor.  The graph cannot deliver cycles
      * below clock.min-quantum (clock.force-quantum pins it outright), and
@@ -1605,12 +1607,11 @@ static void build_device_cache(struct probe *p)
         uint32_t channels = pn->have_format ? pn->channels : 2;
         UINT mask = pn->have_format ? positions_to_mask(pn->position, pn->channels)
                                     : (SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT);
-        UINT *idx = (pn->flow == eRender) ? &render_idx : &capture_idx;
         struct pw_phys_device *dev;
         WCHAR *name = utf8_to_wstr_capped(pn->display, pn->nick, pn->node_name);
 
         dev = add_device(list, pn->node_name, name, form, rate, channels, mask, min_period);
-        fill_device_path_info(dev, p, pn, (*idx)++);
+        fill_device_path_info(dev, p, pn, index++);
 
         /* PipeWire has no separate monitor nodes, so synthesize one capture
          * endpoint per sink under the sink's own name, with the LineLevel
@@ -1624,13 +1625,13 @@ static void build_device_cache(struct probe *p)
             {
                 struct pw_phys_device *md = add_device(&g_capture_devices, pn->node_name, mon,
                                                        LineLevel, rate, channels, mask, min_period);
-                fill_device_path_info(md, p, pn, capture_idx++);
+                fill_device_path_info(md, p, pn, index++);
             }
         }
     }
 
-    add_default_device(&g_render_devices, Speakers, g_default_sink, rate, min_period);
-    add_default_device(&g_capture_devices, Microphone, g_default_source, rate, min_period);
+    add_default_device(&g_render_devices, Speakers, g_default_sink, rate, min_period, index++);
+    add_default_device(&g_capture_devices, Microphone, g_default_source, rate, min_period, index++);
 }
 
 static void probe_teardown(struct probe *p)
