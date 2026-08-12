@@ -496,6 +496,25 @@ static void wayland_motion_delta_to_window(struct wayland_surface *surface,
     *window_y = surface_y * surface->window.scale;
 }
 
+/* Some compositors seem to have broken rawinput so allow users to disable/adjust sensitivity */
+static double get_rawinput_scale(void)
+{
+    static double cached = -1.0;
+    const char *env;
+
+    if (cached != -1.0) return cached;
+
+    cached = 1.0;
+    if ((env = getenv("WAYLANDDRV_RAWINPUT")))
+    {
+        /* an invalid value would return 0, disabling rawinput */
+        cached = strtod(env, NULL);
+        if (cached < 0) cached = 0;
+    }
+
+    return cached;
+}
+
 static void relative_pointer_v1_relative_motion(void *private,
                                                 struct zwp_relative_pointer_v1 *zwp_relative_pointer_v1,
                                                 uint32_t utime_hi, uint32_t utime_lo,
@@ -506,6 +525,7 @@ static void relative_pointer_v1_relative_motion(void *private,
     struct wayland_win_data *data;
     double screen_x = 0.0, screen_y = 0.0;
     double raw_x = 0.0, raw_y = 0.0;
+    double scale = get_rawinput_scale();
     struct wayland_pointer *pointer = &process_wayland.pointer;
     struct wayland_pointer_frame *frame = &pointer->frame;
 
@@ -518,8 +538,16 @@ static void relative_pointer_v1_relative_motion(void *private,
                                    &screen_x, &screen_y);
     wayland_win_data_release(data);
 
-    raw_x = wl_fixed_to_double(dx_unaccel);
-    raw_y = wl_fixed_to_double(dy_unaccel);
+    if (scale > 0.0)
+    {
+        raw_x = wl_fixed_to_double(dx_unaccel) * scale;
+        raw_y = wl_fixed_to_double(dy_unaccel) * scale;
+    }
+    else
+    {
+        raw_x = screen_x;
+        raw_y = screen_y;
+    }
 
     pthread_mutex_lock(&pointer->mutex);
 
