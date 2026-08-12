@@ -3840,7 +3840,9 @@ static NTSTATUS pipewire_get_render_buffer(void *args)
         return STATUS_SUCCESS;
     }
 
-    if (stream->held_bytes / stream->frame_size + params->frames > stream->bufsize_frames)
+    /* UINT64: SIZE_T is 32 bits on the i386 unixlib, where this sum wraps and
+     * lets an oversized frame count past the guard. */
+    if ((UINT64)(stream->held_bytes / stream->frame_size) + params->frames > stream->bufsize_frames)
     {
         pw_thread_loop_unlock(pw_loop_global);
         params->result = AUDCLNT_E_BUFFER_TOO_LARGE;
