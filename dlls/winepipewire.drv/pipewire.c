@@ -849,7 +849,11 @@ static BOOL spa_plugin_dir_usable(const char *dir)
  * live in the same libdir as the loaded library and match its architecture, so
  * derive the path from the loaded object.  A different-architecture parent (a
  * 32-bit launcher spawning a 64-bit game) also leaks its own SPA_PLUGIN_DIR
- * through the environment; drop such an inherited value and re-derive ours. */
+ * through the environment; drop such an inherited value and re-derive ours.
+ *
+ * The setenv/unsetenv calls below race a concurrent getenv on an application
+ * thread, which is formally UB and memory-safe on glibc.  It is unavoidable:
+ * libpipewire only reads these variables through getenv. */
 static void pipewire_set_plugin_dirs(void)
 {
     Dl_info info;
@@ -1149,6 +1153,11 @@ struct probe_device
     BOOL listener_added;
 };
 
+/* Cap on globals kept per probe.  Every audio node and device allocates and
+ * strdups daemon-supplied strings, and any local client can register them,
+ * so bound the list rather than the socket. */
+#define PROBE_MAX_GLOBALS 512
+
 struct probe
 {
     struct pw_thread_loop *loop;
@@ -1160,6 +1169,7 @@ struct probe
     int sync_seq;
     struct list nodes;
     struct list devices;
+    unsigned int n_nodes, n_devices;
     struct pw_metadata *meta_default;
     struct pw_metadata *meta_settings;
     struct spa_hook meta_default_listener;
@@ -1169,6 +1179,7 @@ struct probe
     uint32_t clock_rate;
     uint32_t min_quantum;
     BOOL core_error;
+    BOOL truncated;        /* a global was dropped by PROBE_MAX_GLOBALS */
 };
 
 static void on_probe_node_param(void *data, int seq, uint32_t id, uint32_t index,
@@ -1357,6 +1368,11 @@ static void on_probe_registry_global(void *data, uint32_t id, uint32_t permissio
             if (dup->flow == flow && !strcmp(dup->node_name, node_name))
                 return;
 
+        if (p->n_nodes >= PROBE_MAX_GLOBALS)
+        {
+            p->truncated = TRUE;
+            return;
+        }
         if (!(pn = calloc(1, sizeof(*pn))))
             return;
         pn->id = id;
@@ -1380,6 +1396,7 @@ static void on_probe_registry_global(void *data, uint32_t id, uint32_t permissio
             return;
         }
         list_add_tail(&p->nodes, &pn->entry);
+        p->n_nodes++;
 
         /* Bind the node and ask for its supported formats, which carry the
          * real channel layout.  The param events arrive during the sync
@@ -1397,11 +1414,17 @@ static void on_probe_registry_global(void *data, uint32_t id, uint32_t permissio
 
         /* Failed bind keeps PW_BUS_OTHER and zero ids.  The path falls back
          * to ROOT\MEDIA. */
+        if (p->n_devices >= PROBE_MAX_GLOBALS)
+        {
+            p->truncated = TRUE;
+            return;
+        }
         if (!(pd = calloc(1, sizeof(*pd))))
             return;
         pd->id = id;
         pd->bus = PW_BUS_OTHER;
         list_add_tail(&p->devices, &pd->entry);
+        p->n_devices++;
 
         pd->proxy = pw_registry_bind(p->registry, id, PW_TYPE_INTERFACE_Device,
                                      PW_VERSION_DEVICE, 0);
@@ -1455,6 +1478,7 @@ static void on_probe_registry_global_remove(void *data, uint32_t id)
             pn->proxy = NULL;
         }
         list_remove(&pn->entry);
+        p->n_nodes--;
         free(pn->node_name);
         free(pn->display);
         free(pn->nick);
@@ -1476,6 +1500,7 @@ static void on_probe_registry_global_remove(void *data, uint32_t id)
             pd->proxy = NULL;
         }
         list_remove(&pd->entry);
+        p->n_devices--;
         free(pd);
         return;
     }
@@ -1799,6 +1824,11 @@ static NTSTATUS pipewire_test_connect(void *args)
     pw_thread_loop_stop(p.loop);
     pw_context_destroy(p.context);
     pw_thread_loop_destroy(p.loop);
+
+    /* The cap is enforced on the probe thread, which cannot log. */
+    if (p.truncated)
+        WARN("More than %u audio globals in the graph; the rest were ignored.\n",
+             PROBE_MAX_GLOBALS);
 
     /* Both probe lists are freed on every path: the error return below used
      * to sit above the cleanup and leak p.devices. */
