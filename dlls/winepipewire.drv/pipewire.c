@@ -1334,7 +1334,8 @@ static void on_probe_registry_global(void *data, uint32_t id, uint32_t permissio
         const char *desc = spa_dict_lookup(props, PW_KEY_NODE_DESCRIPTION);
         const char *nick = spa_dict_lookup(props, PW_KEY_NODE_NICK);
         const char *dev_id = spa_dict_lookup(props, PW_KEY_DEVICE_ID);
-        struct probe_node *pn;
+        struct probe_node *pn, *dup;
+        EDataFlow flow;
 
         /* An empty node.name aliases the synthetic default endpoint's
          * placeholder, so both would enumerate with an empty device string
@@ -1342,13 +1343,24 @@ static void on_probe_registry_global(void *data, uint32_t id, uint32_t permissio
          * the same case (pulse.c:757). */
         if (!media_class || !node_name || !node_name[0])
             return;
-        if (strcmp(media_class, "Audio/Sink") && strcmp(media_class, "Audio/Source"))
+        if (!strcmp(media_class, "Audio/Sink"))
+            flow = eRender;
+        else if (!strcmp(media_class, "Audio/Source"))
+            flow = eCapture;
+        else
             return;
+
+        /* find_device returns the first match in a list, so a second node
+         * with this direction and name would enumerate but never be
+         * reachable.  Any local client can register one. */
+        LIST_FOR_EACH_ENTRY(dup, &p->nodes, struct probe_node, entry)
+            if (dup->flow == flow && !strcmp(dup->node_name, node_name))
+                return;
 
         if (!(pn = calloc(1, sizeof(*pn))))
             return;
         pn->id = id;
-        pn->flow = !strcmp(media_class, "Audio/Sink") ? eRender : eCapture;
+        pn->flow = flow;
         /* SPA_ID_INVALID is the "no parent device" sentinel, so it must not
          * also be what an unparsable id decays to. */
         if (!parse_u32(dev_id, 10, 0, SPA_ID_INVALID - 1, &pn->device_id))
