@@ -1426,11 +1426,30 @@ static void on_probe_registry_global(void *data, uint32_t id, uint32_t permissio
 static void on_probe_registry_global_remove(void *data, uint32_t id)
 {
     struct probe *p = data;
-    struct probe_device *pd, *next;
+    struct probe_device *pd, *pdnext;
+    struct probe_node *pn, *pnnext;
 
-    /* A device that disappears mid-probe is gone from the graph: destroy its
-     * proxy and drop its entry so later lookups do not see stale data. */
-    LIST_FOR_EACH_ENTRY_SAFE(pd, next, &p->devices, struct probe_device, entry)
+    /* A global that disappears mid-probe is gone from the graph: destroy its
+     * proxy and drop its entry, so the cache does not enumerate a node that
+     * no longer exists and device lookups do not see stale data. */
+    LIST_FOR_EACH_ENTRY_SAFE(pn, pnnext, &p->nodes, struct probe_node, entry)
+    {
+        if (pn->id != id)
+            continue;
+        if (pn->proxy)
+        {
+            spa_hook_remove(&pn->listener);
+            pw_proxy_destroy((struct pw_proxy *)pn->proxy);
+            pn->proxy = NULL;
+        }
+        list_remove(&pn->entry);
+        free(pn->node_name);
+        free(pn->display);
+        free(pn->nick);
+        free(pn);
+        return;
+    }
+    LIST_FOR_EACH_ENTRY_SAFE(pd, pdnext, &p->devices, struct probe_device, entry)
     {
         if (pd->id != id)
             continue;
