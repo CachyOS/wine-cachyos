@@ -1411,6 +1411,31 @@ static BOOL is_client_visible(HWND hwnd)
     return NtUserIsWindowVisible(hwnd) || NtUserGetPresentRect(hwnd, &dummy, -1);
 }
 
+/* Adapted from winex11.drv */
+static BOOL needs_client_window_clipping(HWND hwnd)
+{
+    RECT rect, client;
+    UINT ret = 0;
+    HRGN region;
+    HDC hdc;
+
+    if (!NtUserGetClientRect(hwnd, &client, NtUserGetDpiForWindow(hwnd))) return FALSE;
+    OffsetRect(&client, -client.left, -client.top);
+
+    if (!(hdc = NtUserGetDCEx(hwnd, 0, DCX_CACHE | DCX_USESTYLE))) return FALSE;
+    if ((region = NtGdiCreateRectRgn(0, 0, 0, 0)))
+    {
+        ret = NtGdiGetRandomRgn(hdc, region, SYSRGN);
+        if (ret > 0 && (ret = NtGdiGetRgnBox(region, &rect)) < NULLREGION) ret = 0;
+        OffsetRect(&rect, -rect.left, -rect.top);
+        if (ret == SIMPLEREGION && EqualRect(&rect, &client)) ret = 0;
+        NtGdiDeleteObjectApp(region);
+    }
+    NtUserReleaseDC(hwnd, hdc);
+
+    return ret > 0;
+}
+
 static void wayland_client_surface_update_offscreen(struct wayland_client_surface *surface)
 {
     HWND hwnd = surface->client.hwnd, toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
@@ -1420,7 +1445,10 @@ static void wayland_client_surface_update_offscreen(struct wayland_client_surfac
     if (NtUserGetWindowThread(toplevel, &pid) && pid != GetCurrentProcessId())
         offscreen = TRUE;
 
-    /* TODO: Check for window clipping and shape */
+    if (!offscreen && NtUserGetWindowRelative(hwnd, GW_CHILD))
+        offscreen = needs_client_window_clipping(hwnd);
+
+    /* TODO: Check for window shape */
 
     InterlockedExchange(&surface->client.offscreen, offscreen);
 }
@@ -1535,6 +1563,12 @@ static void wayland_client_surface_present(struct client_surface *client, HDC hd
     BOOL expose = FALSE;
 
     TRACE("%s %p\n", debugstr_client_surface(client), hdc);
+
+    if (hdc)
+    {
+        /* TODO: Update HDC with client surface contents */
+        return;
+    }
 
     if (!(data = wayland_win_data_get(toplevel))) return;
 
