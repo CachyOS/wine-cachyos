@@ -175,10 +175,47 @@ static void opengl_drawable_flush( struct opengl_drawable *drawable, int interva
     if (flags) drawable->funcs->flush( drawable, flags );
 }
 
+static void opengl_update_toplevel_contents( struct opengl_drawable *draw )
+{
+    struct client_surface *surface = draw->client;
+    const struct opengl_funcs *funcs = &display_funcs;
+    HWND hwnd = surface->hwnd;
+    HDC hdc;
+    ULONG *bits;
+    RECT client;
+    BITMAPINFO info;
+
+    if (!hwnd || !NtUserGetClientRect(hwnd, &client, NtUserGetDpiForWindow(hwnd))) return;
+    if (!(hdc = NtUserGetDCEx(hwnd, 0, DCX_CACHE | DCX_USESTYLE))) return;
+    OffsetRect(&client, -client.left, -client.top);
+
+    info.bmiHeader.biSize = sizeof(info.bmiHeader);
+    info.bmiHeader.biWidth = client.right - client.left;
+    info.bmiHeader.biHeight = client.bottom - client.top;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    bits = malloc(sizeof(*bits) * info.bmiHeader.biWidth * info.bmiHeader.biHeight);
+
+    funcs->p_glBindFramebuffer( GL_READ_FRAMEBUFFER, draw->draw_fbo );
+    funcs->p_glReadBuffer( GL_BACK );
+    funcs->p_glReadPixels( 0, 0, info.bmiHeader.biWidth, info.bmiHeader.biHeight, GL_BGRA,
+                           GL_UNSIGNED_BYTE, bits );
+    funcs->p_glBindFramebuffer( GL_READ_FRAMEBUFFER, 0 );
+
+    NtGdiSetDIBitsToDeviceInternal( hdc, client.left, client.top, client.right - client.left,
+                                    client.bottom - client.top, 0, 0, 0, abs(info.bmiHeader.biHeight),
+                                    bits, &info, DIB_RGB_COLORS, 0, 0, FALSE, NULL );
+    NtUserReleaseDC(hwnd, hdc);
+    free(bits);
+}
+
 static BOOL opengl_drawable_swap( struct opengl_drawable *drawable )
 {
     if (!is_client_surface_window( drawable->client, 0 )) return FALSE;
     client_surface_update( drawable->client );
+    if (drawable->client->offscreen && !user_driver->dc_funcs.pPutImage)
+        opengl_update_toplevel_contents( drawable );
     return drawable->funcs->swap( drawable );
 }
 
