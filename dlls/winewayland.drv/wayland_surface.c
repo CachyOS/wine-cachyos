@@ -1649,13 +1649,8 @@ static void wayland_client_surface_present(struct client_surface *client, HDC hd
 
     TRACE("%s %p\n", debugstr_client_surface(client), hdc);
 
-    if (hdc)
-    {
-        /* TODO: Update HDC with client surface contents */
-        return;
-    }
-
-    if (!(data = wayland_win_data_get(toplevel))) return;
+    /* win32u does the copy for us */
+    if (hdc || !(data = wayland_win_data_get(toplevel))) return;
 
     if ((wayland_surface = data->wayland_surface))
     {
