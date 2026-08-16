@@ -1411,6 +1411,20 @@ static BOOL is_client_visible(HWND hwnd)
     return NtUserIsWindowVisible(hwnd) || NtUserGetPresentRect(hwnd, &dummy, -1);
 }
 
+static void wayland_client_surface_update_offscreen(struct wayland_client_surface *surface)
+{
+    HWND hwnd = surface->client.hwnd, toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
+    LONG offscreen = FALSE;
+    DWORD pid;
+
+    if (NtUserGetWindowThread(toplevel, &pid) && pid != GetCurrentProcessId())
+        offscreen = TRUE;
+
+    /* TODO: Check for window clipping and shape */
+
+    InterlockedExchange(&surface->client.offscreen, offscreen);
+}
+
 static void wayland_client_surface_update(struct client_surface *client)
 {
     struct wayland_client_surface *surface = impl_from_client_surface(client);
@@ -1419,14 +1433,13 @@ static void wayland_client_surface_update(struct client_surface *client)
     BOOL visible = FALSE;
 
     TRACE("%s\n", debugstr_client_surface(client));
-    if (toplevel) visible = is_client_visible(hwnd);
+
+    wayland_client_surface_update_offscreen(surface);
+
+    if (toplevel) visible = !client->offscreen && is_client_visible(hwnd);
+
     if (!(data = wayland_win_data_get(hwnd))) return;
-
-    if (toplevel && visible)
-        wayland_client_surface_attach(surface, toplevel);
-    else
-        wayland_client_surface_attach(surface, NULL);
-
+    wayland_client_surface_attach(surface, visible ? toplevel : NULL);
     wayland_win_data_release(data);
 }
 
@@ -1521,6 +1534,8 @@ static void wayland_client_surface_present(struct client_surface *client, HDC hd
     struct wayland_win_data *data;
     BOOL expose = FALSE;
 
+    TRACE("%s %p\n", debugstr_client_surface(client), hdc);
+
     if (!(data = wayland_win_data_get(toplevel))) return;
 
     if ((wayland_surface = data->wayland_surface))
@@ -1548,12 +1563,19 @@ void set_client_surface(HWND hwnd, struct wayland_client_surface *new_client)
     HWND toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
     struct wayland_client_surface *old_client;
     struct wayland_win_data *data;
-    BOOL visible = FALSE;
+    BOOL visible = FALSE, offscreen = FALSE;
 
     /* ownership is shared with the callers, the last caller to release
      * its reference will also destroy it and clear our pointer. */
 
-    if (toplevel) visible = is_client_visible(hwnd);
+    if (new_client)
+    {
+        wayland_client_surface_update_offscreen(new_client);
+        offscreen = new_client->client.offscreen;
+    }
+
+    if (toplevel) visible = !offscreen && is_client_visible(hwnd);
+
     if (!(data = wayland_win_data_get(hwnd))) return;
 
     if (new_client != data->client_surface)
@@ -1562,12 +1584,7 @@ void set_client_surface(HWND hwnd, struct wayland_client_surface *new_client)
             wayland_client_surface_attach(old_client, NULL);
 
         if ((data->client_surface = new_client))
-        {
-            if (toplevel && visible)
-                wayland_client_surface_attach(new_client, toplevel);
-            else
-                wayland_client_surface_attach(new_client, NULL);
-        }
+            wayland_client_surface_attach(new_client, visible ? toplevel : NULL);
     }
 
     wayland_win_data_release(data);
