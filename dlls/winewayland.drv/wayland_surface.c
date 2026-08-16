@@ -231,9 +231,6 @@ void wp_fractional_scale_handle_scale(void* user_data,
 
     surface->window.scale = scale;
 
-    /* reattach client surfaces as their rects have changed */
-    update_client_surfaces(hwnd);
-
     wayland_win_data_release(data);
 
     NtUserExposeWindowSurface(hwnd, 0, NULL, 0);
