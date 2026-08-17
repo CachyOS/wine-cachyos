@@ -1436,10 +1436,20 @@ static BOOL needs_client_window_clipping(HWND hwnd)
     return ret > 0;
 }
 
+static LONG force_use_offscreen(void)
+{
+    static LONG ret = -1;
+    const char *env;
+
+    if (ret == -1) ret = (env = getenv("WAYLANDDRV_OFFSCREEN")) && !strcmp(env, "1");
+
+    return ret;
+}
+
 static void wayland_client_surface_update_offscreen(struct wayland_client_surface *surface)
 {
     HWND hwnd = surface->client.hwnd, toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
-    LONG offscreen = FALSE;
+    LONG offscreen = force_use_offscreen();
     DWORD pid;
 
     if (NtUserGetWindowThread(toplevel, &pid) && pid != GetCurrentProcessId())
