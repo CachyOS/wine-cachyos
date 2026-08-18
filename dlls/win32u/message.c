@@ -2277,6 +2277,27 @@ static LRESULT handle_internal_message( HWND hwnd, UINT msg, WPARAM wparam, LPAR
     case WM_WINE_UPDATEWINDOWSTATE:
         update_window_state( hwnd );
         return 0;
+    case WM_WINE_UPDATE_WIN_CONTENTS:
+    {
+        RECT client;
+        HDC hdc;
+        HWND client_hwnd = (HWND)wparam;
+        BITMAPINFO *info = (BITMAPINFO *)lparam;
+
+        if (!info || !client_hwnd) return 0;
+        if (!NtUserGetClientRect(client_hwnd, &client, NtUserGetDpiForWindow(client_hwnd))) goto done;
+        if (!(hdc = NtUserGetDCEx(client_hwnd, 0, DCX_CACHE | DCX_USESTYLE))) goto done;
+
+        OffsetRect(&client, -client.left, -client.top);
+        NtGdiSetDIBitsToDeviceInternal( hdc, client.left, client.top, client.right - client.left,
+                                        client.bottom - client.top, 0, 0, 0, abs(info->bmiHeader.biHeight),
+                                        info + 1, info, DIB_RGB_COLORS, 0, 0, FALSE, NULL );
+        NtUserReleaseDC(client_hwnd, hdc);
+
+done:
+        NtUnmapViewOfSection(GetCurrentProcess(), info);
+        return 0;
+    }
     case WM_WINE_SETPIXELFORMAT:
         set_window_pixel_format( hwnd, wparam, lparam );
         return 0;
