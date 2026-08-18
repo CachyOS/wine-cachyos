@@ -180,14 +180,16 @@ static void opengl_update_toplevel_contents( struct opengl_drawable *draw )
     struct client_surface *surface = draw->client;
     const struct opengl_funcs *funcs = &display_funcs;
     HWND hwnd = surface->hwnd;
+    BOOL other_process = FALSE;
+    DWORD pid;
     HDC hdc;
-    ULONG *bits;
+    ULONG *bits = NULL, *remote_bits = NULL;
     RECT client;
-    BITMAPINFO info;
+    BITMAPINFO info, *remote_info = NULL;
+    LARGE_INTEGER size;
+    HWND toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
 
     if (!hwnd || !NtUserGetClientRect(hwnd, &client, NtUserGetDpiForWindow(hwnd))) return;
-    if (!(hdc = NtUserGetDCEx(hwnd, 0, DCX_CACHE | DCX_USESTYLE))) return;
-    OffsetRect(&client, -client.left, -client.top);
 
     info.bmiHeader.biSize = sizeof(info.bmiHeader);
     info.bmiHeader.biWidth = client.right - client.left;
@@ -195,7 +197,58 @@ static void opengl_update_toplevel_contents( struct opengl_drawable *draw )
     info.bmiHeader.biPlanes = 1;
     info.bmiHeader.biBitCount = 32;
     info.bmiHeader.biCompression = BI_RGB;
-    bits = malloc(sizeof(*bits) * info.bmiHeader.biWidth * info.bmiHeader.biHeight);
+    size.QuadPart = sizeof(*bits) * info.bmiHeader.biWidth * info.bmiHeader.biHeight + sizeof(info);
+
+    if (NtUserGetWindowThread(toplevel, &pid) && (other_process = (pid != GetCurrentProcessId())))
+    {
+        HANDLE handle = 0;
+        NTSTATUS status;
+        SIZE_T view_size = 0;
+        CLIENT_ID id = {.UniqueProcess = ULongToHandle(pid)};
+        HANDLE proc;
+
+        status = NtCreateSection(&handle, GENERIC_READ | SECTION_MAP_READ | SECTION_MAP_WRITE,
+                                 NULL, &size, PAGE_READWRITE, SEC_COMMIT, 0);
+
+        if (status)
+        {
+            ERR("Failed to create section!\n");
+            return;
+        }
+
+        status = NtMapViewOfSection(handle, GetCurrentProcess(), (void *)&remote_info, 0, 0, NULL,
+                                    &view_size, ViewUnmap, 0, PAGE_READWRITE);
+        *remote_info = info;
+        bits = (void *)(remote_info + 1);
+
+        if (status)
+        {
+            ERR("Failed to map view of section to current process!\n");
+            return;
+        }
+
+        status = NtOpenProcess(&proc, PROCESS_ALL_ACCESS, NULL, &id);
+
+        if (status)
+        {
+            ERR("Failed to open other process!\n");
+            return;
+        }
+
+        view_size = 0;
+        status = NtMapViewOfSection(handle, proc, (void *)&remote_bits, 0, 0, NULL,
+                                    &view_size, ViewUnmap, 0, PAGE_READONLY);
+
+        if (status)
+        {
+            ERR("Failed to map view of section to other process\n");
+            return;
+        }
+
+        NtClose(proc);
+        NtClose(handle);
+    }
+    else bits = malloc(size.QuadPart);
 
     funcs->p_glBindFramebuffer( GL_READ_FRAMEBUFFER, draw->draw_fbo );
     funcs->p_glReadBuffer( GL_BACK );
@@ -203,10 +256,21 @@ static void opengl_update_toplevel_contents( struct opengl_drawable *draw )
                            GL_UNSIGNED_BYTE, bits );
     funcs->p_glBindFramebuffer( GL_READ_FRAMEBUFFER, 0 );
 
+    if (other_process)
+    {
+        NtUnmapViewOfSection(GetCurrentProcess(), bits);
+        NtUserPostMessage(toplevel, WM_WINE_UPDATE_WIN_CONTENTS, (WPARAM)hwnd, (LPARAM)remote_bits);
+        return;
+    }
+    if (!other_process && !(hdc = NtUserGetDCEx(hwnd, 0, DCX_CACHE | DCX_USESTYLE))) goto fail;
+
+    OffsetRect(&client, -client.left, -client.top);
     NtGdiSetDIBitsToDeviceInternal( hdc, client.left, client.top, client.right - client.left,
                                     client.bottom - client.top, 0, 0, 0, abs(info.bmiHeader.biHeight),
                                     bits, &info, DIB_RGB_COLORS, 0, 0, FALSE, NULL );
     NtUserReleaseDC(hwnd, hdc);
+
+fail:
     free(bits);
 }
 
