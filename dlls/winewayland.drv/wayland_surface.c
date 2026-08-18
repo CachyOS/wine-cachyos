@@ -1450,9 +1450,14 @@ static void wayland_client_surface_update_offscreen(struct wayland_client_surfac
 {
     HWND hwnd = surface->client.hwnd, toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
     LONG offscreen = force_use_offscreen();
-    DWORD pid;
+    DWORD pid, flags;
+    BYTE alpha;
 
     if (NtUserGetWindowThread(toplevel, &pid) && pid != GetCurrentProcessId())
+        offscreen = TRUE;
+
+    if (!offscreen && NtUserGetLayeredWindowAttributes(toplevel, NULL, &alpha, &flags) &&
+        (flags & LWA_ALPHA) && alpha != 0xff)
         offscreen = TRUE;
 
     if (!offscreen && NtUserGetWindowRelative(hwnd, GW_CHILD))
