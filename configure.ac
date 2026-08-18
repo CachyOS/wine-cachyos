@@ -2477,6 +2477,7 @@ fi
 
 dnl Disable some programs for other PE archs
 enable_conhost=${enable_conhost:-$HOST_ARCH}
+enable_lsass=${enable_lsass:-$HOST_ARCH}
 enable_plugplay=${enable_plugplay:-$HOST_ARCH}
 enable_rpcss=${enable_rpcss:-$HOST_ARCH}
 enable_services=${enable_services:-$HOST_ARCH}
@@ -3661,6 +3662,7 @@ WINE_CONFIG_MAKEFILE(programs/iexplore)
 WINE_CONFIG_MAKEFILE(programs/ipconfig)
 WINE_CONFIG_MAKEFILE(programs/klist)
 WINE_CONFIG_MAKEFILE(programs/lodctr)
+WINE_CONFIG_MAKEFILE(programs/lsass)
 WINE_CONFIG_MAKEFILE(programs/makecab)
 WINE_CONFIG_MAKEFILE(programs/mofcomp)
 WINE_CONFIG_MAKEFILE(programs/mshta)
