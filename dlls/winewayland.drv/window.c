@@ -681,6 +681,8 @@ void WAYLAND_SetLayeredWindowAttributes(HWND hwnd, COLORREF key, BYTE alpha, DWO
     struct wayland_win_data *data;
     struct wayland_surface *surface;
 
+    TRACE("hwnd=%p key=%x alpha=%u flags=%x\n", hwnd, key, alpha, flags);
+
     if (!(data = wayland_win_data_get(hwnd))) return;
 
     if ((surface = data->wayland_surface))
@@ -738,6 +740,8 @@ void WAYLAND_SetWindowStyle(HWND hwnd, INT offset, STYLESTRUCT *style)
     struct wayland_win_data *data;
     struct wayland_surface *surface;
     DWORD changed = style->styleNew ^ style->styleOld;
+
+    TRACE("hwnd=%p offset=%d\n", hwnd, offset);
 
     if (hwnd == NtUserGetDesktopWindow()) return;
     if (!(data = wayland_win_data_get(hwnd))) return;
@@ -829,6 +833,8 @@ void WAYLAND_UpdateLayeredWindow(HWND hwnd, BYTE alpha, UINT flags)
 {
     struct wayland_win_data *data;
     struct wayland_surface *surface;
+
+    TRACE("hwnd=%p alpha=%u flags=%x\n", hwnd, alpha, flags);
 
     if (!(data = wayland_win_data_get(hwnd))) return;
 
