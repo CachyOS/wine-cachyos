@@ -367,7 +367,6 @@ struct wayland_client_surface
     HWND toplevel;
     HANDLE throttle;
     RECT viewport_rect;
-    BOOL other_process;
     struct wl_callback *wl_callback;
     struct wl_surface *wl_surface;
     struct wl_subsurface *wl_subsurface;
@@ -528,6 +527,7 @@ struct wayland_win_data
     BOOL resizeable;
     BOOL managed;
     BOOL layered_attribs_set;
+    BOOL shaped;
     int ime_ref;
 };
 
