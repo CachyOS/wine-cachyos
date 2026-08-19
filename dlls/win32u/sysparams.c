@@ -2458,9 +2458,9 @@ static void monitor_virt_to_raw_ratio( struct monitor *monitor, UINT *num, UINT 
     }
 }
 
-static UINT gcd( UINT a, UINT b )
+static UINT64 gcd( UINT64 a, UINT64 b )
 {
-    int r;
+    UINT64 r;
 
     while (1)
     {
@@ -2472,6 +2472,93 @@ static UINT gcd( UINT a, UINT b )
     }
 }
 
+static UINT pack_fractional_dpi( UINT64 num, UINT64 den )
+{
+    const UINT64 max_value = 0xffff;
+    UINT64 orig_num, orig_den, p0 = 0, q0 = 1, p1 = 1, q1 = 0;
+    UINT64 bound_num, bound_den, delta_bound, delta_convergent;
+    UINT64 divisor, quotient, remainder, k_num, k_den, k;
+
+    divisor = gcd( num, den );
+    orig_num = num /= divisor;
+    orig_den = den /= divisor;
+    if (num <= max_value && den <= max_value) goto done;
+
+    /* The packed representation cannot describe values outside this range. */
+    if (num > max_value * den)
+    {
+        num = max_value;
+        den = 1;
+        goto done;
+    }
+    if (den > max_value * num)
+    {
+        num = 1;
+        den = max_value;
+        goto done;
+    }
+
+    /* Find the closest continued-fraction convergent whose numerator and
+     * denominator both fit the packed representation. */
+    for (;;)
+    {
+        quotient = num / den;
+        if ((p1 && quotient > (max_value - p0) / p1) ||
+            (q1 && quotient > (max_value - q0) / q1))
+            break;
+
+        bound_num = p0 + quotient * p1;
+        bound_den = q0 + quotient * q1;
+        p0 = p1;
+        q0 = q1;
+        p1 = bound_num;
+        q1 = bound_den;
+
+        if (!(remainder = num % den))
+        {
+            num = p1;
+            den = q1;
+            goto done;
+        }
+        num = den;
+        den = remainder;
+    }
+
+    k_num = p1 ? (max_value - p0) / p1 : max_value;
+    k_den = q1 ? (max_value - q0) / q1 : max_value;
+    k = min( k_num, k_den );
+    bound_num = p0 + k * p1;
+    bound_den = q0 + k * q1;
+
+    if (!q1)
+    {
+        num = bound_num;
+        den = bound_den;
+        goto done;
+    }
+
+    delta_bound = bound_num * orig_den > orig_num * bound_den
+                  ? bound_num * orig_den - orig_num * bound_den
+                  : orig_num * bound_den - bound_num * orig_den;
+    delta_convergent = p1 * orig_den > orig_num * q1
+                       ? p1 * orig_den - orig_num * q1
+                       : orig_num * q1 - p1 * orig_den;
+    if (delta_bound * q1 <= delta_convergent * bound_den)
+    {
+        num = bound_num;
+        den = bound_den;
+    }
+    else
+    {
+        num = p1;
+        den = q1;
+    }
+
+done:
+    if (den == 1) den = 0;
+    return (den << 16) | num;
+}
+
 /* display_lock must be held */
 static UINT monitor_get_dpi( struct monitor *monitor, MONITOR_DPI_TYPE type, UINT *dpi_x, UINT *dpi_y )
 {
@@ -2481,25 +2568,10 @@ static UINT monitor_get_dpi( struct monitor *monitor, MONITOR_DPI_TYPE type, UIN
     if (!source || !(dpi = source->dpi)) dpi = system_dpi;
     if (source && type != MDT_EFFECTIVE_DPI)
     {
-        UINT num, den, d;
-
-        num = source->physical.dmPelsWidth;
-        den = source->current.dmPelsWidth;
-        d = gcd( num * dpi, den );
-        assert( num * dpi / d < 65536 );
-        assert( den / d < 65536 );
-        den /= d;
-        if (den == 1) den = 0;
-        *dpi_x = (den << 16) | (num * dpi / d);
-
-        num = source->physical.dmPelsHeight;
-        den = source->current.dmPelsHeight;
-        d = gcd( num * dpi, den );
-        assert( num * dpi / d < 65536 );
-        assert( den / d < 65536 );
-        den /= d;
-        if (den == 1) den = 0;
-        *dpi_y = (den << 16) | (num * dpi / d);
+        *dpi_x = pack_fractional_dpi( (UINT64)source->physical.dmPelsWidth * dpi,
+                                      source->current.dmPelsWidth );
+        *dpi_y = pack_fractional_dpi( (UINT64)source->physical.dmPelsHeight * dpi,
+                                      source->current.dmPelsHeight );
         if (source->physical.dmPelsWidth * source->current.dmPelsHeight <=
             source->physical.dmPelsHeight * source->current.dmPelsWidth)
             dpi_ret = *dpi_x;
