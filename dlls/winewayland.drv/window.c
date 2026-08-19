@@ -469,7 +469,7 @@ BOOL WAYLAND_WindowPosChanging(HWND hwnd, UINT swp_flags, BOOL shaped, const str
     TRACE("hwnd %p, swp_flags %04x, shaped %u, rects %s\n", hwnd, swp_flags, shaped, debugstr_window_rects(rects));
 
     if (!data && !(data = wayland_win_data_create(hwnd, rects))) return FALSE;
-
+    data->shaped = shaped;
     wayland_win_data_release(data);
 
     return TRUE;

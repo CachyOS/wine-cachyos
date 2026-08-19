@@ -1449,12 +1449,17 @@ static LONG force_use_offscreen(void)
 static void wayland_client_surface_update_offscreen(struct wayland_client_surface *surface)
 {
     HWND hwnd = surface->client.hwnd, toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
+    struct wayland_win_data *data;
     LONG offscreen = force_use_offscreen();
-    DWORD pid, flags;
+    DWORD flags;
     BYTE alpha;
 
-    if (NtUserGetWindowThread(toplevel, &pid) && pid != GetCurrentProcessId())
-        offscreen = TRUE;
+    if (!(data = wayland_win_data_get(toplevel))) offscreen = TRUE;
+    else
+    {
+        if (data->shaped) offscreen = TRUE;
+        wayland_win_data_release(data);
+    }
 
     if (!offscreen && NtUserGetLayeredWindowAttributes(toplevel, NULL, &alpha, &flags) &&
         (flags & LWA_ALPHA) && alpha != 0xff)
@@ -1462,8 +1467,6 @@ static void wayland_client_surface_update_offscreen(struct wayland_client_surfac
 
     if (!offscreen && NtUserGetWindowRelative(hwnd, GW_CHILD))
         offscreen = needs_client_window_clipping(hwnd);
-
-    /* TODO: Check for window shape */
 
     InterlockedExchange(&surface->client.offscreen, offscreen);
 }
