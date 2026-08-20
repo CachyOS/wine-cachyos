@@ -96,7 +96,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(pipewire);
  * anything above PA_RATE_MAX): the rate reaches nSamplesPerSec in the mix
  * format applications hand back to Initialize, where it scales every buffer
  * allocation and wraps nAvgBytesPerSec.  The quantum only feeds the
- * advertised IAudioClient3 minimum, which build_device_cache clamps again. */
+ * advertised IAudioClient3 minimum period. */
 #define PW_MIN_CLOCK_RATE 8000
 #define PW_MAX_RATE       384000
 #define PW_MAX_QUANTUM    65536
@@ -788,7 +788,7 @@ static void build_format(WAVEFORMATEXTENSIBLE *fmt, uint32_t rate, uint32_t chan
  * frees it on failure. */
 static struct pw_phys_device *add_device(struct list *list, const char *pw_name, WCHAR *display,
                                          EndpointFormFactor form, uint32_t rate, uint32_t channels, UINT mask,
-                                         REFERENCE_TIME min_period)
+                                         REFERENCE_TIME def_period, REFERENCE_TIME min_period)
 {
     size_t len = strlen(pw_name);
     struct pw_phys_device *dev;
@@ -804,7 +804,7 @@ static struct pw_phys_device *add_device(struct list *list, const char *pw_name,
     dev->form = form;
     build_format(&dev->fmt, rate, channels, mask);
     dev->channel_mask = dev->fmt.dwChannelMask;
-    dev->def_period = 100000;
+    dev->def_period = def_period;
     dev->min_period = min_period;
     memcpy(dev->pw_name, pw_name, len + 1);
     list_add_tail(list, &dev->entry);
@@ -1193,6 +1193,7 @@ struct probe
     char default_source[256];
     uint32_t clock_rate;
     uint32_t min_quantum;
+    uint32_t force_quantum; /* clock.force-quantum pins the graph: floor and ceiling */
     BOOL core_error;
     BOOL truncated;        /* a global was dropped by PROBE_MAX_GLOBALS */
 };
@@ -1298,9 +1299,9 @@ static int on_probe_settings_property(void *data, uint32_t subject, const char *
     else if (!strcmp(key, "clock.force-quantum"))
     {
         if (parse_u32(value, 10, 1, PW_MAX_QUANTUM, &v))
-            p->min_quantum = v;
+            p->force_quantum = v;
     }
-    else if (!strcmp(key, "clock.min-quantum") && !p->min_quantum)
+    else if (!strcmp(key, "clock.min-quantum"))
     {
         if (parse_u32(value, 10, 1, PW_MAX_QUANTUM, &v))
             p->min_quantum = v;
@@ -1568,7 +1569,8 @@ static void probe_roundtrip(struct probe *p)
  * routing).  When the default node is known, mirror its format so the
  * default endpoint advertises the real speaker layout. */
 static void add_default_device(struct list *list, EndpointFormFactor form, const char *match,
-                               uint32_t rate, REFERENCE_TIME min_period, UINT index)
+                               uint32_t rate, REFERENCE_TIME def_period,
+                               REFERENCE_TIME min_period, UINT index)
 {
     struct pw_phys_device *dev, *def_src = NULL, *def;
 
@@ -1592,7 +1594,7 @@ static void add_default_device(struct list *list, EndpointFormFactor form, const
     def->pw_name[0] = '\0';
     def->form = form;
     def->index = index;
-    def->def_period = 100000;
+    def->def_period = def_period;
     def->min_period = min_period;
     if (def_src)
     {
@@ -1666,18 +1668,32 @@ static void build_device_cache(struct probe *p)
 {
     struct probe_node *pn;
     uint32_t rate = p->clock_rate ? p->clock_rate : 48000;
-    REFERENCE_TIME min_period = 30000;
+    REFERENCE_TIME min_period = 30000, def_period = 100000;
     UINT index = 0;
 
-    /* IAudioClient3 shared-mode floor.  The graph cannot deliver cycles
-     * below clock.min-quantum (clock.force-quantum pins it outright), and
-     * 128 frames (~2.7 ms at 48 kHz) matches the typical Windows engine
-     * floor.  Clamp to the 3 ms winepulse-parity value so the advertised
-     * minimum only ever improves; without settings metadata keep 3 ms. */
-    if (p->min_quantum)
+    /* IAudioClient3 shared-mode floor.  clock.force-quantum pins the graph
+     * cycle, so it is a hard ceiling as much as a hard floor and takes no
+     * 3 ms clamp: under-advertising a pinned quantum makes clients size
+     * buffers the graph cannot fill in one cycle.  clock.min-quantum is only
+     * a hint, so that path keeps the 128 frame floor (~2.7 ms at 48 kHz,
+     * matching the typical Windows engine floor) and the 3 ms
+     * winepulse-parity ceiling.  Without settings metadata keep 3 ms.  Both
+     * conversions floor because mmdevapi converts back with a ceiling, so
+     * they round-trip to the exact frame count. */
+    if (p->force_quantum)
     {
-        /* Floor division: mmdevapi converts back with a ceiling, so this
-         * round-trips to the exact frame count. */
+        min_period = (REFERENCE_TIME)p->force_quantum * 10000000 / rate;
+        TRACE("force_quantum=%u rate=%u -> min_period=%d hns\n",
+              p->force_quantum, rate, (int)min_period);
+        /* A 10 ms default on a graph pinned longer than that makes every
+         * shared-mode client wake twice per cycle for one cycle of work.
+         * mmdevapi floors this at 10 ms (client.c:113), so a pinned quantum
+         * shorter than 10 ms lands back on the default and only a longer one
+         * moves it. */
+        def_period = min_period;
+    }
+    else if (p->min_quantum)
+    {
         REFERENCE_TIME q = (REFERENCE_TIME)p->min_quantum * 10000000 / rate;
         REFERENCE_TIME floor_rt = (REFERENCE_TIME)128 * 10000000 / rate;
         min_period = q > floor_rt ? q : floor_rt;
@@ -1700,7 +1716,8 @@ static void build_device_cache(struct probe *p)
         struct pw_phys_device *dev;
         WCHAR *name = utf8_to_wstr_capped(pn->display, pn->nick, pn->node_name);
 
-        dev = add_device(list, pn->node_name, name, form, rate, channels, mask, min_period);
+        dev = add_device(list, pn->node_name, name, form, rate, channels, mask,
+                         def_period, min_period);
         fill_device_path_info(dev, p, pn, index++);
 
         /* PipeWire has no separate monitor nodes, so synthesize one capture
@@ -1714,14 +1731,17 @@ static void build_device_cache(struct probe *p)
             if (mon)
             {
                 struct pw_phys_device *md = add_device(&g_capture_devices, pn->node_name, mon,
-                                                       LineLevel, rate, channels, mask, min_period);
+                                                       LineLevel, rate, channels, mask,
+                                                       def_period, min_period);
                 fill_device_path_info(md, p, pn, index++);
             }
         }
     }
 
-    add_default_device(&g_render_devices, Speakers, g_default_sink, rate, min_period, index++);
-    add_default_device(&g_capture_devices, Microphone, g_default_source, rate, min_period, index++);
+    add_default_device(&g_render_devices, Speakers, g_default_sink, rate, def_period,
+                       min_period, index++);
+    add_default_device(&g_capture_devices, Microphone, g_default_source, rate, def_period,
+                       min_period, index++);
 }
 
 static void probe_teardown(struct probe *p)
