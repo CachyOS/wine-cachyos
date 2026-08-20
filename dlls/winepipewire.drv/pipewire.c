@@ -554,7 +554,30 @@ static UINT spa_format_bytes(enum spa_audio_format f)
 
 static void silence_buffer(enum spa_audio_format format, BYTE *buffer, UINT32 bytes)
 {
-    memset(buffer, format == SPA_AUDIO_FORMAT_U8 ? 0x80 : 0, bytes);
+    int fill = 0;
+
+    /* 0x00 is not silence in the companded formats: it decodes to -8031 of
+     * +/-8031 in mu-law (mult.h:710) and to -688 of +/-4032 in A-law
+     * (mult.h:34), so a zeroed period is near full-scale negative DC.  The
+     * codes below are each law's smallest magnitude, exactly 0 for mu-law
+     * (mult.h:741) and +1 for A-law (mult.h:60), and both are fixpoints of
+     * mult_*_sample(), so the volume stage cannot move them off silence. */
+    switch (format)
+    {
+    case SPA_AUDIO_FORMAT_U8:
+        fill = 0x80;
+        break;
+    case SPA_AUDIO_FORMAT_ULAW:
+        fill = 0xff;
+        break;
+    case SPA_AUDIO_FORMAT_ALAW:
+        fill = 0xd5;
+        break;
+    default:
+        break;
+    }
+
+    memset(buffer, fill, bytes);
 }
 
 /* Take ownership of the slot the producer is due to fill next.  A FREE slot
