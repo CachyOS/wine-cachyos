@@ -51,7 +51,6 @@ struct wayland_data_offer
 {
     union
     {
-        struct zwlr_data_control_offer_v1 *zwlr_data_control_offer_v1;
         struct ext_data_control_offer_v1 *ext_data_control_offer_v1;
         struct wl_data_offer *wl_data_offer;
     };
@@ -275,7 +274,7 @@ static ATOM register_clipboard_format(const WCHAR *name)
 }
 
 /**********************************************************************
- *          zwlr_data_control_source_v1 handling
+ *          ext_data_control_source_v1 handling
  */
 
 static void wayland_data_source_export(struct data_device_format *format, int fd)
@@ -314,7 +313,7 @@ static void wayland_data_source_export(struct data_device_format *format, int fd
 }
 
 static void data_control_source_send(void *data,
-                                     struct zwlr_data_control_source_v1 *source,
+                                     struct ext_data_control_source_v1 *source,
                                      const char *mime_type, int32_t fd)
 {
     struct data_device_format *format;
@@ -329,32 +328,7 @@ static void data_control_source_send(void *data,
 }
 
 static void data_control_source_cancelled(void *data,
-                                          struct zwlr_data_control_source_v1 *source)
-{
-    struct wayland_data_device *data_device = data;
-
-    pthread_mutex_lock(&data_device->mutex);
-    zwlr_data_control_source_v1_destroy(source);
-    if (source == data_device->zwlr_data_control_source_v1)
-        data_device->zwlr_data_control_source_v1 = NULL;
-    pthread_mutex_unlock(&data_device->mutex);
-}
-
-static const struct zwlr_data_control_source_v1_listener data_control_source_listener =
-{
-    data_control_source_send,
-    data_control_source_cancelled,
-};
-
-static void ext_data_control_source_send(void *data,
-                                     struct ext_data_control_source_v1 *source,
-                                     const char *mime_type, int32_t fd)
-{
-    data_control_source_send(data, NULL, mime_type, fd);
-}
-
-static void ext_data_control_source_cancelled(void *data,
-                                              struct ext_data_control_source_v1 *source)
+                                          struct ext_data_control_source_v1 *source)
 {
     struct wayland_data_device *data_device = data;
 
@@ -367,17 +341,16 @@ static void ext_data_control_source_cancelled(void *data,
 
 static const struct ext_data_control_source_v1_listener ext_data_control_source_listener =
 {
-    ext_data_control_source_send,
-    ext_data_control_source_cancelled
+    data_control_source_send,
+    data_control_source_cancelled
 };
 
-
 /**********************************************************************
- *          zwlr_data_control_offer_v1 handling
+ *          ext_data_control_offer_v1 handling
  */
 
 static void data_control_offer_offer(void *data,
-                                     struct zwlr_data_control_offer_v1 *zwlr_data_control_offer_v1,
+                                     struct ext_data_control_offer_v1 *ext_data_control_offer_v1,
                                      const char *type)
 {
     struct wayland_data_offer *data_offer = data;
@@ -391,25 +364,9 @@ static void data_control_offer_offer(void *data,
     }
 }
 
-static const struct zwlr_data_control_offer_v1_listener data_control_offer_listener =
-{
-    data_control_offer_offer,
-};
-
-/**********************************************************************
- *          ext_data_control_offer_v1 handling
- */
-
-static void ext_data_control_offer_offer(void *data,
-                                     struct ext_data_control_offer_v1 *ext_data_control_offer_v1,
-                                     const char *type)
-{
-    data_control_offer_offer(data, NULL, type);
-}
-
 static const struct ext_data_control_offer_v1_listener ext_data_control_offer_listener =
 {
-    ext_data_control_offer_offer
+    data_control_offer_offer
 };
 
 static void data_offer_offer(void *data, struct wl_data_offer *wl_data_offer, const char *type)
@@ -439,12 +396,6 @@ static void wayland_data_offer_create(void *offer_proxy)
         ext_data_control_offer_v1_add_listener(data_offer->ext_data_control_offer_v1,
                                                &ext_data_control_offer_listener, data_offer);
     }
-    else if (process_wayland.zwlr_data_control_manager_v1)
-    {
-        data_offer->zwlr_data_control_offer_v1 = offer_proxy;
-        zwlr_data_control_offer_v1_add_listener(data_offer->zwlr_data_control_offer_v1,
-                                                &data_control_offer_listener, data_offer);
-    }
     else
     {
         data_offer->wl_data_offer = offer_proxy;
@@ -460,8 +411,6 @@ static void wayland_data_offer_destroy(struct wayland_data_offer *data_offer)
 
     if (process_wayland.ext_data_control_manager_v1)
         ext_data_control_offer_v1_destroy(data_offer->ext_data_control_offer_v1);
-    else if (process_wayland.zwlr_data_control_manager_v1)
-        zwlr_data_control_offer_v1_destroy(data_offer->zwlr_data_control_offer_v1);
     else
         wl_data_offer_destroy(data_offer->wl_data_offer);
     wl_array_for_each(p, &data_offer->types)
@@ -492,11 +441,6 @@ static int wayland_data_offer_get_import_fd(struct wayland_data_offer *data_offe
     {
         ext_data_control_offer_v1_receive(data_offer->ext_data_control_offer_v1,
                                           mime_type, data_pipe[1]);
-    }
-    else if (process_wayland.zwlr_data_control_manager_v1)
-    {
-        zwlr_data_control_offer_v1_receive(data_offer->zwlr_data_control_offer_v1,
-                                           mime_type, data_pipe[1]);
     }
     else
     {
@@ -532,15 +476,7 @@ static void wayland_data_device_destroy_clipboard_data_offer(struct wayland_data
             data_device->clipboard_ext_data_control_offer_v1);
         data_device->clipboard_ext_data_control_offer_v1 = NULL;
     }
-    else if (process_wayland.zwlr_data_control_manager_v1 &&
-        data_device->clipboard_zwlr_data_control_offer_v1)
-    {
-        data_offer = zwlr_data_control_offer_v1_get_user_data(
-            data_device->clipboard_zwlr_data_control_offer_v1);
-        data_device->clipboard_zwlr_data_control_offer_v1 = NULL;
-    }
-    else if (!process_wayland.zwlr_data_control_manager_v1 &&
-             !process_wayland.ext_data_control_manager_v1 &&
+    else if (!process_wayland.ext_data_control_manager_v1 &&
              data_device->clipboard_wl_data_offer)
     {
         data_offer = wl_data_offer_get_user_data(data_device->clipboard_wl_data_offer);
@@ -550,17 +486,6 @@ static void wayland_data_device_destroy_clipboard_data_offer(struct wayland_data
     if (data_offer) wayland_data_offer_destroy(data_offer);
 }
 
-/**********************************************************************
- *          zwlr_data_control_device_v1 handling
- */
-
-static void data_control_device_data_offer(
-    void *data,
-    struct zwlr_data_control_device_v1 *zwlr_data_control_device_v1,
-    struct zwlr_data_control_offer_v1 *zwlr_data_control_offer_v1)
-{
-    wayland_data_offer_create(zwlr_data_control_offer_v1);
-}
 
 static void handle_selection(struct wayland_data_device *data_device,
                              struct wayland_data_offer *data_offer)
@@ -626,8 +551,6 @@ done:
     {
         if (process_wayland.ext_data_control_manager_v1)
             data_device->clipboard_ext_data_control_offer_v1 = data_offer->ext_data_control_offer_v1;
-        else if (process_wayland.zwlr_data_control_manager_v1)
-            data_device->clipboard_zwlr_data_control_offer_v1 = data_offer->zwlr_data_control_offer_v1;
         else
             data_device->clipboard_wl_data_offer = data_offer->wl_data_offer;
     }
@@ -635,30 +558,7 @@ done:
 
 }
 
-static void data_control_device_selection(
-    void *data,
-    struct zwlr_data_control_device_v1 *zwlr_data_control_device_v1,
-    struct zwlr_data_control_offer_v1 *zwlr_data_control_offer_v1)
-{
-    handle_selection(data,
-                     zwlr_data_control_offer_v1 ?
-                         zwlr_data_control_offer_v1_get_user_data(zwlr_data_control_offer_v1) :
-                         NULL);
-}
-
-static void data_control_device_finished(
-    void *data, struct zwlr_data_control_device_v1 *zwlr_data_control_device_v1)
-{
-}
-
-static const struct zwlr_data_control_device_v1_listener data_control_device_listener =
-{
-    data_control_device_data_offer,
-    data_control_device_selection,
-    data_control_device_finished,
-};
-
-static void ext_data_control_device_data_offer(
+static void data_control_device_data_offer(
     void *data,
     struct ext_data_control_device_v1 *ext_data_control_device_v1,
     struct ext_data_control_offer_v1 *ext_data_control_offer_v1)
@@ -666,7 +566,7 @@ static void ext_data_control_device_data_offer(
     wayland_data_offer_create(ext_data_control_offer_v1);
 }
 
-static void ext_data_control_device_selection(
+static void data_control_device_selection(
     void *data,
     struct ext_data_control_device_v1 *ext_data_control_device_v1,
     struct ext_data_control_offer_v1 *ext_data_control_offer_v1)
@@ -677,12 +577,12 @@ static void ext_data_control_device_selection(
                      NULL);
 }
 
-static void ext_data_control_device_finished(
+static void data_control_device_finished(
     void *data, struct ext_data_control_device_v1 *ext_data_control_device_v1)
 {
 }
 
-static void ext_data_control_device_primary_selection(
+static void data_control_device_primary_selection(
     void *data, struct ext_data_control_device_v1 *ext_data_control_device_v1,
     struct ext_data_control_offer_v1 *id)
 {
@@ -692,10 +592,10 @@ static void ext_data_control_device_primary_selection(
 
 static const struct ext_data_control_device_v1_listener ext_data_control_device_listener =
 {
-    ext_data_control_device_data_offer,
-    ext_data_control_device_selection,
-    ext_data_control_device_finished,
-    ext_data_control_device_primary_selection
+    data_control_device_data_offer,
+    data_control_device_selection,
+    data_control_device_finished,
+    data_control_device_primary_selection
 };
 
 
@@ -826,21 +726,6 @@ void wayland_data_device_init(void)
                 data_device);
         }
     }
-    else if (process_wayland.zwlr_data_control_manager_v1)
-    {
-        if (data_device->zwlr_data_control_device_v1)
-            zwlr_data_control_device_v1_destroy(data_device->zwlr_data_control_device_v1);
-        data_device->zwlr_data_control_device_v1 =
-            zwlr_data_control_manager_v1_get_data_device(
-                process_wayland.zwlr_data_control_manager_v1,
-                process_wayland.seat.wl_seat);
-        if (data_device->zwlr_data_control_device_v1)
-        {
-            zwlr_data_control_device_v1_add_listener(
-                data_device->zwlr_data_control_device_v1, &data_control_device_listener,
-                data_device);
-        }
-    }
     else if (process_wayland.wl_data_device_manager)
     {
         if (data_device->wl_data_device)
@@ -867,7 +752,6 @@ void wayland_data_device_init(void)
 static void clipboard_update(void)
 {
     struct wayland_data_device *data_device = &process_wayland.data_device;
-    struct zwlr_data_control_source_v1 *zwlr_source = NULL;
     struct ext_data_control_source_v1 *ext_source = NULL;
     struct wl_data_source *wl_source = NULL;
     UINT *formats, formats_size = 256, i;
@@ -877,11 +761,6 @@ static void clipboard_update(void)
     {
         ext_source = ext_data_control_manager_v1_create_data_source(
             process_wayland.ext_data_control_manager_v1);
-    }
-    else if (process_wayland.zwlr_data_control_manager_v1)
-    {
-        zwlr_source = zwlr_data_control_manager_v1_create_data_source(
-            process_wayland.zwlr_data_control_manager_v1);
     }
     else
     {
@@ -899,7 +778,7 @@ static void clipboard_update(void)
 
     TRACE("\n");
 
-    if (!zwlr_source && !ext_source && !wl_source)
+    if (!ext_source && !wl_source)
     {
         ERR("failed to create data source\n");
         return;
@@ -918,8 +797,7 @@ static void clipboard_update(void)
     {
         ERR("failed to get clipboard formats\n");
         if (wl_source) wl_data_source_destroy(wl_source);
-        else if (ext_source) ext_data_control_source_v1_destroy(ext_source);
-        else zwlr_data_control_source_v1_destroy(zwlr_source);
+        else ext_data_control_source_v1_destroy(ext_source);
         return;
     }
 
@@ -931,8 +809,7 @@ static void clipboard_update(void)
         {
             TRACE("offering mime=%s for format=%u\n", format->mime_type, formats[i]);
             if (wl_source) wl_data_source_offer(wl_source, format->mime_type);
-            else if (ext_source) ext_data_control_source_v1_offer(ext_source, format->mime_type);
-            else zwlr_data_control_source_v1_offer(zwlr_source, format->mime_type);
+            else ext_data_control_source_v1_offer(ext_source, format->mime_type);
         }
     }
 
@@ -948,11 +825,6 @@ static void clipboard_update(void)
         ext_data_control_source_v1_offer(ext_source, WINEWAYLAND_TAG_MIME_TYPE);
         ext_data_control_source_v1_add_listener(ext_source, &ext_data_control_source_listener, data_device);
     }
-    else
-    {
-        zwlr_data_control_source_v1_offer(zwlr_source, WINEWAYLAND_TAG_MIME_TYPE);
-        zwlr_data_control_source_v1_add_listener(zwlr_source, &data_control_source_listener, data_device);
-    }
 
     pthread_mutex_lock(&data_device->mutex);
     /* Destroy any previous source only after setting the new source, to
@@ -965,21 +837,13 @@ static void clipboard_update(void)
             wl_data_source_destroy(data_device->wl_data_source);
         data_device->wl_data_source = wl_source;
     }
-    else if (ext_source)
+    else
     {
         if (data_device->ext_data_control_device_v1)
             ext_data_control_device_v1_set_selection(data_device->ext_data_control_device_v1, ext_source);
         if (data_device->ext_data_control_source_v1)
             ext_data_control_source_v1_destroy(data_device->ext_data_control_source_v1);
         data_device->ext_data_control_source_v1 = ext_source;
-    }
-    else
-    {
-        if (data_device->zwlr_data_control_device_v1)
-            zwlr_data_control_device_v1_set_selection(data_device->zwlr_data_control_device_v1, zwlr_source);
-        if (data_device->zwlr_data_control_source_v1)
-            zwlr_data_control_source_v1_destroy(data_device->zwlr_data_control_source_v1);
-        data_device->zwlr_data_control_source_v1 = zwlr_source;
     }
     pthread_mutex_unlock(&data_device->mutex);
 
@@ -997,19 +861,12 @@ static void render_format(UINT clipboard_format)
 
     pthread_mutex_lock(&data_device->mutex);
     if (process_wayland.ext_data_control_manager_v1 &&
-             data_device->clipboard_ext_data_control_offer_v1)
+        data_device->clipboard_ext_data_control_offer_v1)
     {
         data_offer = ext_data_control_offer_v1_get_user_data(
             data_device->clipboard_ext_data_control_offer_v1);
     }
-    else if (process_wayland.zwlr_data_control_manager_v1 &&
-        data_device->clipboard_zwlr_data_control_offer_v1)
-    {
-        data_offer = zwlr_data_control_offer_v1_get_user_data(
-            data_device->clipboard_zwlr_data_control_offer_v1);
-    }
-    else if (!process_wayland.zwlr_data_control_manager_v1 &&
-             !process_wayland.ext_data_control_manager_v1 &&
+    else if (!process_wayland.ext_data_control_manager_v1 &&
              data_device->clipboard_wl_data_offer)
     {
         data_offer = wl_data_offer_get_user_data(data_device->clipboard_wl_data_offer);
@@ -1065,8 +922,7 @@ LRESULT WAYLAND_ClipboardWindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM l
     case WM_NCCREATE:
         /* Disable the default clipboard window in the desktop process if we are
          * using the core wl_data_device protocol. */
-        if (!process_wayland.zwlr_data_control_manager_v1 &&
-            !process_wayland.ext_data_control_manager_v1 &&
+        if (!process_wayland.ext_data_control_manager_v1 &&
             process_wayland.wl_data_device_manager &&
             !is_winewayland_clipboard_hwnd(hwnd))
         {

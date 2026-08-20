@@ -42,7 +42,6 @@ struct xkb_compose_table;
 #include "viewporter-client-protocol.h"
 #include "xdg-output-unstable-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
-#include "wlr-data-control-unstable-v1-client-protocol.h"
 #include "ext-data-control-v1-client-protocol.h"
 #include "xdg-toplevel-icon-v1-client-protocol.h"
 #include "pointer-warp-v1-client-protocol.h"
@@ -209,12 +208,6 @@ struct wayland_data_device
     {
         struct
         {
-            struct zwlr_data_control_device_v1 *zwlr_data_control_device_v1;
-            struct zwlr_data_control_source_v1 *zwlr_data_control_source_v1;
-            struct zwlr_data_control_offer_v1 *clipboard_zwlr_data_control_offer_v1;
-        };
-        struct
-        {
             struct ext_data_control_device_v1 *ext_data_control_device_v1;
             struct ext_data_control_source_v1 *ext_data_control_source_v1;
             struct ext_data_control_offer_v1 *clipboard_ext_data_control_offer_v1;
@@ -246,7 +239,6 @@ struct wayland
     struct zwp_pointer_constraints_v1 *zwp_pointer_constraints_v1;
     struct zwp_relative_pointer_manager_v1 *zwp_relative_pointer_manager_v1;
     struct zwp_text_input_manager_v3 *zwp_text_input_manager_v3;
-    struct zwlr_data_control_manager_v1 *zwlr_data_control_manager_v1;
     struct ext_data_control_manager_v1 *ext_data_control_manager_v1;
     struct wl_data_device_manager *wl_data_device_manager;
     struct xdg_toplevel_icon_manager_v1 *xdg_toplevel_icon_manager_v1;

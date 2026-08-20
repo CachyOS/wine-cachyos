@@ -158,10 +158,9 @@ static NTSTATUS waylanddrv_unix_read_events(void *arg)
 
 static NTSTATUS waylanddrv_unix_init_clipboard(void *arg)
 {
-    /* If the compositor supports zwlr_data_control_manager_v1, we don't need
+    /* If the compositor supports ext_data_control_manager_v1, we don't need
      * per-process clipboard window and handling, we can use the default clipboard
      * window from the desktop process. */
-    if (process_wayland.zwlr_data_control_manager_v1) return STATUS_UNSUCCESSFUL;
     if (process_wayland.ext_data_control_manager_v1) return STATUS_UNSUCCESSFUL;
     return STATUS_SUCCESS;
 }
