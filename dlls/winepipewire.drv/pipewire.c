@@ -2052,21 +2052,6 @@ static NTSTATUS pipewire_get_device_period(void *args)
     return STATUS_SUCCESS;
 }
 
-static NTSTATUS pipewire_is_format_supported(void *args)
-{
-    struct is_format_supported_params *params = args;
-
-    /* Shared-mode format conversion/resampling is the adapter's job, so we
-     * accept any format here (mirrors winepulse).  Exclusive mode is not
-     * supported. */
-    if (params->share == AUDCLNT_SHAREMODE_EXCLUSIVE)
-        params->result = AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED;
-    else
-        params->result = S_OK;
-
-    return STATUS_SUCCESS;
-}
-
 /* Synthesize a Windows device path, mirroring winepulse get_device_path.
  * Most audio devices have no serial number, so substitute the low 8 hex
  * digits of the endpoint GUID, which mmdevapi derives from the device name
@@ -2179,9 +2164,8 @@ done:
  * Format mapping (pulse_spec_from_waveformat transplant)
  * ---------------------------------------------------------------------- */
 
-static HRESULT pipewire_info_from_waveformat(struct pipewire_stream *stream, const WAVEFORMATEX *fmt)
+static HRESULT pipewire_info_from_waveformat(struct spa_audio_info_raw *info, const WAVEFORMATEX *fmt)
 {
-    struct spa_audio_info_raw *info = &stream->info;
     enum spa_audio_format spafmt = SPA_AUDIO_FORMAT_UNKNOWN;
     UINT mask = 0, i = 0, j;
 
@@ -2316,6 +2300,28 @@ static HRESULT pipewire_info_from_waveformat(struct pipewire_stream *stream, con
     if (mask == SPEAKER_FRONT_CENTER)
         info->position[0] = SPA_AUDIO_CHANNEL_MONO;
     return S_OK;
+}
+
+static NTSTATUS pipewire_is_format_supported(void *args)
+{
+    struct is_format_supported_params *params = args;
+    struct spa_audio_info_raw info;
+
+    /* Shared-mode conversion and resampling are the adapter's job, so the only
+     * formats to refuse are the ones this driver cannot describe to SPA at all.
+     * Answering from the same function create_stream uses is what keeps the two
+     * entry points from disagreeing: mmdevapi turns S_FALSE into the
+     * closest-match reply here and into AUDCLNT_E_UNSUPPORTED_FORMAT at
+     * Initialize, so an application that probes and trusts S_OK is not sent
+     * into a failure it cannot see coming.  Exclusive mode is not supported. */
+    if (params->share == AUDCLNT_SHAREMODE_EXCLUSIVE)
+        params->result = AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED;
+    else if (FAILED(pipewire_info_from_waveformat(&info, params->fmt_in)))
+        params->result = S_FALSE;
+    else
+        params->result = S_OK;
+
+    return STATUS_SUCCESS;
 }
 
 /* ----------------------------------------------------------------------
@@ -3112,7 +3118,7 @@ static NTSTATUS pipewire_create_stream(void *args)
     for (i = 0; i < ARRAY_SIZE(stream->vol); ++i)
         stream->vol[i] = 1.f;
 
-    hr = pipewire_info_from_waveformat(stream, params->fmt);
+    hr = pipewire_info_from_waveformat(&stream->info, params->fmt);
     TRACE("Obtaining format returns %08x\n", (unsigned)hr);
     if (FAILED(hr))
         goto exit;
