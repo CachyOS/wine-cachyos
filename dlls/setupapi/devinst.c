@@ -2131,6 +2131,7 @@ static BOOL is_device_instance_linked(HKEY subKey, HKEY interfacesKey, const WCH
     WCHAR alt_devinstance[MAX_DEVICE_ID_LEN];
     WCHAR service[40];
 
+    len = sizeof(service);
     l = RegQueryValueExW(subKey, L"Service", NULL, &type, (BYTE *)service, &len);
     if (!l && type == REG_SZ && !wcsicmp(service, L"winehid") && !wcsstr(deviceInstance, L"HID\\"))
     {
