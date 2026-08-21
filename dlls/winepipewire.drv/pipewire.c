@@ -44,6 +44,9 @@
 #pragma makedep unix
 #endif
 
+#include "config.h"
+#undef _TIME_BITS /* libpipewire uses the default time bitness convention. */
+
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE  /* dladdr() */
 #endif
@@ -78,12 +81,17 @@
 #include "initguid.h"
 #include "audioclient.h"
 #include "devpkey.h"
+DEFINE_GUID(GUID_NULL,0,0,0,0,0,0,0,0,0,0,0);
 
 #include "wine/debug.h"
 #include "wine/list.h"
 #include "wine/unixlib.h"
 
 #include "../mmdevapi/unixlib.h"
+
+#ifdef HAVE_LIBUDEV_H
+#include <libudev.h>
+#endif
 
 #include "mult.h"
 
@@ -1186,6 +1194,7 @@ struct probe_device
     uint32_t id;
     enum pw_device_bus bus;
     UINT16 vendor_id, product_id;
+    char *sysfs_path;
     struct pw_device *proxy;
     struct spa_hook listener;
     BOOL listener_added;
@@ -1354,6 +1363,7 @@ static enum pw_device_bus parse_device_bus(const char *bus)
 static void on_probe_device_info(void *data, const struct pw_device_info *info)
 {
     struct probe_device *pd = data;
+    const char *sysfs_path;
     uint32_t v;
 
     if (!info || !info->props)
@@ -1363,6 +1373,10 @@ static void on_probe_device_info(void *data, const struct pw_device_info *info)
                               16, 0, 0xffff, &v) ? (UINT16)v : 0;
     pd->product_id = parse_u32(spa_dict_lookup(info->props, PW_KEY_DEVICE_PRODUCT_ID),
                                16, 0, 0xffff, &v) ? (UINT16)v : 0;
+    /* Probe thread has no Wine TEB: strdup is libc and legal here, an ntdll
+     * call or a TRACE is not.  info repeats, so keep the first path. */
+    if (!pd->sysfs_path && (sysfs_path = spa_dict_lookup(info->props, PW_KEY_DEVICE_SYSFS_PATH)))
+        pd->sysfs_path = strdup(sysfs_path);
 }
 
 static const struct pw_device_events probe_device_events = {
@@ -1546,6 +1560,7 @@ static void on_probe_registry_global_remove(void *data, uint32_t id)
         }
         list_remove(&pd->entry);
         p->n_devices--;
+        free(pd->sysfs_path);
         free(pd);
         return;
     }
@@ -1657,10 +1672,79 @@ static struct probe_device *probe_find_device(struct probe *p, uint32_t device_i
     return NULL;
 }
 
-/* A ContainerId stable across reboots.  winepulse derives it from udev sysfs,
- * which we lack, so hash the vendor/product ids plus the reboot-stable
- * PipeWire node name.  A bus-less device gets a zero GUID, as pulse leaves it
- * without sysfs. */
+#ifdef HAVE_UDEV
+static void create_usb_dev_container_id(uint64_t usec_init, uint16_t vid, uint16_t pid,
+                                        uint8_t bus_num, uint8_t dev_num, GUID *out)
+{
+    out->Data1 = MAKELONG(vid, pid);
+    out->Data2 = bus_num;
+    out->Data3 = dev_num;
+    memcpy(out->Data4, &usec_init, sizeof(out->Data4));
+}
+
+static GUID get_container_id(const char *sysfs_path)
+{
+    struct udev_device *audio_dev, *usb_dev;
+    struct udev *udev = udev_new();
+    char buffer[4096];
+    uint32_t vid, pid, version;
+    uint8_t bus_num, dev_num;
+    uint64_t init_time;
+    const char *tmp;
+    GUID tmp_guid;
+
+    tmp_guid = GUID_NULL;
+    snprintf(buffer, sizeof(buffer), "/sys%s", sysfs_path);
+    audio_dev = usb_dev = NULL;
+    if (!udev)
+    {
+        ERR("Failed to get udev!\n");
+        goto exit;
+    }
+
+    audio_dev = udev_device_new_from_syspath(udev, buffer);
+    if (!audio_dev)
+        goto exit;
+
+    usb_dev = udev_device_get_parent_with_subsystem_devtype(audio_dev, "usb", "usb_device");
+    TRACE("usb dev %p, udev %p.\n", usb_dev, udev);
+    if (!usb_dev)
+        goto exit;
+
+    init_time = 0;
+    bus_num = dev_num = 0;
+    vid = pid = version = 0;
+    if ((tmp = udev_device_get_property_value(usb_dev, "PRODUCT")))
+        sscanf(tmp, "%x/%x/%x", &vid, &pid, &version);
+    if ((tmp = udev_device_get_property_value(usb_dev, "USEC_INITIALIZED")))
+        init_time = strtoull(tmp, NULL, 10);
+    if ((tmp = udev_device_get_property_value(usb_dev, "BUSNUM")))
+        bus_num = strtol(tmp, NULL, 10);
+    if ((tmp = udev_device_get_property_value(usb_dev, "DEVNUM")))
+        dev_num = strtol(tmp, NULL, 10);
+
+    create_usb_dev_container_id(init_time, vid, pid, bus_num, dev_num, &tmp_guid);
+
+exit:
+    if (udev)
+        udev_unref(udev);
+    if (audio_dev)
+        udev_device_unref(audio_dev);
+
+    TRACE("Returning %s.\n", debugstr_guid(&tmp_guid));
+    return tmp_guid;
+}
+#else
+static GUID get_container_id(const char *sysfs_path)
+{
+    FIXME("No udev, can't get device data.\n");
+    return GUID_NULL;
+}
+#endif
+
+/* Fallback ContainerId for an endpoint with no udev sysfs path to derive one
+ * from; the inputs are chosen for being stable across reboots.  A device on
+ * no recognised bus gets a zero GUID, as pulse leaves it without sysfs. */
 static GUID make_container_id(enum pw_device_bus bus, UINT16 vendor_id, UINT16 product_id,
                               const char *node_name)
 {
@@ -1698,6 +1782,18 @@ static void fill_device_path_info(struct pw_phys_device *dev, struct probe *p,
     dev->product_id = pd ? pd->product_id : 0;
     dev->index = index;
     dev->container_id = make_container_id(dev->bus, dev->vendor_id, dev->product_id, pn->node_name);
+    /* winebus.sys reports the udev-derived id for the same physical device,
+     * so only deriving it the same way lets an endpoint be correlated with
+     * its HID sibling.  A walk that reaches no usb_device parent yields
+     * GUID_NULL, which would publish as no container at all, so keep the
+     * hash in that case. */
+    if (dev->bus == PW_BUS_USB && pd && pd->sysfs_path)
+    {
+        GUID id = get_container_id(pd->sysfs_path);
+
+        if (!IsEqualGUID(&id, &GUID_NULL))
+            dev->container_id = id;
+    }
 }
 
 static void build_device_cache(struct probe *p)
@@ -1936,6 +2032,7 @@ static NTSTATUS pipewire_test_connect(void *args)
     LIST_FOR_EACH_ENTRY_SAFE(pd, pdnext, &p.devices, struct probe_device, entry)
     {
         list_remove(&pd->entry);
+        free(pd->sysfs_path);
         free(pd);
     }
 
