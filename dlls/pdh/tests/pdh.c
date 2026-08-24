@@ -94,6 +94,9 @@ static void test_PdhOpenQueryA( void )
     ret = PdhCloseQuery( NULL );
     ok(ret == PDH_INVALID_HANDLE, "PdhCloseQuery failed 0x%08lx\n", ret);
 
+    ret = PdhCloseQuery( (PDH_HQUERY)0xdeadbeef );
+    ok(ret == PDH_INVALID_HANDLE, "PdhCloseQuery failed 0x%08lx\n", ret);
+
     ret = PdhCloseQuery( &query );
     ok(ret == PDH_INVALID_HANDLE, "PdhCloseQuery failed 0x%08lx\n", ret);
 
@@ -116,6 +119,9 @@ static void test_PdhOpenQueryW( void )
     ok(ret == ERROR_SUCCESS, "PdhOpenQueryW failed 0x%08lx\n", ret);
 
     ret = PdhCloseQuery( NULL );
+    ok(ret == PDH_INVALID_HANDLE, "PdhCloseQuery failed 0x%08lx\n", ret);
+
+    ret = PdhCloseQuery( (PDH_HQUERY)0xdeadbeef );
     ok(ret == PDH_INVALID_HANDLE, "PdhCloseQuery failed 0x%08lx\n", ret);
 
     ret = PdhCloseQuery( &query );
