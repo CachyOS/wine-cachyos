@@ -319,6 +319,8 @@ DECL_HANDLER(d3dkmt_object_open_name);
 DECL_HANDLER(d3dkmt_mutex_acquire);
 DECL_HANDLER(d3dkmt_mutex_release);
 DECL_HANDLER(fsync_free_shm_idx);
+DECL_HANDLER(get_completion_shm);
+DECL_HANDLER(kick_completion);
 
 typedef void (*req_handler)( const void *req, void *reply );
 static const req_handler req_handlers[REQ_NB_REQUESTS] =
@@ -635,6 +637,8 @@ static const req_handler req_handlers[REQ_NB_REQUESTS] =
     (req_handler)req_d3dkmt_mutex_acquire,
     (req_handler)req_d3dkmt_mutex_release,
     (req_handler)req_fsync_free_shm_idx,
+    (req_handler)req_get_completion_shm,
+    (req_handler)req_kick_completion,
 };
 
 C_ASSERT( sizeof(abstime_t) == 8 );
@@ -2215,7 +2219,9 @@ C_ASSERT( offsetof(struct add_completion_request, status) == 44 );
 C_ASSERT( sizeof(struct add_completion_request) == 48 );
 C_ASSERT( offsetof(struct remove_completion_request, handle) == 12 );
 C_ASSERT( offsetof(struct remove_completion_request, alertable) == 16 );
-C_ASSERT( sizeof(struct remove_completion_request) == 24 );
+C_ASSERT( offsetof(struct remove_completion_request, no_wait) == 20 );
+C_ASSERT( offsetof(struct remove_completion_request, associated) == 24 );
+C_ASSERT( sizeof(struct remove_completion_request) == 32 );
 C_ASSERT( offsetof(struct remove_completion_reply, ckey) == 8 );
 C_ASSERT( offsetof(struct remove_completion_reply, cvalue) == 16 );
 C_ASSERT( offsetof(struct remove_completion_reply, information) == 24 );
@@ -2423,3 +2429,10 @@ C_ASSERT( sizeof(struct d3dkmt_mutex_release_request) == 40 );
 C_ASSERT( offsetof(struct fsync_free_shm_idx_request, shm_idx) == 12 );
 C_ASSERT( sizeof(struct fsync_free_shm_idx_request) == 16 );
 C_ASSERT( sizeof(struct fsync_free_shm_idx_reply) == 8 );
+C_ASSERT( offsetof(struct get_completion_shm_request, handle) == 12 );
+C_ASSERT( sizeof(struct get_completion_shm_request) == 16 );
+C_ASSERT( offsetof(struct get_completion_shm_reply, size) == 8 );
+C_ASSERT( offsetof(struct get_completion_shm_reply, access) == 12 );
+C_ASSERT( sizeof(struct get_completion_shm_reply) == 16 );
+C_ASSERT( offsetof(struct kick_completion_request, handle) == 12 );
+C_ASSERT( sizeof(struct kick_completion_request) == 16 );

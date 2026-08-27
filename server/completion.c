@@ -25,6 +25,15 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#ifdef HAVE_LINUX_FUTEX_H
+# include <linux/futex.h>
+#endif
 
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
@@ -35,6 +44,7 @@
 #include "file.h"
 #include "handle.h"
 #include "request.h"
+#include "wine/completion_shm.h"
 
 
 static const WCHAR completion_name[] = {'I','o','C','o','m','p','l','e','t','i','o','n'};
@@ -58,6 +68,7 @@ struct comp_msg
     apc_param_t   cvalue;
     apc_param_t   information;
     unsigned int  status;
+    unsigned int  seq;          /* ring enqueue_pos when this message was queued */
 };
 
 struct completion_wait
@@ -68,6 +79,7 @@ struct completion_wait
     struct thread     *thread;
     struct comp_msg   *msg;
     struct list        wait_queue_entry;
+    int                blocked;      /* thread is blocked in the server waiting for a message */
 };
 
 struct completion
@@ -77,7 +89,125 @@ struct completion
     struct list         queue;
     struct list         wait_queue;
     unsigned int        depth;
+    unsigned int        blocked;     /* number of threads blocked in the server */
+    int                 shm_fd;      /* memfd backing the in-process queue, or -1 */
+    struct completion_shm *shm;      /* in-process queue mapping */
 };
+
+/* --- in-process queue helpers --- */
+
+static int inproc_iocp_enabled(void)
+{
+    static int enabled = -1;
+    if (enabled == -1)
+    {
+        const char *env = getenv( "WINE_DISABLE_INPROC_IOCP" );
+        enabled = !(env && atoi( env ));
+    }
+    return enabled;
+}
+
+/* wake one client waiter slot so it re-examines the queues / closed flag */
+static void completion_poke_waiter( struct completion_waiter *w )
+{
+#ifdef HAVE_LINUX_FUTEX_H
+    unsigned int expected = COMPLETION_WAITER_IDLE;
+    if (__atomic_compare_exchange_n( &w->state, &expected, COMPLETION_WAITER_RECHECK, 0,
+                                     __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST ))
+        syscall( __NR_futex, &w->state, FUTEX_WAKE, 1, NULL, NULL, 0 );
+#endif
+}
+
+/* poke the most recent client waiter, if any */
+static void completion_poke_top_waiter( struct completion_shm *shm )
+{
+    unsigned int idx = COMPLETION_STACK_IDX( __atomic_load_n( &shm->wait_head, __ATOMIC_ACQUIRE ) );
+    if (idx && idx <= COMPLETION_MAX_WAITERS) completion_poke_waiter( &shm->waiters[idx - 1] );
+}
+
+/* wake every client waiter (port closed) */
+static void completion_poke_all_waiters( struct completion_shm *shm )
+{
+    unsigned int i;
+    for (i = 0; i < COMPLETION_MAX_WAITERS; i++) completion_poke_waiter( &shm->waiters[i] );
+}
+
+static void completion_signal( struct completion *completion )
+{
+    signal_sync( completion->sync );
+    if (completion->shm) __atomic_store_n( &completion->shm->event_set, 1, __ATOMIC_RELEASE );
+}
+
+static void completion_reset( struct completion *completion )
+{
+    if (completion->shm && completion_ring_count( completion->shm )) return;  /* ring still holds items */
+    reset_sync( completion->sync );
+    if (completion->shm) __atomic_store_n( &completion->shm->event_set, 0, __ATOMIC_RELEASE );
+}
+
+/* mirror server-side state into the shared page */
+static void completion_sync_shm( struct completion *completion )
+{
+    struct list *head;
+
+    if (!completion->shm) return;
+    if ((head = list_head( &completion->queue )))
+        __atomic_store_n( &completion->shm->server_head_seq,
+                          LIST_ENTRY( head, struct comp_msg, queue_entry )->seq, __ATOMIC_RELEASE );
+    __atomic_store_n( &completion->shm->server_depth, completion->depth, __ATOMIC_RELEASE );
+    __atomic_store_n( &completion->shm->server_waiters, completion->blocked, __ATOMIC_RELEASE );
+}
+
+/* should the next item come from the ring rather than the server queue? */
+static int completion_ring_first( struct completion *completion )
+{
+    if (!completion->shm || !completion_ring_count( completion->shm )) return 0;
+    if (list_empty( &completion->queue )) return 1;
+    return !completion_server_first( completion->shm );
+}
+
+static void completion_set_blocked( struct completion_wait *wait, int blocked )
+{
+    if (wait->blocked == blocked || !wait->completion) return;
+    wait->blocked = blocked;
+    if (blocked) wait->completion->blocked++;
+    else wait->completion->blocked--;
+    completion_sync_shm( wait->completion );
+}
+
+static void completion_create_shm( struct completion *completion )
+{
+#if defined(HAVE_MEMFD_CREATE) && defined(MFD_CLOEXEC)
+    void *ptr;
+    int fd;
+
+    if (!inproc_iocp_enabled()) return;
+    if ((fd = memfd_create( "wine-iocp", MFD_CLOEXEC )) == -1) return;
+    if (ftruncate( fd, COMPLETION_SHM_SIZE ) == -1) { close( fd ); return; }
+    ptr = mmap( NULL, COMPLETION_SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0 );
+    if (ptr == MAP_FAILED) { close( fd ); return; }
+    completion_shm_init( ptr );
+    completion->shm_fd = fd;
+    completion->shm = ptr;
+#else
+    (void)completion;  /* no memfd_create: ports fall back to pure server behavior */
+#endif
+}
+
+/* pop a ring entry into a freshly allocated server message */
+static struct comp_msg *completion_pop_ring( struct completion *completion )
+{
+    struct comp_msg *msg;
+
+    if (!completion->shm) return NULL;
+    if (!(msg = mem_alloc( sizeof(*msg) ))) return NULL;
+    if (!completion_ring_pop( completion->shm, &msg->ckey, &msg->cvalue, &msg->status, &msg->information ))
+    {
+        free( msg );
+        return NULL;
+    }
+    return msg;
+}
 
 static void completion_wait_dump( struct object*, int );
 static int completion_wait_signaled( struct object *obj, struct wait_queue_entry *entry );
@@ -152,6 +282,8 @@ static void completion_wait_satisfied( struct object *obj, struct wait_queue_ent
     list_remove( &msg->queue_entry );
     if (wait->msg) free( wait->msg );
     wait->msg = msg;
+    completion_set_blocked( wait, 0 );
+    completion_sync_shm( wait->completion );
 }
 
 static void completion_dump( struct object*, int );
@@ -195,6 +327,8 @@ static void completion_destroy( struct object *obj)
     }
 
     if (completion->sync) release_object( completion->sync );
+    if (completion->shm) munmap( completion->shm, COMPLETION_SHM_SIZE );
+    if (completion->shm_fd != -1) close( completion->shm_fd );
 }
 
 static void completion_dump( struct object *obj, int verbose )
@@ -222,6 +356,7 @@ static int completion_close_handle( struct object *obj, struct process *process,
     LIST_FOR_EACH_ENTRY_SAFE( wait, wait_next, &completion->wait_queue, struct completion_wait, wait_queue_entry )
     {
         assert( wait->completion );
+        completion_set_blocked( wait, 0 );
         wait->completion = NULL;
         list_remove( &wait->wait_queue_entry );
         if (!wait->msg)
@@ -230,7 +365,12 @@ static int completion_close_handle( struct object *obj, struct process *process,
             cleanup_thread_completion( wait->thread );
         }
     }
-    signal_sync( completion->sync );
+    completion_signal( completion );
+    if (completion->shm)
+    {
+        __atomic_store_n( &completion->shm->closed, 1, __ATOMIC_SEQ_CST );
+        completion_poke_all_waiters( completion->shm );
+    }
     return 1;
 }
 
@@ -243,7 +383,11 @@ void cleanup_thread_completion( struct thread *thread )
         close_handle( thread->process, thread->completion_wait->handle );
         thread->completion_wait->handle = 0;
     }
-    if (thread->completion_wait->completion) list_remove( &thread->completion_wait->wait_queue_entry );
+    if (thread->completion_wait->completion)
+    {
+        completion_set_blocked( thread->completion_wait, 0 );
+        list_remove( &thread->completion_wait->wait_queue_entry );
+    }
     release_object( &thread->completion_wait->obj );
     thread->completion_wait = NULL;
 }
@@ -256,6 +400,7 @@ static struct completion_wait *create_completion_wait( struct thread *thread )
     wait->completion = NULL;
     wait->thread = thread;
     wait->msg = NULL;
+    wait->blocked = 0;
     if (!(wait->handle = alloc_handle( current->process, wait, SYNCHRONIZE, 0 )))
     {
         release_object( &wait->obj );
@@ -278,12 +423,16 @@ static struct completion *create_completion( struct object *root, const struct u
             list_init( &completion->queue );
             list_init( &completion->wait_queue );
             completion->depth = 0;
+            completion->blocked = 0;
+            completion->shm_fd = -1;
+            completion->shm = NULL;
 
             if (!(completion->sync = create_internal_sync( 1, 0 )))
             {
                 release_object( completion );
                 return NULL;
             }
+            completion_create_shm( completion );
         }
     }
 
@@ -308,15 +457,27 @@ void add_completion( struct completion *completion, apc_param_t ckey, apc_param_
     msg->cvalue = cvalue;
     msg->status = status;
     msg->information = information;
+    msg->seq = completion->shm ? __atomic_load_n( &completion->shm->enqueue_pos, __ATOMIC_ACQUIRE ) : 0;
 
     list_add_tail( &completion->queue, &msg->queue_entry );
     completion->depth++;
+    completion_sync_shm( completion );
     LIST_FOR_EACH_ENTRY( wait, &completion->wait_queue, struct completion_wait, wait_queue_entry )
     {
         wake_up( &wait->obj, 1 );
         if (list_empty( &completion->queue )) return;
     }
-    if (!list_empty( &completion->queue )) signal_sync( completion->sync );
+    if (!list_empty( &completion->queue ))
+    {
+        if (completion->shm && COMPLETION_STACK_IDX( __atomic_load_n( &completion->shm->wait_head, __ATOMIC_ACQUIRE ) ))
+        {
+            /* a client thread is blocked in NtRemoveIoCompletion: hand over
+             * without signaling the port object, like a direct handoff */
+            __atomic_thread_fence( __ATOMIC_SEQ_CST );
+            completion_poke_top_waiter( completion->shm );
+        }
+        else completion_signal( completion );
+    }
 }
 
 /* create a completion */
@@ -384,14 +545,39 @@ DECL_HANDLER(remove_completion)
 
     entry = list_head( &completion->queue );
     if (req->alertable && !list_empty( &current->user_apc )
-        && !(entry && current->completion_wait && current->completion_wait->completion == completion))
+        && !((entry || (completion->shm && completion_ring_count( completion->shm )))
+             && (req->associated ||
+                 (current->completion_wait && current->completion_wait->completion == completion))))
     {
         set_error( STATUS_USER_APC );
         release_object( completion );
         return;
     }
+
+    /* serve from the in-process ring when it holds the oldest item */
+    if (completion_ring_first( completion ) && (msg = completion_pop_ring( completion )))
+    {
+        reply->ckey = msg->ckey;
+        reply->cvalue = msg->cvalue;
+        reply->status = msg->status;
+        reply->information = msg->information;
+        reply->wait_handle = 0;
+        free( msg );
+        release_object( completion );
+        return;
+    }
+
+    if (!entry && req->no_wait)
+    {
+        reply->wait_handle = 0;
+        set_error( STATUS_PENDING );
+        release_object( completion );
+        return;
+    }
+
     if (current->completion_wait)
     {
+        completion_set_blocked( current->completion_wait, 0 );
         list_remove( &current->completion_wait->wait_queue_entry );
     }
     else if (!(current->completion_wait = create_completion_wait( current )))
@@ -403,6 +589,22 @@ DECL_HANDLER(remove_completion)
     list_add_head( &completion->wait_queue, &current->completion_wait->wait_queue_entry );
     if (!entry)
     {
+        /* announce that we're blocking, then re-check the ring (paired with
+         * the producer's push -> fence -> server_waiters check) */
+        completion_set_blocked( current->completion_wait, 1 );
+        __atomic_thread_fence( __ATOMIC_SEQ_CST );
+        if ((msg = completion_pop_ring( completion )))
+        {
+            completion_set_blocked( current->completion_wait, 0 );
+            reply->ckey = msg->ckey;
+            reply->cvalue = msg->cvalue;
+            reply->status = msg->status;
+            reply->information = msg->information;
+            reply->wait_handle = 0;
+            free( msg );
+            release_object( completion );
+            return;
+        }
         reply->wait_handle = current->completion_wait->handle;
         set_error( STATUS_PENDING );
     }
@@ -410,6 +612,7 @@ DECL_HANDLER(remove_completion)
     {
         list_remove( entry );
         completion->depth--;
+        completion_sync_shm( completion );
         msg = LIST_ENTRY( entry, struct comp_msg, queue_entry );
         reply->ckey = msg->ckey;
         reply->cvalue = msg->cvalue;
@@ -417,7 +620,7 @@ DECL_HANDLER(remove_completion)
         reply->information = msg->information;
         free( msg );
         reply->wait_handle = 0;
-        if (list_empty( &completion->queue )) reset_sync( completion->sync );
+        if (list_empty( &completion->queue )) completion_reset( completion );
     }
 
     release_object( completion );
@@ -427,6 +630,9 @@ DECL_HANDLER(remove_completion)
 DECL_HANDLER(get_thread_completion)
 {
     struct comp_msg *msg;
+
+    /* the client gave up waiting (timeout/APC); it is no longer blocked */
+    if (current->completion_wait) completion_set_blocked( current->completion_wait, 0 );
 
     if (!current->completion_wait || !(msg = current->completion_wait->msg))
     {
@@ -451,6 +657,40 @@ DECL_HANDLER(query_completion)
     if (!completion) return;
 
     reply->depth = completion->depth;
+    if (completion->shm) reply->depth += completion_ring_count( completion->shm );
 
+    release_object( completion );
+}
+
+/* get the in-process queue mapping of a completion port */
+DECL_HANDLER(get_completion_shm)
+{
+    struct completion* completion = get_completion_obj( current->process, req->handle, 0 );
+
+    if (!completion) return;
+
+    if (!completion->shm) set_error( STATUS_NOT_IMPLEMENTED );
+    else
+    {
+        reply->size = COMPLETION_SHM_SIZE;
+        reply->access = get_handle_access( current->process, req->handle );
+        send_client_fd( current->process, completion->shm_fd, req->handle );
+    }
+    release_object( completion );
+}
+
+/* move in-process queue entries to threads blocked in the server */
+DECL_HANDLER(kick_completion)
+{
+    struct completion* completion = get_completion_obj( current->process, req->handle, IO_COMPLETION_MODIFY_STATE );
+    struct comp_msg *msg;
+
+    if (!completion) return;
+
+    while (completion->blocked && (msg = completion_pop_ring( completion )))
+    {
+        add_completion( completion, msg->ckey, msg->cvalue, msg->status, msg->information );
+        free( msg );
+    }
     release_object( completion );
 }

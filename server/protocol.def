@@ -3959,6 +3959,8 @@ struct handle_info
 @REQ(remove_completion)
     obj_handle_t handle;          /* port handle */
     int          alertable;       /* completion wait is alertable */
+    int          no_wait;         /* don't register a wait if queue is empty */
+    int          associated;      /* thread already dequeued from this port in-process */
 @REPLY
     apc_param_t   ckey;           /* completion key */
     apc_param_t   cvalue;         /* completion value */
@@ -4364,4 +4366,19 @@ enum fsync_type
 @REQ(fsync_free_shm_idx)
     unsigned int shm_idx;
 @REPLY
+@END
+
+
+/* get the in-process shared queue of a completion port (fd is sent separately) */
+@REQ(get_completion_shm)
+    obj_handle_t  handle;         /* port handle */
+@REPLY
+    data_size_t   size;           /* size of the shared mapping */
+    unsigned int  access;         /* handle access rights */
+@END
+
+
+/* hand in-process queue entries to threads blocked in the server */
+@REQ(kick_completion)
+    obj_handle_t  handle;         /* port handle */
 @END

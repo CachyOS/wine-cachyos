@@ -1943,6 +1943,7 @@ NTSTATUS WINAPI NtDuplicateObject( HANDLE source_process, HANDLE source, HANDLE 
     {
         fd = remove_fd_from_cache( source );
         close_inproc_sync( source );
+        close_iocp_ring( source );
     }
 
     SERVER_START_REQ( dup_handle )
@@ -2017,6 +2018,7 @@ NTSTATUS WINAPI NtClose( HANDLE handle )
      * retrieve it again */
     fd = remove_fd_from_cache( handle );
     close_inproc_sync( handle );
+    close_iocp_ring( handle );
 
     SERVER_START_REQ( close_handle )
     {

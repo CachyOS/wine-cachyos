@@ -71,6 +71,7 @@
 #include "wine/server.h"
 #include "wine/debug.h"
 #include "unix_private.h"
+#include "wine/completion_shm.h"
 
 #include "fsync.h"
 
@@ -2735,6 +2736,483 @@ NTSTATUS WINAPI NtReleaseKeyedEvent( HANDLE handle, const void *key,
 
 
 /***********************************************************************
+ * In-process I/O completion port queue
+ *
+ * Mirrors the inproc sync cache: one refcounted entry per handle value,
+ * holding the mapping of the port's shared ring (see wine/completion_shm.h).
+ */
+struct iocp_ring
+{
+    LONG                   refcount;
+    struct completion_shm *shm;
+    unsigned int           access;
+    unsigned int           closed;
+};
+
+#define IOCP_RING_CACHE_BLOCK_SIZE  (65536 / sizeof(struct iocp_ring))
+#define IOCP_RING_CACHE_ENTRIES     128
+
+static struct iocp_ring *iocp_ring_cache[IOCP_RING_CACHE_ENTRIES];
+static int iocp_ring_disabled = -1;
+
+static inline unsigned int iocp_ring_handle_to_index( HANDLE handle, unsigned int *entry )
+{
+    unsigned int idx = (wine_server_obj_handle(handle) >> 2) - 1;
+    *entry = idx / IOCP_RING_CACHE_BLOCK_SIZE;
+    return idx % IOCP_RING_CACHE_BLOCK_SIZE;
+}
+
+static void release_iocp_ring( struct iocp_ring *ring )
+{
+    struct completion_shm *shm = ring->shm;
+    LONG ref = InterlockedDecrement( &ring->refcount );
+
+    assert( ref >= 0 );
+    if (!ref) munmap( shm, COMPLETION_SHM_SIZE );
+}
+
+static struct iocp_ring *get_cached_iocp_ring( HANDLE handle )
+{
+    unsigned int entry, idx = iocp_ring_handle_to_index( handle, &entry );
+    struct iocp_ring *cache;
+
+    if (entry >= IOCP_RING_CACHE_ENTRIES || !iocp_ring_cache[entry]) return NULL;
+    cache = &iocp_ring_cache[entry][idx];
+    if (!interlocked_inc_if_nonzero( &cache->refcount )) return NULL;
+    if (cache->closed)
+    {
+        release_iocp_ring( cache );
+        return NULL;
+    }
+    return cache;
+}
+
+static struct iocp_ring *cache_iocp_ring( HANDLE handle, struct iocp_ring *ring )
+{
+    unsigned int entry, idx = iocp_ring_handle_to_index( handle, &entry );
+    struct iocp_ring *cache;
+    LONG refcount;
+
+    if (is_pseudo_handle( handle ) || entry >= IOCP_RING_CACHE_ENTRIES) return ring;
+
+    if (!iocp_ring_cache[entry])
+    {
+        void *ptr = anon_mmap_alloc( 65536, PROT_READ | PROT_WRITE );  /* page-aligned superset of the block */
+        if (ptr == MAP_FAILED) return ring;
+        iocp_ring_cache[entry] = ptr;
+    }
+    cache = &iocp_ring_cache[entry][idx];
+    if (InterlockedCompareExchange( &cache->refcount, 0, 0 )) return ring;  /* handle reused, still busy */
+
+    cache->shm = ring->shm;
+    cache->access = ring->access;
+    cache->closed = 0;
+    refcount = InterlockedExchange( &cache->refcount, 2 );
+    assert( !refcount );
+    memset( ring, 0, sizeof(*ring) );
+    return cache;
+}
+
+/* fd_cache_mutex must be held */
+static NTSTATUS get_server_iocp_ring( HANDLE handle, struct iocp_ring *ring )
+{
+    NTSTATUS ret;
+    int fd = -1;
+    data_size_t size = 0;
+
+    SERVER_START_REQ( get_completion_shm )
+    {
+        req->handle = wine_server_obj_handle( handle );
+        if (!(ret = wine_server_call( req )))
+        {
+            obj_handle_t fd_handle;
+            fd = wine_server_receive_fd( &fd_handle );
+            assert( wine_server_ptr_handle(fd_handle) == handle );
+            size = reply->size;
+            ring->access = reply->access;
+        }
+    }
+    SERVER_END_REQ;
+    if (ret) return ret;
+    if (fd < 0) return STATUS_NOT_IMPLEMENTED;
+
+    ring->shm = mmap( NULL, COMPLETION_SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0 );
+    close( fd );
+    if (ring->shm == MAP_FAILED || !completion_shm_valid( ring->shm, size ))
+    {
+        if (ring->shm != MAP_FAILED) munmap( ring->shm, COMPLETION_SHM_SIZE );
+        ring->shm = NULL;
+        return STATUS_NOT_IMPLEMENTED;
+    }
+    ring->refcount = 1;
+    ring->closed = 0;
+    return STATUS_SUCCESS;
+}
+
+/* returns NULL if the port has no in-process queue (caller falls back to the server) */
+static struct iocp_ring *get_iocp_ring( HANDLE handle, struct iocp_ring *stack )
+{
+    struct iocp_ring *ring;
+    sigset_t sigset;
+
+    if (iocp_ring_disabled == -1)
+    {
+        const char *env = getenv( "WINE_DISABLE_INPROC_IOCP" );
+        iocp_ring_disabled = env && atoi( env );
+    }
+    if (iocp_ring_disabled || inproc_device_fd < 0 || do_fsync()) return NULL;
+
+    if ((ring = get_cached_iocp_ring( handle ))) return ring;
+
+    server_enter_uninterrupted_section( &fd_cache_mutex, &sigset );
+    if (!(ring = get_cached_iocp_ring( handle )))
+    {
+        if (get_server_iocp_ring( handle, stack )) ring = NULL;
+        else ring = cache_iocp_ring( handle, stack );
+    }
+    server_leave_uninterrupted_section( &fd_cache_mutex, &sigset );
+    return ring;
+}
+
+/* caller must hold fd_cache_mutex */
+void close_iocp_ring( HANDLE handle )
+{
+    struct iocp_ring *cache;
+
+    if (iocp_ring_disabled == 1) return;
+    if ((cache = get_cached_iocp_ring( handle )))
+    {
+        cache->closed = 1;
+        release_iocp_ring( cache );
+        release_iocp_ring( cache );
+    }
+}
+
+/* ---- lock-free waiter stack (Treiber stacks with ABA tags; see completion_shm.h) ----
+ *
+ * Nothing here ever blocks while holding shared state, so a thread killed at
+ * any instruction cannot wedge other threads: a leaving waiter marks its slot
+ * CANCELLED instead of unlinking, and the next producer pop discards it. */
+
+static void iocp_futex_wake_slot( struct completion_waiter *w )
+{
+#ifdef USE_FUTEX
+    syscall( __NR_futex, &w->state, FUTEX_WAKE, INT_MAX, NULL, NULL, 0 );
+#endif
+}
+
+/* try to hand the payload straight to the most recently parked waiter */
+static BOOL iocp_try_handoff( struct completion_shm *shm, ULONG_PTR key, ULONG_PTR value,
+                              NTSTATUS status, SIZE_T count )
+{
+    int idx;
+
+    while ((idx = completion_stack_pop( &shm->wait_head, shm->waiters )) >= 0)
+    {
+        struct completion_waiter *w = &shm->waiters[idx];
+        unsigned int expected = COMPLETION_WAITER_IDLE;
+
+        if (__atomic_compare_exchange_n( &w->state, &expected, COMPLETION_WAITER_CLAIMED, 0,
+                                         __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE ))
+        {
+            w->ckey = key;
+            w->cvalue = value;
+            w->status = status;
+            w->information = count;
+            __atomic_store_n( &w->state, COMPLETION_WAITER_DELIVERED, __ATOMIC_RELEASE );
+            iocp_futex_wake_slot( w );
+            return TRUE;
+        }
+        /* Stale node.  CANCELLED means the owner has left for good: recycle it.
+         * RECHECK means the owner was poked and is awake but still owns the
+         * slot; it is about to find itself unlinked and mark it CANCELLED --
+         * spin those few instructions out rather than corrupting the slot. */
+        while (__atomic_load_n( &w->state, __ATOMIC_ACQUIRE ) == COMPLETION_WAITER_RECHECK)
+            YieldProcessor();
+        __atomic_store_n( &w->state, COMPLETION_WAITER_FREE, __ATOMIC_RELEASE );
+        completion_stack_push( &shm->free_head, shm->waiters, idx );
+    }
+    return FALSE;
+}
+
+/* freelist is empty: sweep the waiter stack, recycling CANCELLED nodes and
+ * re-linking live ones.  Only reached when many pollers time out on a port
+ * that never gets posts (nothing else recycles abandoned slots). */
+static void iocp_reclaim_slots( struct completion_shm *shm )
+{
+    int live[COMPLETION_MAX_WAITERS];
+    unsigned int n, nlive = 0;
+    int idx;
+
+    for (n = 0; n < COMPLETION_MAX_WAITERS; n++)
+    {
+        if ((idx = completion_stack_pop( &shm->wait_head, shm->waiters )) < 0) break;
+        if (__atomic_load_n( &shm->waiters[idx].state, __ATOMIC_ACQUIRE ) == COMPLETION_WAITER_CANCELLED)
+        {
+            __atomic_store_n( &shm->waiters[idx].state, COMPLETION_WAITER_FREE, __ATOMIC_RELEASE );
+            completion_stack_push( &shm->free_head, shm->waiters, idx );
+        }
+        else live[nlive++] = idx;   /* still live: relink after the sweep */
+    }
+    /* re-push in reverse pop order so the stack keeps its LIFO order */
+    while (nlive) completion_stack_push( &shm->wait_head, shm->waiters, live[--nlive] );
+}
+
+/* ---- port event (the object's signaled state) ---- */
+
+static void iocp_set_port_event( HANDLE handle, BOOL set )
+{
+    struct inproc_sync stack, *sync;
+    LONG prev;
+
+    if (get_inproc_sync( handle, INPROC_SYNC_UNKNOWN, 0, &stack, &sync )) return;
+    if (set) linux_set_event_obj( sync->fd, &prev );
+    else linux_reset_event_obj( sync->fd, &prev );
+    release_inproc_sync( sync );
+}
+
+/* the port object is signaled while items are queued; keep the event and the
+ * shared hint in sync (reset-then-recheck, so a racing producer's set wins) */
+static void iocp_update_port_event( HANDLE handle, struct completion_shm *shm )
+{
+    unsigned int expected = 1;
+
+    if (completion_ring_count( shm ) || __atomic_load_n( &shm->server_depth, __ATOMIC_ACQUIRE )) return;
+    if (!__atomic_compare_exchange_n( &shm->event_set, &expected, 0, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE ))
+        return;
+    iocp_set_port_event( handle, FALSE );
+    /* recheck: a producer may have pushed between our check and the reset */
+    if (completion_ring_count( shm ) || __atomic_load_n( &shm->server_depth, __ATOMIC_ACQUIRE ))
+    {
+        expected = 0;
+        if (__atomic_compare_exchange_n( &shm->event_set, &expected, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE ))
+            iocp_set_port_event( handle, TRUE );
+    }
+}
+
+/* futex wait on a waiter slot with NT-style timeout; returns STATUS_TIMEOUT or STATUS_SUCCESS */
+static NTSTATUS iocp_wait_slot( struct completion_waiter *w, const LARGE_INTEGER *timeout )
+{
+#ifdef USE_FUTEX
+    struct timespec ts, *pts = NULL;
+    int op = FUTEX_WAIT_BITSET;
+
+    if (timeout && timeout->QuadPart != TIMEOUT_INFINITE)
+    {
+        if (timeout->QuadPart <= 0)
+        {
+            ULONGLONG ns;
+            clock_gettime( CLOCK_MONOTONIC, &ts );
+            ns = (ULONGLONG)ts.tv_nsec + (ULONGLONG)(-timeout->QuadPart) * 100;
+            ts.tv_sec += ns / NSECPERSEC;
+            ts.tv_nsec = ns % NSECPERSEC;
+        }
+        else
+        {
+            ULONGLONG ticks = timeout->QuadPart;
+            ts.tv_sec  = ticks / TICKSPERSEC - SECS_1601_TO_1970;
+            ts.tv_nsec = (ticks % TICKSPERSEC) * 100;
+            op |= FUTEX_CLOCK_REALTIME;
+        }
+        pts = &ts;
+    }
+    while (__atomic_load_n( &w->state, __ATOMIC_ACQUIRE ) == COMPLETION_WAITER_IDLE)
+    {
+        int ret = syscall( __NR_futex, &w->state, op, COMPLETION_WAITER_IDLE, pts, NULL, FUTEX_BITSET_MATCH_ANY );
+        if (ret < 0 && errno == ETIMEDOUT) return STATUS_TIMEOUT;
+        /* 0, EAGAIN, EINTR: re-check the state */
+    }
+    return STATUS_SUCCESS;
+#else
+    return STATUS_TIMEOUT;
+#endif
+}
+
+static inline void iocp_ring_fill( FILE_IO_COMPLETION_INFORMATION *info, apc_param_t ckey, apc_param_t cvalue,
+                                   unsigned int status, apc_param_t information )
+{
+    info->CompletionKey             = ckey;
+    info->CompletionValue           = cvalue;
+    info->IoStatusBlock.Information = information;
+    info->IoStatusBlock.Status      = status;
+}
+
+/* non-blocking server dequeue, used when the server's own queue is non-empty */
+static NTSTATUS iocp_server_remove_nowait( HANDLE handle, FILE_IO_COMPLETION_INFORMATION *info )
+{
+    NTSTATUS status;
+
+    SERVER_START_REQ( remove_completion )
+    {
+        req->handle = wine_server_obj_handle( handle );
+        req->alertable = 0;
+        req->no_wait = 1;
+        req->associated = 0;
+        if (!(status = wine_server_call( req )))
+            iocp_ring_fill( info, reply->ckey, reply->cvalue, reply->status, reply->information );
+    }
+    SERVER_END_REQ;
+    return status;
+}
+
+/* in-process NtRemoveIoCompletion(Ex); non-alertable only */
+static NTSTATUS iocp_ring_remove( HANDLE handle, struct iocp_ring *ring, FILE_IO_COMPLETION_INFORMATION *info,
+                                  ULONG count, ULONG *written, const LARGE_INTEGER *timeout )
+{
+    struct completion_shm *shm = ring->shm;
+    apc_param_t ckey, cvalue, information;
+    struct completion_waiter *w;
+    unsigned int status, state;
+    NTSTATUS ret;
+    ULONG i = 0;
+    int idx;
+
+    for (;;)
+    {
+        /* Merge the two queues in FIFO order: the server stamps each of its
+         * items with the ring position at arrival, so compare that with the
+         * ring's consume position to see which head is older. */
+        while (i < count)
+        {
+            if (__atomic_load_n( &shm->server_depth, __ATOMIC_ACQUIRE ) &&
+                (!completion_ring_count( shm ) || completion_server_first( shm )))
+            {
+                ret = iocp_server_remove_nowait( handle, &info[i] );
+                if (!ret) { i++; continue; }
+                if (ret != STATUS_PENDING) { if (!i) goto done; break; }  /* real error */
+                /* someone else took it; fall through to the ring */
+            }
+            if (!completion_ring_pop( shm, &ckey, &cvalue, &status, &information )) break;
+            iocp_ring_fill( &info[i++], ckey, cvalue, status, information );
+        }
+        if (i)
+        {
+            ntdll_get_thread_data()->iocp_port = handle;
+            iocp_update_port_event( handle, shm );
+            ret = STATUS_SUCCESS;
+            goto done;
+        }
+        if (__atomic_load_n( &shm->closed, __ATOMIC_ACQUIRE )) { ret = STATUS_ABANDONED_WAIT_0; goto done; }
+        if (timeout && !timeout->QuadPart) { ret = STATUS_TIMEOUT; goto done; }
+
+        if ((idx = completion_stack_pop( &shm->free_head, shm->waiters )) < 0)
+        {
+            iocp_reclaim_slots( shm );
+            if ((idx = completion_stack_pop( &shm->free_head, shm->waiters )) < 0)
+            {
+                /* genuinely out of waiter slots: block in the server instead */
+                ret = STATUS_NOT_IMPLEMENTED;
+                goto done;
+            }
+        }
+        w = &shm->waiters[idx];
+        __atomic_store_n( &w->state, COMPLETION_WAITER_IDLE, __ATOMIC_RELEASE );
+        completion_stack_push( &shm->wait_head, shm->waiters, idx );
+        /* paired with the fences producers and the server issue before they
+         * re-read wait_head */
+        __atomic_thread_fence( __ATOMIC_SEQ_CST );
+        if (completion_ring_count( shm ) || __atomic_load_n( &shm->server_depth, __ATOMIC_ACQUIRE ) ||
+            __atomic_load_n( &shm->closed, __ATOMIC_ACQUIRE ))
+            ret = STATUS_SUCCESS;   /* something arrived while parking: leave and loop */
+        else
+            ret = iocp_wait_slot( w, timeout );
+
+        /* leave the stack: pop ourselves if still on top, else mark the slot
+         * CANCELLED and let a future producer pop recycle it */
+        state = __atomic_load_n( &w->state, __ATOMIC_ACQUIRE );
+        for (;;)
+        {
+            unsigned int expected;
+
+            if (state == COMPLETION_WAITER_CLAIMED)
+            {
+                /* a producer is mid-delivery: wait the few instructions out */
+                YieldProcessor();
+                state = __atomic_load_n( &w->state, __ATOMIC_ACQUIRE );
+                continue;
+            }
+            if (state == COMPLETION_WAITER_DELIVERED)
+            {
+                /* handed to us directly (producer already unlinked the slot) */
+                iocp_ring_fill( &info[i++], w->ckey, w->cvalue, w->status, w->information );
+                __atomic_store_n( &w->state, COMPLETION_WAITER_FREE, __ATOMIC_RELEASE );
+                completion_stack_push( &shm->free_head, shm->waiters, idx );
+                ntdll_get_thread_data()->iocp_port = handle;
+                ret = STATUS_SUCCESS;
+                goto done;
+            }
+            /* IDLE (timeout / spurious) or RECHECK (server poke): try to leave */
+            if (completion_stack_pop_if_top( &shm->wait_head, shm->waiters, idx ))
+            {
+                __atomic_store_n( &w->state, COMPLETION_WAITER_FREE, __ATOMIC_RELEASE );
+                completion_stack_push( &shm->free_head, shm->waiters, idx );
+                break;
+            }
+            expected = state;
+            if (__atomic_compare_exchange_n( &w->state, &expected, COMPLETION_WAITER_CANCELLED, 0,
+                                             __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE ))
+                break;              /* a producer pop will recycle the slot */
+            state = expected;       /* lost the race to a producer's claim: re-examine */
+        }
+        if (ret == STATUS_TIMEOUT) goto done;
+        /* RECHECK or arrival while parking: loop and look at the queues again */
+    }
+done:
+    *written = i ? i : 1;
+    return ret;
+}
+
+/* in-process NtSetIoCompletion; returns FALSE if the caller must go through the server */
+static BOOL iocp_ring_post( HANDLE handle, struct iocp_ring *ring, ULONG_PTR key, ULONG_PTR value,
+                            NTSTATUS status, SIZE_T count )
+{
+    struct completion_shm *shm = ring->shm;
+    unsigned int expected;
+    BOOL kick;
+
+    if (!(ring->access & IO_COMPLETION_MODIFY_STATE)) return FALSE;
+
+    /* direct handoff to the most recent waiter; the port is not signaled */
+    if (iocp_try_handoff( shm, key, value, status, count )) return TRUE;
+
+    if (!completion_ring_push( shm, key, value, status, count )) return FALSE;  /* ring full */
+
+    /* paired with the fence a parking waiter issues before its re-check, and
+     * with the server's fence between blocked++ and its ring re-check */
+    __atomic_thread_fence( __ATOMIC_SEQ_CST );
+
+    /* a waiter may have parked between our handoff attempt and the push */
+    {
+        unsigned int idx = COMPLETION_STACK_IDX( __atomic_load_n( &shm->wait_head, __ATOMIC_ACQUIRE ) );
+        if (idx && idx <= COMPLETION_MAX_WAITERS)
+        {
+            struct completion_waiter *w = &shm->waiters[idx - 1];
+            expected = COMPLETION_WAITER_IDLE;
+            if (__atomic_compare_exchange_n( &w->state, &expected, COMPLETION_WAITER_RECHECK, 0,
+                                             __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE ))
+                iocp_futex_wake_slot( w );
+        }
+    }
+
+    expected = 0;
+    if (__atomic_compare_exchange_n( &shm->event_set, &expected, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE ))
+        iocp_set_port_event( handle, TRUE );
+
+    kick = __atomic_load_n( &shm->server_waiters, __ATOMIC_RELAXED ) != 0;
+    if (kick)
+    {
+        SERVER_START_REQ( kick_completion )
+        {
+            req->handle = wine_server_obj_handle( handle );
+            wine_server_call( req );
+        }
+        SERVER_END_REQ;
+    }
+    return TRUE;
+}
+
+
+/***********************************************************************
  *             NtCreateIoCompletion (NTDLL.@)
  */
 NTSTATUS WINAPI NtCreateIoCompletion( HANDLE *handle, ACCESS_MASK access, OBJECT_ATTRIBUTES *attr,
@@ -2797,7 +3275,16 @@ NTSTATUS WINAPI NtSetIoCompletion( HANDLE handle, ULONG_PTR key, ULONG_PTR value
 {
     unsigned int ret;
 
+    struct iocp_ring stack, *ring;
+
     TRACE( "(%p, %lx, %lx, %x, %lx)\n", handle, key, value, status, count );
+
+    if ((ring = get_iocp_ring( handle, &stack )))
+    {
+        BOOL done = iocp_ring_post( handle, ring, key, value, status, count );
+        release_iocp_ring( ring );
+        if (done) return STATUS_SUCCESS;
+    }
 
     SERVER_START_REQ( add_completion )
     {
@@ -2850,10 +3337,27 @@ NTSTATUS WINAPI NtRemoveIoCompletion( HANDLE handle, ULONG_PTR *key, ULONG_PTR *
 {
     HANDLE wait_handle = NULL;
     unsigned int status;
+    struct iocp_ring stack, *ring;
 
     TRACE( "(%p, %p, %p, %p, %p)\n", handle, key, value, io, timeout );
 
-    if (timeout && !timeout->QuadPart && inproc_device_fd >= 0)
+    if ((ring = get_iocp_ring( handle, &stack )))
+    {
+        FILE_IO_COMPLETION_INFORMATION info;
+        ULONG written;
+
+        status = iocp_ring_remove( handle, ring, &info, 1, &written, timeout );
+        release_iocp_ring( ring );
+        if (!status)
+        {
+            *key            = info.CompletionKey;
+            *value          = info.CompletionValue;
+            io->Information = info.IoStatusBlock.Information;
+            io->Status      = info.IoStatusBlock.Status;
+        }
+        if (status != STATUS_NOT_IMPLEMENTED) return status;
+    }
+    else if (timeout && !timeout->QuadPart && inproc_device_fd >= 0)
     {
         status = NtWaitForSingleObject( handle, FALSE, timeout );
         if (status != WAIT_OBJECT_0) return status;
@@ -2863,6 +3367,8 @@ NTSTATUS WINAPI NtRemoveIoCompletion( HANDLE handle, ULONG_PTR *key, ULONG_PTR *
     {
         req->handle = wine_server_obj_handle( handle );
         req->alertable = 0;
+        req->no_wait = 0;
+        req->associated = 0;
         if (!(status = wine_server_call( req )))
         {
             *key            = reply->ckey;
@@ -2902,11 +3408,33 @@ NTSTATUS WINAPI NtRemoveIoCompletionEx( HANDLE handle, FILE_IO_COMPLETION_INFORM
 {
     HANDLE wait_handle = NULL;
     unsigned int status;
+    struct iocp_ring stack, *ring;
     ULONG i = 0;
 
     TRACE( "%p %p %u %p %p %u\n", handle, info, count, written, timeout, alertable );
 
     if (!count) return STATUS_INVALID_PARAMETER;
+
+    if ((ring = get_iocp_ring( handle, &stack )))
+    {
+        BOOL queued;
+
+        if (!alertable)
+        {
+            status = iocp_ring_remove( handle, ring, info, count, written, timeout );
+            release_iocp_ring( ring );
+            if (status != STATUS_NOT_IMPLEMENTED) return status;
+            ring = NULL;
+        }
+        else
+        {
+            /* alertable waits go through the server; skip the zero-timeout
+             * fast path when the ring has items the port event doesn't reflect */
+            queued = completion_ring_count( ring->shm ) || __atomic_load_n( &ring->shm->server_depth, __ATOMIC_ACQUIRE );
+            release_iocp_ring( ring );
+            if (queued) goto server;
+        }
+    }
 
     if (timeout && !timeout->QuadPart && inproc_device_fd >= 0)
     {
@@ -2914,12 +3442,15 @@ NTSTATUS WINAPI NtRemoveIoCompletionEx( HANDLE handle, FILE_IO_COMPLETION_INFORM
         if (status != WAIT_OBJECT_0) goto done;
     }
 
+server:
     while (i < count)
     {
         SERVER_START_REQ( remove_completion )
         {
             req->handle = wine_server_obj_handle( handle );
             req->alertable = alertable;
+            req->no_wait = 0;
+            req->associated = ntdll_get_thread_data()->iocp_port == handle;
             if (!(status = wine_server_call( req )))
             {
                 info[i].CompletionKey             = reply->ckey;
@@ -2987,6 +3518,16 @@ NTSTATUS WINAPI NtQueryIoCompletion( HANDLE handle, IO_COMPLETION_INFORMATION_CL
         if (ret_len) *ret_len = sizeof(*info);
         if (len == sizeof(*info))
         {
+            struct iocp_ring stack, *ring;
+
+            if ((ring = get_iocp_ring( handle, &stack )))
+            {
+                *info = completion_ring_count( ring->shm ) +
+                        __atomic_load_n( &ring->shm->server_depth, __ATOMIC_ACQUIRE );
+                release_iocp_ring( ring );
+                status = STATUS_SUCCESS;
+                break;
+            }
             SERVER_START_REQ( query_completion )
             {
                 req->handle = wine_server_obj_handle( handle );

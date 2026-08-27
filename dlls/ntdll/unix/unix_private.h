@@ -118,6 +118,7 @@ struct ntdll_thread_data
     void                     *jmp_buf;       /* setjmp buffer for exception handling */
     BOOL                      system_thread; /* thread runs only on the Unix side */
     int                      *fsync_apc_futex;
+    HANDLE                    iocp_port;     /* completion port this thread last dequeued from in-process */
 };
 
 C_ASSERT( sizeof(struct ntdll_thread_data) <= sizeof(((TEB *)0)->GdiTebBatch) );
@@ -417,6 +418,7 @@ extern NTSTATUS wow64_wine_spawnvp( void *args );
 extern void dbg_init(void);
 
 extern void close_inproc_sync( HANDLE handle );
+extern void close_iocp_ring( HANDLE handle );
 
 extern NTSTATUS call_user_apc_dispatcher( CONTEXT *context_ptr, unsigned int flags, ULONG_PTR arg1, ULONG_PTR arg2,
                                           ULONG_PTR arg3, PNTAPCFUNC func, NTSTATUS status );
