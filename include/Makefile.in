@@ -960,6 +960,7 @@ SOURCES = \
 	windowscontracts.idl \
 	windowsx.h \
 	wine/afd.h \
+	wine/completion_shm.h \
 	wine/asm.h \
 	wine/atsvc.idl \
 	wine/condrv.h \

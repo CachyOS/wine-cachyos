@@ -3175,6 +3175,8 @@ static void dump_remove_completion_request( const struct remove_completion_reque
 {
     fprintf( stderr, " handle=%04x", req->handle );
     fprintf( stderr, ", alertable=%d", req->alertable );
+    fprintf( stderr, ", no_wait=%d", req->no_wait );
+    fprintf( stderr, ", associated=%d", req->associated );
 }
 
 static void dump_remove_completion_reply( const struct remove_completion_reply *req )
@@ -3584,6 +3586,22 @@ static void dump_fsync_free_shm_idx_request( const struct fsync_free_shm_idx_req
     fprintf( stderr, " shm_idx=%08x", req->shm_idx );
 }
 
+static void dump_get_completion_shm_request( const struct get_completion_shm_request *req )
+{
+    fprintf( stderr, " handle=%04x", req->handle );
+}
+
+static void dump_get_completion_shm_reply( const struct get_completion_shm_reply *req )
+{
+    fprintf( stderr, " size=%u", req->size );
+    fprintf( stderr, ", access=%08x", req->access );
+}
+
+static void dump_kick_completion_request( const struct kick_completion_request *req )
+{
+    fprintf( stderr, " handle=%04x", req->handle );
+}
+
 typedef void (*dump_func)( const void *req );
 
 static const dump_func req_dumpers[REQ_NB_REQUESTS] =
@@ -3900,6 +3918,8 @@ static const dump_func req_dumpers[REQ_NB_REQUESTS] =
     (dump_func)dump_d3dkmt_mutex_acquire_request,
     (dump_func)dump_d3dkmt_mutex_release_request,
     (dump_func)dump_fsync_free_shm_idx_request,
+    (dump_func)dump_get_completion_shm_request,
+    (dump_func)dump_kick_completion_request,
 };
 
 static const dump_func reply_dumpers[REQ_NB_REQUESTS] =
@@ -4215,6 +4235,8 @@ static const dump_func reply_dumpers[REQ_NB_REQUESTS] =
     (dump_func)dump_d3dkmt_object_open_name_reply,
     (dump_func)dump_d3dkmt_mutex_acquire_reply,
     NULL,
+    NULL,
+    (dump_func)dump_get_completion_shm_reply,
     NULL,
 };
 
@@ -4532,6 +4554,8 @@ static const char * const req_names[REQ_NB_REQUESTS] =
     "d3dkmt_mutex_acquire",
     "d3dkmt_mutex_release",
     "fsync_free_shm_idx",
+    "get_completion_shm",
+    "kick_completion",
 };
 
 static const struct

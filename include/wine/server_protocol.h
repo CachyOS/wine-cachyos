@@ -5617,7 +5617,9 @@ struct remove_completion_request
     struct request_header __header;
     obj_handle_t handle;
     int          alertable;
-    char __pad_20[4];
+    int          no_wait;
+    int          associated;
+    char __pad_28[4];
 };
 struct remove_completion_reply
 {
@@ -6286,6 +6288,32 @@ struct fsync_free_shm_idx_reply
 };
 
 
+
+struct get_completion_shm_request
+{
+    struct request_header __header;
+    obj_handle_t  handle;
+};
+struct get_completion_shm_reply
+{
+    struct reply_header __header;
+    data_size_t   size;
+    unsigned int  access;
+};
+
+
+
+struct kick_completion_request
+{
+    struct request_header __header;
+    obj_handle_t  handle;
+};
+struct kick_completion_reply
+{
+    struct reply_header __header;
+};
+
+
 enum request
 {
     REQ_new_process,
@@ -6600,6 +6628,8 @@ enum request
     REQ_d3dkmt_mutex_acquire,
     REQ_d3dkmt_mutex_release,
     REQ_fsync_free_shm_idx,
+    REQ_get_completion_shm,
+    REQ_kick_completion,
     REQ_NB_REQUESTS
 };
 
@@ -6919,6 +6949,8 @@ union generic_request
     struct d3dkmt_mutex_acquire_request d3dkmt_mutex_acquire_request;
     struct d3dkmt_mutex_release_request d3dkmt_mutex_release_request;
     struct fsync_free_shm_idx_request fsync_free_shm_idx_request;
+    struct get_completion_shm_request get_completion_shm_request;
+    struct kick_completion_request kick_completion_request;
 };
 union generic_reply
 {
@@ -7236,8 +7268,10 @@ union generic_reply
     struct d3dkmt_mutex_acquire_reply d3dkmt_mutex_acquire_reply;
     struct d3dkmt_mutex_release_reply d3dkmt_mutex_release_reply;
     struct fsync_free_shm_idx_reply fsync_free_shm_idx_reply;
+    struct get_completion_shm_reply get_completion_shm_reply;
+    struct kick_completion_reply kick_completion_reply;
 };
 
-#define SERVER_PROTOCOL_VERSION 932
+#define SERVER_PROTOCOL_VERSION 935
 
 #endif /* __WINE_WINE_SERVER_PROTOCOL_H */
