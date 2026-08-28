@@ -1591,9 +1591,18 @@ static HRESULT WINAPI video_presenter_control_GetBorderColor(IMFVideoDisplayCont
 
 static HRESULT WINAPI video_presenter_control_SetRenderingPrefs(IMFVideoDisplayControl *iface, DWORD flags)
 {
+    struct video_presenter *presenter = impl_from_IMFVideoDisplayControl(iface);
+
     FIXME("%p, %#lx.\n", iface, flags);
 
-    return E_NOTIMPL;
+    if (flags & ~MFVideoRenderPrefs_Mask)
+        return E_INVALIDARG;
+
+    EnterCriticalSection(&presenter->cs);
+    presenter->rendering_prefs = flags;
+    LeaveCriticalSection(&presenter->cs);
+
+    return S_OK;
 }
 
 static HRESULT WINAPI video_presenter_control_GetRenderingPrefs(IMFVideoDisplayControl *iface, DWORD *flags)
