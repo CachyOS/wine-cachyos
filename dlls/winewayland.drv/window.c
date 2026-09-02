@@ -538,9 +538,9 @@ static void wayland_configure_window(HWND hwnd)
         return;
     }
 
-    if (!wayland_surface_is_toplevel(surface))
+    if (!surface->xdg_surface)
     {
-        TRACE("missing xdg_toplevel, returning\n");
+        TRACE("missing xdg_surface, returning\n");
         wayland_win_data_release(data);
         return;
     }
@@ -613,7 +613,7 @@ static void wayland_configure_window(HWND hwnd)
     SetRect(&rect, 0, 0, width, height);
     OffsetRect(&rect, data->rects.window.left, data->rects.window.top);
     if (!IsRectEmpty(&rect)) rect = window_rect_from_visible(&data->rects, rect);
-
+    /* TODO: Move window based on which outputs it is mapped on */
     wayland_win_data_release(data);
 
     TRACE("hwnd=%p processing=%s,%#x\n", hwnd, wine_dbgstr_rect(&rect), state);
