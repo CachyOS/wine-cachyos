@@ -414,6 +414,8 @@ struct wayland_surface
 
     struct wayland_surface_config pending, requested, processing, current;
     BOOL resizing;
+    /* TODO: We can remove this once FSHack is implemented in opengl and vulkan upstream for all drivers.
+     * The opengl implementation is already merged. Then we would only need to ensure contents via expose. */
     enum wayland_surface_ensure_type ensured_contents;
     struct wayland_window_config window, comitted;
     int content_width, content_height;
