@@ -942,6 +942,7 @@ BOOL WAYLAND_GetWindowStateUpdates(HWND hwnd, UINT *state_cmd, UINT *swp_flags,
     if (!(style & WS_VISIBLE)) return FALSE;
     if ((style & (WS_POPUP | WS_CHILD)) == WS_CHILD) return FALSE;
     if (style & WS_DISABLED) return FALSE;
+    if (!foreground) return FALSE;
 
     pthread_mutex_lock(&keyboard->mutex);
     focused_hwnd = keyboard->focused_hwnd;
