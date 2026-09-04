@@ -34,6 +34,71 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(waylanddrv);
 
+static void wayland_surface_handle_enter(void *private, struct wl_surface *wl_surface,
+                                         struct wl_output *wl_output)
+{
+    HWND hwnd = private;
+    struct wayland_win_data *data;
+    struct wayland_surface *surface;
+    struct surface_output_entry *output_entry;
+    struct wayland_output *output = wl_output_get_user_data(wl_output);
+
+    TRACE("hwnd=%p name=%s\n", hwnd, debugstr_a(output->current.name));
+
+    if (!(data = wayland_win_data_get(hwnd))) return;
+    if (!(surface = data->wayland_surface)) goto err;
+    if (!wayland_surface_is_toplevel(surface)) goto err;
+    if (!(output_entry = calloc(1, sizeof(*output_entry)))) goto err;
+
+    wl_list_init(&output_entry->entry);
+    output_entry->output = output;
+    wayland_output_add_ref(output_entry->output);
+    wl_list_insert(&surface->output_list, &output_entry->entry);
+
+    wayland_win_data_release(data);
+    NtUserPostMessage(hwnd, WM_WINE_WINDOW_STATE_CHANGED, 0, 0);
+    return;
+err:
+    wayland_win_data_release(data);
+}
+
+static void wayland_surface_handle_leave(void *private, struct wl_surface *wl_surface,
+                                         struct wl_output *wl_output)
+{
+    HWND hwnd = private;
+    struct wayland_win_data *data;
+    struct wayland_surface *surface;
+    struct surface_output_entry *pos, *tmp;
+    struct wayland_output *output = wl_output_get_user_data(wl_output);
+
+    TRACE("hwnd=%p name=%s\n", hwnd, debugstr_a(output->current.name));
+
+    if (!(data = wayland_win_data_get(hwnd))) return;
+    if (!(surface = data->wayland_surface)) goto err;
+    if (!wayland_surface_is_toplevel(surface)) goto err;
+
+    wl_list_for_each_safe(pos, tmp, &surface->output_list, entry)
+    {
+        if (output == pos->output)
+        {
+            wl_list_remove(&pos->entry);
+            wayland_output_release(pos->output);
+            free(pos);
+        }
+    }
+
+    wayland_win_data_release(data);
+    NtUserPostMessage(hwnd, WM_WINE_WINDOW_STATE_CHANGED, 0, 0);
+    return;
+err:
+    wayland_win_data_release(data);
+}
+
+static const struct wl_surface_listener wayland_surface_listener = {
+    wayland_surface_handle_enter,
+    wayland_surface_handle_leave,
+};
+
 static void xdg_surface_handle_configure(void *private, struct xdg_surface *xdg_surface,
                                          uint32_t serial)
 {
@@ -285,13 +350,15 @@ struct wayland_surface *wayland_surface_create(HWND hwnd)
     TRACE("surface=%p\n", surface);
 
     surface->hwnd = hwnd;
+    wl_list_init(&surface->output_list);
+
     surface->wl_surface = wl_compositor_create_surface(process_wayland.wl_compositor);
     if (!surface->wl_surface)
     {
         ERR("Failed to create wl_surface Wayland surface\n");
         goto err;
     }
-    wl_surface_set_user_data(surface->wl_surface, hwnd);
+    wl_surface_add_listener(surface->wl_surface, &wayland_surface_listener, hwnd);
 
     surface->wp_viewport =
         wp_viewporter_get_viewport(process_wayland.wp_viewporter,
