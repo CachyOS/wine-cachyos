@@ -896,7 +896,8 @@ void WAYLAND_ActivateWindow(HWND hwnd, HWND previous)
 /***********************************************************************
  *           WAYLAND_GetWindowStyleMasks
  */
-BOOL WAYLAND_GetWindowStyleMasks(HWND hwnd, UINT style, UINT ex_style, UINT *style_mask, UINT *ex_style_mask)
+BOOL WAYLAND_GetWindowStyleMasks(HWND hwnd, UINT style, UINT ex_style,
+                                 UINT *style_mask, UINT *ex_style_mask)
 {
     BOOL ret = TRUE;
     struct wayland_win_data *data;
@@ -934,6 +935,8 @@ BOOL WAYLAND_GetWindowStyleMasks(HWND hwnd, UINT style, UINT ex_style, UINT *sty
 BOOL WAYLAND_GetWindowStateUpdates(HWND hwnd, UINT *state_cmd, UINT *swp_flags,
                                    RECT *rect, HWND *foreground)
 {
+    struct wayland_win_data *data;
+    struct wayland_surface *surface;
     struct wayland_keyboard *keyboard = &process_wayland.keyboard;
     DWORD style = NtUserGetWindowLongW(hwnd, GWL_STYLE);
     HWND focused_hwnd, old_foreground = NtUserGetForegroundWindow();
@@ -959,6 +962,27 @@ BOOL WAYLAND_GetWindowStateUpdates(HWND hwnd, UINT *state_cmd, UINT *swp_flags,
      * if we have keyboard focus on this window we can treat it as restored. */
     if ((style & WS_MINIMIZE) && focused_hwnd == hwnd && old_foreground != hwnd)
         *state_cmd = MAKELONG(SC_RESTORE, 0);
+    else if ((data = wayland_win_data_get(hwnd)))
+    {
+        struct surface_output_entry *output_entry;
+
+        if (!(surface = data->wayland_surface)) goto skip;
+        if (!wayland_surface_is_toplevel(surface)) goto skip;
+        if (wl_list_empty(&surface->output_list)) goto skip;
+        /* the output hint syncs the win32u position to the toplevel position */
+        if (surface->window.state & WAYLAND_SURFACE_CONFIG_STATE_FULLSCREEN) goto skip;
+
+        *swp_flags = SWP_NOSIZE | SWP_NOOWNERZORDER | SWP_NOZORDER | SWP_NOACTIVATE;
+        SetRect(rect, 0, 0, 1, 1);
+
+        output_entry = wl_container_of(surface->output_list.next, output_entry, entry);
+        OffsetRect(rect, output_entry->output->current.physical_x, output_entry->output->current.physical_y);
+
+        TRACE("Moving hwnd=%p to %s\n", hwnd, wine_dbgstr_rect(rect));
+
+    skip:
+        wayland_win_data_release(data);
+    }
 
     TRACE("hwnd=%p foreground=%p state=%#x\n", hwnd, *foreground, *state_cmd);
 
