@@ -496,14 +496,17 @@ struct syscall_frame
     void                 *syscall_cfa;   /* 00a8 */
     DWORD                 syscall_id;    /* 00b0 */
     DWORD                 restore_flags; /* 00b4 */
-    DWORD                 align[2];      /* 00b8 */
-    XSAVE_FORMAT          xsave;         /* 00c0 */
-    DECLSPEC_ALIGN(64) XSAVE_AREA_HEADER xstate;    /* 02c0 */
+    ULONG64               retval;        /* 00b8 */
+    ULONG64               instrumentation_rip; /* 00c0 */
+    DECLSPEC_ALIGN(64) XSAVE_FORMAT xsave;       /* 0100 */
+    DECLSPEC_ALIGN(64) XSAVE_AREA_HEADER xstate;    /* 0300 */
 };
 
-C_ASSERT( offsetof( struct syscall_frame, xsave ) == 0xc0 );
-C_ASSERT( offsetof( struct syscall_frame, xstate ) == 0x2c0 );
-C_ASSERT( sizeof( struct syscall_frame ) == 0x300);
+C_ASSERT( offsetof( struct syscall_frame, retval ) == 0xb8 );
+C_ASSERT( offsetof( struct syscall_frame, instrumentation_rip ) == 0xc0 );
+C_ASSERT( offsetof( struct syscall_frame, xsave ) == 0x100 );
+C_ASSERT( offsetof( struct syscall_frame, xstate ) == 0x300 );
+C_ASSERT( sizeof( struct syscall_frame ) == 0x340);
 
 struct amd64_thread_data
 {
@@ -518,6 +521,9 @@ struct amd64_thread_data
     void                **instrumentation_callback; /* 0330 */
     DWORD                 fs;            /* 0338 WOW TEB selector */
     DWORD                 mxcsr;         /* 033c Unix-side mxcsr register */
+    volatile char         sigusr1_blocked; /* 0340 */
+    volatile char         sigusr1_pending; /* 0341 */
+    volatile char         sigusr1_context_depth; /* 0342 */
 };
 
 C_ASSERT( sizeof(struct amd64_thread_data) <= sizeof(((struct ntdll_thread_data *)0)->cpu_data) );
@@ -526,10 +532,20 @@ C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct amd64_thread_data, fra
 C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct amd64_thread_data, instrumentation_callback ) == 0x330 );
 C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct amd64_thread_data, fs ) == 0x338 );
 C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct amd64_thread_data, mxcsr ) == 0x33c );
+C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct amd64_thread_data, sigusr1_blocked ) == 0x340 );
+C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct amd64_thread_data, sigusr1_pending ) == 0x341 );
+C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct amd64_thread_data, sigusr1_context_depth ) == 0x342 );
 
 static inline struct amd64_thread_data *amd64_thread_data(void)
 {
     return (struct amd64_thread_data *)ntdll_get_thread_data()->cpu_data;
+}
+
+static inline void update_instrumentation_rip( struct syscall_frame *frame )
+{
+    /* Keep the continuation with its frame so nested callbacks cannot overwrite it. */
+    if (frame->restore_flags & RESTORE_FLAGS_INSTRUMENTATION)
+        frame->instrumentation_rip = frame->rip;
 }
 
 static unsigned int frame_size;
@@ -1121,58 +1137,68 @@ void *get_wow_context( CONTEXT *context )
     return get_cpu_area( IMAGE_FILE_MACHINE_I386 );
 }
 
+void deferred_sigusr1(void);
+
+static inline void block_sigusr1(void)
+{
+    amd64_thread_data()->sigusr1_blocked++;
+}
+
+static inline void unblock_sigusr1(void)
+{
+    if (!--amd64_thread_data()->sigusr1_blocked && amd64_thread_data()->sigusr1_pending)
+        deferred_sigusr1();
+}
+
+static inline void abort_sigusr1_context_block(void)
+{
+    unsigned char depth = amd64_thread_data()->sigusr1_context_depth;
+
+    if (!depth) return;
+    amd64_thread_data()->sigusr1_context_depth = 0;
+    amd64_thread_data()->sigusr1_blocked -= depth;
+}
+
+#define CALL_SIGUSR1_PROTECTED(status, expression) \
+    do \
+    { \
+        block_sigusr1(); \
+        amd64_thread_data()->sigusr1_context_depth++; \
+        status = (expression); \
+        amd64_thread_data()->sigusr1_context_depth--; \
+        unblock_sigusr1(); \
+    } while (0)
 
 /***********************************************************************
- *              NtSetContextThread  (NTDLL.@)
- *              ZwSetContextThread  (NTDLL.@)
+ *              set_current_thread_context
  */
-NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
+static NTSTATUS set_current_thread_context( const CONTEXT *context, DWORD flags,
+                                            BOOL check_debug_regs, BOOL update_debug_regs,
+                                            BOOL *server_needed )
 {
-    NTSTATUS ret = STATUS_SUCCESS;
-    DWORD flags = context->ContextFlags & ~CONTEXT_AMD64;
-    BOOL self = (handle == GetCurrentThread());
     struct syscall_frame *frame = get_syscall_frame();
 
-    if ((flags & CONTEXT_XSTATE) && xstate_extended_features)
+    *server_needed = FALSE;
+    if (check_debug_regs && (flags & CONTEXT_DEBUG_REGISTERS) &&
+        (amd64_thread_data()->dr0 != context->Dr0 ||
+         amd64_thread_data()->dr1 != context->Dr1 ||
+         amd64_thread_data()->dr2 != context->Dr2 ||
+         amd64_thread_data()->dr3 != context->Dr3 ||
+         amd64_thread_data()->dr6 != context->Dr6 ||
+         amd64_thread_data()->dr7 != context->Dr7))
     {
-        CONTEXT_EX *context_ex = (CONTEXT_EX *)(context + 1);
-        XSAVE_AREA_HEADER *xs = (XSAVE_AREA_HEADER *)((char *)context_ex + context_ex->XState.Offset);
-
-        if (context_ex->XState.Length < sizeof(XSAVE_AREA_HEADER) ||
-            context_ex->XState.Length > xstate_size)
-            return STATUS_INVALID_PARAMETER;
-        if ((xs->Mask & xstate_extended_features)
-            && (context_ex->XState.Length < xstate_get_size( xs->CompactionMask, xs->Mask )))
-            return STATUS_BUFFER_OVERFLOW;
+        *server_needed = TRUE;
+        return STATUS_SUCCESS;
     }
-    else flags &= ~CONTEXT_XSTATE;
 
-    /* debug registers require a server call */
-    if (self && (flags & CONTEXT_DEBUG_REGISTERS))
-        self = (amd64_thread_data()->dr0 == context->Dr0 &&
-                amd64_thread_data()->dr1 == context->Dr1 &&
-                amd64_thread_data()->dr2 == context->Dr2 &&
-                amd64_thread_data()->dr3 == context->Dr3 &&
-                amd64_thread_data()->dr6 == context->Dr6 &&
-                amd64_thread_data()->dr7 == context->Dr7);
-
-    if (!self)
+    if (update_debug_regs)
     {
-        ret = set_thread_context( handle, context, &self, IMAGE_FILE_MACHINE_AMD64 );
-#ifdef __APPLE__
-        if ((flags & CONTEXT_DEBUG_REGISTERS) && (ret == STATUS_UNSUCCESSFUL))
-            WARN_(seh)( "Setting debug registers is not supported under Rosetta\n" );
-#endif
-        if (ret || !self) return ret;
-        if (flags & CONTEXT_DEBUG_REGISTERS)
-        {
-            amd64_thread_data()->dr0 = context->Dr0;
-            amd64_thread_data()->dr1 = context->Dr1;
-            amd64_thread_data()->dr2 = context->Dr2;
-            amd64_thread_data()->dr3 = context->Dr3;
-            amd64_thread_data()->dr6 = context->Dr6;
-            amd64_thread_data()->dr7 = context->Dr7;
-        }
+        amd64_thread_data()->dr0 = context->Dr0;
+        amd64_thread_data()->dr1 = context->Dr1;
+        amd64_thread_data()->dr2 = context->Dr2;
+        amd64_thread_data()->dr3 = context->Dr3;
+        amd64_thread_data()->dr6 = context->Dr6;
+        amd64_thread_data()->dr7 = context->Dr7;
     }
 
     if (flags & CONTEXT_INTEGER)
@@ -1198,6 +1224,7 @@ NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
         frame->rsp    = context->Rsp;
         frame->rip    = context->Rip;
         frame->eflags = context->EFlags;
+        update_instrumentation_rip( frame );
     }
     if (flags & CONTEXT_FLOATING_POINT)
     {
@@ -1223,27 +1250,70 @@ NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
 
 
 /***********************************************************************
- *              NtGetContextThread  (NTDLL.@)
- *              ZwGetContextThread  (NTDLL.@)
+ *              NtSetContextThread  (NTDLL.@)
+ *              ZwSetContextThread  (NTDLL.@)
  */
-NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
+NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
 {
-    struct syscall_frame *frame = get_syscall_frame();
-    DWORD needed_flags = context->ContextFlags & ~CONTEXT_AMD64;
-    BOOL use_cached_debug_regs = FALSE;
+    DWORD flags = context->ContextFlags & ~CONTEXT_AMD64;
     BOOL self = (handle == GetCurrentThread());
+    BOOL server_needed;
+    NTSTATUS ret;
 
-    if (self && needed_flags & CONTEXT_DEBUG_REGISTERS)
+    if ((flags & CONTEXT_XSTATE) && xstate_extended_features)
     {
-        /* debug registers require a server call if hw breakpoints are enabled */
-        if (amd64_thread_data()->dr7 & 0xff) self = FALSE;
-        else use_cached_debug_regs = TRUE;
+        CONTEXT_EX *context_ex = (CONTEXT_EX *)(context + 1);
+        XSAVE_AREA_HEADER *xs = (XSAVE_AREA_HEADER *)((char *)context_ex + context_ex->XState.Offset);
+
+        if (context_ex->XState.Length < sizeof(XSAVE_AREA_HEADER) ||
+            context_ex->XState.Length > xstate_size)
+            return STATUS_INVALID_PARAMETER;
+        if ((xs->Mask & xstate_extended_features)
+            && (context_ex->XState.Length < xstate_get_size( xs->CompactionMask, xs->Mask )))
+            return STATUS_BUFFER_OVERFLOW;
+    }
+    else flags &= ~CONTEXT_XSTATE;
+
+    if (self)
+    {
+        CALL_SIGUSR1_PROTECTED( ret, (set_current_thread_context( context, flags, TRUE, FALSE,
+                                                                 &server_needed )) );
+        if (ret || !server_needed) return ret;
     }
 
-    if (!self)
+    ret = set_thread_context( handle, context, &self, IMAGE_FILE_MACHINE_AMD64 );
+#ifdef __APPLE__
+    if ((flags & CONTEXT_DEBUG_REGISTERS) && (ret == STATUS_UNSUCCESSFUL))
+        WARN_(seh)( "Setting debug registers is not supported under Rosetta\n" );
+#endif
+    if (ret || !self) return ret;
+    CALL_SIGUSR1_PROTECTED( ret, (set_current_thread_context( context, flags, FALSE,
+                                                             flags & CONTEXT_DEBUG_REGISTERS,
+                                                             &server_needed )) );
+    return ret;
+}
+
+
+/***********************************************************************
+ *              get_current_thread_context
+ */
+static NTSTATUS get_current_thread_context( CONTEXT *context, DWORD needed_flags,
+                                            BOOL check_debug_regs, BOOL update_debug_regs,
+                                            BOOL *server_needed )
+{
+    struct syscall_frame *frame = get_syscall_frame();
+    BOOL use_cached_debug_regs = FALSE;
+
+    *server_needed = FALSE;
+    if (check_debug_regs && (needed_flags & CONTEXT_DEBUG_REGISTERS))
     {
-        NTSTATUS ret = get_thread_context( handle, context, &self, IMAGE_FILE_MACHINE_AMD64 );
-        if (ret || !self) return ret;
+        /* debug registers require a server call if hw breakpoints are enabled */
+        if (amd64_thread_data()->dr7 & 0xff)
+        {
+            *server_needed = TRUE;
+            return STATUS_SUCCESS;
+        }
+        else use_cached_debug_regs = TRUE;
     }
 
     if (needed_flags & CONTEXT_INTEGER)
@@ -1325,7 +1395,9 @@ NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
 
         if (context_ex->XState.Length < sizeof(XSAVE_AREA_HEADER) ||
             context_ex->XState.Length > xstate_size)
+        {
             return STATUS_INVALID_PARAMETER;
+        }
 
         if (user_shared_data->XState.CompactionEnabled)
         {
@@ -1344,7 +1416,9 @@ NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
         if (xstate->Mask)
         {
             if (context_ex->XState.Length < xstate_get_size( xstate->CompactionMask, xstate->Mask ))
+            {
                 return STATUS_BUFFER_OVERFLOW;
+            }
             copy_xstate( xstate, &frame->xstate, xstate->Mask );
             /* copy_xstate may use avx in memcpy, restore xstate not to break the tests. */
             frame->restore_flags |= CONTEXT_XSTATE;
@@ -1361,7 +1435,7 @@ NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
             context->Dr6 = amd64_thread_data()->dr6;
             context->Dr7 = amd64_thread_data()->dr7;
         }
-        else
+        else if (update_debug_regs)
         {
             /* update the cached version of the debug registers */
             amd64_thread_data()->dr0 = context->Dr0;
@@ -1372,50 +1446,79 @@ NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
             amd64_thread_data()->dr7 = context->Dr7;
         }
     }
-    set_context_exception_reporting_flags( &context->ContextFlags, CONTEXT_SERVICE_ACTIVE );
     return STATUS_SUCCESS;
 }
 
 
 /***********************************************************************
- *              set_thread_wow64_context
+ *              NtGetContextThread  (NTDLL.@)
+ *              ZwGetContextThread  (NTDLL.@)
  */
-NTSTATUS set_thread_wow64_context( HANDLE handle, const void *ctx, ULONG size )
+NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
 {
+    DWORD needed_flags = context->ContextFlags & ~CONTEXT_AMD64;
     BOOL self = (handle == GetCurrentThread());
-    struct syscall_frame *frame = get_syscall_frame();
-    I386_CONTEXT *wow_frame;
-    const I386_CONTEXT *context = ctx;
-    DWORD flags = context->ContextFlags & ~CONTEXT_i386;
+    BOOL server_needed;
+    NTSTATUS ret;
 
-    if (size != sizeof(I386_CONTEXT)) return STATUS_INFO_LENGTH_MISMATCH;
-
-    /* debug registers require a server call */
-    if (self && (flags & CONTEXT_I386_DEBUG_REGISTERS))
-        self = (amd64_thread_data()->dr0 == context->Dr0 &&
-                amd64_thread_data()->dr1 == context->Dr1 &&
-                amd64_thread_data()->dr2 == context->Dr2 &&
-                amd64_thread_data()->dr3 == context->Dr3 &&
-                amd64_thread_data()->dr6 == context->Dr6 &&
-                amd64_thread_data()->dr7 == context->Dr7);
-
-    if (!self)
+    if (self)
     {
-        NTSTATUS ret = set_thread_context( handle, context, &self, IMAGE_FILE_MACHINE_I386 );
-        if (ret || !self) return ret;
-        if (flags & CONTEXT_I386_DEBUG_REGISTERS)
+        CALL_SIGUSR1_PROTECTED( ret, (get_current_thread_context( context, needed_flags, TRUE,
+                                                                 FALSE, &server_needed )) );
+        if (ret || !server_needed)
         {
-            amd64_thread_data()->dr0 = context->Dr0;
-            amd64_thread_data()->dr1 = context->Dr1;
-            amd64_thread_data()->dr2 = context->Dr2;
-            amd64_thread_data()->dr3 = context->Dr3;
-            amd64_thread_data()->dr6 = context->Dr6;
-            amd64_thread_data()->dr7 = context->Dr7;
+            if (!ret) set_context_exception_reporting_flags( &context->ContextFlags, CONTEXT_SERVICE_ACTIVE );
+            return ret;
         }
-        if (!(flags & ~CONTEXT_I386_DEBUG_REGISTERS)) return ret;
     }
 
-    if (!(wow_frame = get_cpu_area( IMAGE_FILE_MACHINE_I386 ))) return STATUS_INVALID_PARAMETER;
+    ret = get_thread_context( handle, context, &self, IMAGE_FILE_MACHINE_AMD64 );
+    if (ret || !self) return ret;
+    CALL_SIGUSR1_PROTECTED( ret, (get_current_thread_context( context, needed_flags, FALSE,
+                                                             needed_flags & CONTEXT_DEBUG_REGISTERS,
+                                                             &server_needed )) );
+    if (!ret) set_context_exception_reporting_flags( &context->ContextFlags, CONTEXT_SERVICE_ACTIVE );
+    return ret;
+}
+
+
+/***********************************************************************
+ *              set_current_wow64_thread_context
+ */
+static NTSTATUS set_current_wow64_thread_context( const I386_CONTEXT *context, DWORD flags,
+                                                  BOOL check_debug_regs, BOOL update_debug_regs,
+                                                  BOOL server_context, BOOL *server_needed )
+{
+    struct syscall_frame *frame = get_syscall_frame();
+    I386_CONTEXT *wow_frame;
+
+    *server_needed = FALSE;
+    if (check_debug_regs && (flags & CONTEXT_I386_DEBUG_REGISTERS) &&
+        (amd64_thread_data()->dr0 != context->Dr0 ||
+         amd64_thread_data()->dr1 != context->Dr1 ||
+         amd64_thread_data()->dr2 != context->Dr2 ||
+         amd64_thread_data()->dr3 != context->Dr3 ||
+         amd64_thread_data()->dr6 != context->Dr6 ||
+         amd64_thread_data()->dr7 != context->Dr7))
+    {
+        *server_needed = TRUE;
+        return STATUS_SUCCESS;
+    }
+
+    if (update_debug_regs)
+    {
+        amd64_thread_data()->dr0 = context->Dr0;
+        amd64_thread_data()->dr1 = context->Dr1;
+        amd64_thread_data()->dr2 = context->Dr2;
+        amd64_thread_data()->dr3 = context->Dr3;
+        amd64_thread_data()->dr6 = context->Dr6;
+        amd64_thread_data()->dr7 = context->Dr7;
+    }
+    if (server_context && !(flags & ~CONTEXT_I386_DEBUG_REGISTERS))
+        return STATUS_SUCCESS;
+
+    if (!(wow_frame = get_cpu_area( IMAGE_FILE_MACHINE_I386 )))
+        return STATUS_INVALID_PARAMETER;
 
     if (flags & CONTEXT_I386_INTEGER)
     {
@@ -1481,40 +1584,67 @@ NTSTATUS set_thread_wow64_context( HANDLE handle, const void *ctx, ULONG size )
 
 
 /***********************************************************************
- *              get_thread_wow64_context
+ *              set_thread_wow64_context
  */
-NTSTATUS get_thread_wow64_context( HANDLE handle, void *ctx, ULONG size )
+NTSTATUS set_thread_wow64_context( HANDLE handle, const void *ctx, ULONG size )
 {
-    DWORD needed_flags;
-    struct syscall_frame *frame = get_syscall_frame();
-    I386_CONTEXT *wow_frame, *context = ctx;
+    const I386_CONTEXT *context = ctx;
     BOOL self = (handle == GetCurrentThread());
+    BOOL server_needed;
+    DWORD flags;
+    NTSTATUS ret;
 
     if (size != sizeof(I386_CONTEXT)) return STATUS_INFO_LENGTH_MISMATCH;
+    flags = context->ContextFlags & ~CONTEXT_i386;
 
-    needed_flags = context->ContextFlags & ~CONTEXT_i386;
-
-    /* debug registers require a server call */
-    if (needed_flags & CONTEXT_I386_DEBUG_REGISTERS) self = FALSE;
-
-    if (!self)
+    if (self)
     {
-        NTSTATUS ret = get_thread_context( handle, context, &self, IMAGE_FILE_MACHINE_I386 );
-        if (ret || !self) return ret;
-        /* update the cached version of the debug registers */
-        if (needed_flags & CONTEXT_I386_DEBUG_REGISTERS)
-        {
-            amd64_thread_data()->dr0 = context->Dr0;
-            amd64_thread_data()->dr1 = context->Dr1;
-            amd64_thread_data()->dr2 = context->Dr2;
-            amd64_thread_data()->dr3 = context->Dr3;
-            amd64_thread_data()->dr6 = context->Dr6;
-            amd64_thread_data()->dr7 = context->Dr7;
-        }
-        if (!(needed_flags & ~CONTEXT_I386_DEBUG_REGISTERS)) return ret;
+        CALL_SIGUSR1_PROTECTED( ret, (set_current_wow64_thread_context( context, flags, TRUE,
+                                                                       FALSE, FALSE,
+                                                                       &server_needed )) );
+        if (ret || !server_needed) return ret;
     }
 
-    if (!(wow_frame = get_cpu_area( IMAGE_FILE_MACHINE_I386 ))) return STATUS_INVALID_PARAMETER;
+    ret = set_thread_context( handle, context, &self, IMAGE_FILE_MACHINE_I386 );
+    if (ret || !self) return ret;
+    CALL_SIGUSR1_PROTECTED( ret, (set_current_wow64_thread_context( context, flags, FALSE,
+                                                                   flags & CONTEXT_I386_DEBUG_REGISTERS,
+                                                                   TRUE, &server_needed )) );
+    return ret;
+}
+
+
+/***********************************************************************
+ *              get_current_wow64_thread_context
+ */
+static NTSTATUS get_current_wow64_thread_context( I386_CONTEXT *context, DWORD needed_flags,
+                                                  BOOL check_debug_regs, BOOL update_debug_regs,
+                                                  BOOL server_context, BOOL *server_needed )
+{
+    struct syscall_frame *frame = get_syscall_frame();
+    I386_CONTEXT *wow_frame;
+
+    *server_needed = FALSE;
+    if (check_debug_regs && (needed_flags & CONTEXT_I386_DEBUG_REGISTERS))
+    {
+        *server_needed = TRUE;
+        return STATUS_SUCCESS;
+    }
+
+    if (update_debug_regs)
+    {
+        amd64_thread_data()->dr0 = context->Dr0;
+        amd64_thread_data()->dr1 = context->Dr1;
+        amd64_thread_data()->dr2 = context->Dr2;
+        amd64_thread_data()->dr3 = context->Dr3;
+        amd64_thread_data()->dr6 = context->Dr6;
+        amd64_thread_data()->dr7 = context->Dr7;
+    }
+    if (server_context && !(needed_flags & ~CONTEXT_I386_DEBUG_REGISTERS))
+        return STATUS_SUCCESS;
+
+    if (!(wow_frame = get_cpu_area( IMAGE_FILE_MACHINE_I386 )))
+        return STATUS_INVALID_PARAMETER;
 
     if (needed_flags & CONTEXT_I386_INTEGER)
     {
@@ -1587,9 +1717,47 @@ NTSTATUS get_thread_wow64_context( HANDLE handle, void *ctx, ULONG size )
             frame->restore_flags |= CONTEXT_XSTATE;
         }
     }
-    set_context_exception_reporting_flags( &context->ContextFlags, CONTEXT_SERVICE_ACTIVE );
     return STATUS_SUCCESS;
 }
+
+
+/***********************************************************************
+ *              get_thread_wow64_context
+ */
+NTSTATUS get_thread_wow64_context( HANDLE handle, void *ctx, ULONG size )
+{
+    I386_CONTEXT *context = ctx;
+    BOOL self = (handle == GetCurrentThread());
+    BOOL server_needed;
+    DWORD needed_flags;
+    NTSTATUS ret;
+
+    if (size != sizeof(I386_CONTEXT)) return STATUS_INFO_LENGTH_MISMATCH;
+    needed_flags = context->ContextFlags & ~CONTEXT_i386;
+
+    if (self)
+    {
+        CALL_SIGUSR1_PROTECTED( ret, (get_current_wow64_thread_context( context, needed_flags,
+                                                                       TRUE, FALSE, FALSE,
+                                                                       &server_needed )) );
+        if (ret || !server_needed)
+        {
+            if (!ret) set_context_exception_reporting_flags( &context->ContextFlags, CONTEXT_SERVICE_ACTIVE );
+            return ret;
+        }
+    }
+
+    ret = get_thread_context( handle, context, &self, IMAGE_FILE_MACHINE_I386 );
+    if (ret || !self) return ret;
+    CALL_SIGUSR1_PROTECTED( ret, (get_current_wow64_thread_context( context, needed_flags, FALSE,
+                                                                   needed_flags & CONTEXT_I386_DEBUG_REGISTERS,
+                                                                   TRUE, &server_needed )) );
+    if (!ret && (needed_flags & ~CONTEXT_I386_DEBUG_REGISTERS))
+        set_context_exception_reporting_flags( &context->ContextFlags, CONTEXT_SERVICE_ACTIVE );
+    return ret;
+}
+
+#undef CALL_SIGUSR1_PROTECTED
 
 
 /***********************************************************************
@@ -1732,6 +1900,7 @@ NTSTATUS call_user_apc_dispatcher( CONTEXT *context, unsigned int flags, ULONG_P
     frame->rsp = (ULONG64)stack;
     frame->rip = (ULONG64)pKiUserApcDispatcher;
     frame->restore_flags |= CONTEXT_CONTROL;
+    update_instrumentation_rip( frame );
     return status;
 }
 
@@ -1741,7 +1910,10 @@ NTSTATUS call_user_apc_dispatcher( CONTEXT *context, unsigned int flags, ULONG_P
  */
 void call_raise_user_exception_dispatcher(void)
 {
-    get_syscall_frame()->rip = (UINT64)pKiRaiseUserExceptionDispatcher;
+    struct syscall_frame *frame = get_syscall_frame();
+
+    frame->rip = (UINT64)pKiRaiseUserExceptionDispatcher;
+    update_instrumentation_rip( frame );
 }
 
 
@@ -1776,6 +1948,7 @@ NTSTATUS call_user_exception_dispatcher( EXCEPTION_RECORD *rec, CONTEXT *context
     frame->rsp = (ULONG64)stack;
     frame->rip = (ULONG64)pKiUserExceptionDispatcher;
     frame->restore_flags |= CONTEXT_CONTROL;
+    update_instrumentation_rip( frame );
     return status;
 }
 
@@ -1831,7 +2004,7 @@ __ASM_GLOBAL_FUNC( call_user_mode_callback,
                    /* switch to user stack */
                    "1:\tmovq %rdi,%rsp\n\t"    /* user_rsp */
                    "movq 0x98(%r14),%rbp\n\t"  /* prev_frame->rbp */
-                   "ldmxcsr 0xd8(%r14)\n\t"    /* prev_frame->xsave.MxCsr */
+                   "ldmxcsr 0x118(%r14)\n\t"   /* prev_frame->xsave.MxCsr */
 #ifdef __linux__
                    "movw 0x338(%r13),%ax\n"    /* amd64_thread_data()->fs */
                    "testw %ax,%ax\n\t"
@@ -2063,7 +2236,10 @@ static void sigsys_handler( int signal, siginfo_t *siginfo, void *sigcontext )
     frame->rcx = RIP_sig(ucontext);
     frame->eflags = EFL_sig(ucontext);
     frame->restore_flags = 0;
-    if (instrumentation_callback) frame->restore_flags |= RESTORE_FLAGS_INSTRUMENTATION;
+    if (instrumentation_callback)
+    {
+        frame->restore_flags |= RESTORE_FLAGS_INSTRUMENTATION;
+    }
     RCX_sig(ucontext) = (ULONG_PTR)frame;
     R11_sig(ucontext) = frame->eflags;
     if (EFL_sig(ucontext) & 0x100)
@@ -2580,7 +2756,11 @@ static BOOL handle_syscall_trap( ucontext_t *sigcontext, siginfo_t *siginfo )
     frame->rip = *(ULONG64 *)RSP_sig( sigcontext );
     frame->eflags = EFL_sig(sigcontext);
     frame->restore_flags = CONTEXT_CONTROL;
-    if (instrumentation_callback) frame->restore_flags |= RESTORE_FLAGS_INSTRUMENTATION;
+    if (instrumentation_callback)
+    {
+        frame->restore_flags |= RESTORE_FLAGS_INSTRUMENTATION;
+        update_instrumentation_rip( frame );
+    }
 
     RCX_sig( sigcontext ) = (ULONG64)frame;
     RSP_sig( sigcontext ) += sizeof(ULONG64);
@@ -2776,6 +2956,7 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
         rec.ExceptionCode = EXCEPTION_ILLEGAL_INSTRUCTION;
         break;
     }
+    abort_sigusr1_context_block();
     if (handle_syscall_fault( ucontext, &rec, &context.c )) return;
     setup_raise_exception( ucontext, &rec, &context );
 }
@@ -2811,6 +2992,7 @@ static void trap_handler( int signal, siginfo_t *siginfo, void *sigcontext )
         rec.ExceptionInformation[0] = 0;
         break;
     }
+    abort_sigusr1_context_block();
     setup_raise_exception( ucontext, &rec, &context );
 }
 
@@ -2918,6 +3100,68 @@ static void quit_handler( int signal, siginfo_t *siginfo, void *sigcontext )
     abort_thread( 0 );
 }
 
+/**********************************************************************
+ *		usr1_inside_syscall
+ *
+ * Shared code to handle SIGUSR1 within a syscall.
+ */
+static void usr1_inside_syscall( struct xcontext *context )
+{
+    struct syscall_frame *frame = get_syscall_frame();
+    ULONG64 saved_compaction = 0;
+    I386_CONTEXT *wow_context;
+
+    context->c.ContextFlags = CONTEXT_FULL | CONTEXT_SEGMENTS | CONTEXT_EXCEPTION_REQUEST;
+
+    NtGetContextThread( GetCurrentThread(), &context->c );
+    if (xstate_extended_features)
+    {
+        if (user_shared_data->XState.CompactionEnabled)
+            frame->xstate.CompactionMask |= xstate_extended_features;
+        context_init_xstate( &context->c, &frame->xstate );
+        saved_compaction = frame->xstate.CompactionMask;
+    }
+    wait_suspend( &context->c );
+    if (xstate_extended_features) frame->xstate.CompactionMask = saved_compaction;
+    if (context->c.ContextFlags & 0x40)
+    {
+        /* xstate is updated directly in frame's xstate */
+        context->c.ContextFlags &= ~0x40;
+        frame->restore_flags |= 0x40;
+    }
+    if ((wow_context = get_cpu_area( IMAGE_FILE_MACHINE_I386 )) &&
+        (wow_context->ContextFlags & CONTEXT_I386_CONTROL) == CONTEXT_I386_CONTROL)
+    {
+        WOW64_CPURESERVED *cpu = NtCurrentTeb()->TlsSlots[WOW64_TLS_CPURESERVED];
+
+        cpu->Flags |= WOW64_CPURESERVED_FLAG_RESET_STATE;
+    }
+    NtSetContextThread( GetCurrentThread(), &context->c );
+}
+
+/**********************************************************************
+ *		deferred_sigusr1
+ *
+ * Deferred handler for SIGUSR1
+ *
+ * Called after syscall entry, on the kernel stack.
+ */
+void deferred_sigusr1(void)
+{
+    struct xcontext context;
+
+    TRACE_(seh)( "handling deferred SIGUSR1\n" );
+    do
+    {
+        amd64_thread_data()->sigusr1_pending = 0;
+        /* USR1 could arrive again immediately since we are not in signal context,
+         * so block it. This must not enclose faultable user-buffer access because
+         * the block is not depth-tracked. */
+        amd64_thread_data()->sigusr1_blocked++;
+        usr1_inside_syscall( &context );
+        amd64_thread_data()->sigusr1_blocked--;
+    } while (amd64_thread_data()->sigusr1_pending);
+}
 
 /**********************************************************************
  *		usr1_handler
@@ -2927,62 +3171,65 @@ static void quit_handler( int signal, siginfo_t *siginfo, void *sigcontext )
 static void usr1_handler( int signal, siginfo_t *siginfo, void *sigcontext )
 {
     ucontext_t *ucontext = init_handler( sigcontext );
+    struct syscall_frame *frame = get_syscall_frame();
+    struct xcontext *context;
 
-    if (is_inside_syscall( RSP_sig(ucontext) ))
+    extern const void *__wine_syscall_dispatcher_save_end_ptr;
+    extern const void *__wine_syscall_dispatcher_return_ptr;
+    extern const void *__wine_syscall_dispatcher_return_end_ptr;
+
+    if (RIP_sig(ucontext) >= (ULONG_PTR)__wine_syscall_dispatcher_instrumentation &&
+        RIP_sig(ucontext) < (ULONG_PTR)__wine_syscall_dispatcher_save_end_ptr)
     {
-        struct syscall_frame *frame = get_syscall_frame();
-        ULONG64 saved_compaction = 0;
-        I386_CONTEXT *wow_context;
-        struct xcontext *context;
-
-        context = (struct xcontext *)(((ULONG_PTR)RSP_sig(ucontext) - 128 /* red zone */ - sizeof(*context)) & ~15);
-        if ((char *)context < (char *)ntdll_get_thread_data()->kernel_stack)
-        {
-            ERR_(seh)( "kernel stack overflow.\n" );
-            return;
-        }
-        context->c.ContextFlags = CONTEXT_FULL | CONTEXT_SEGMENTS | CONTEXT_EXCEPTION_REQUEST;
-        if (frame->restore_flags & RESTORE_FLAGS_INCOMPLETE_FRAME_CONTEXT)
-        {
-            frame->restore_flags &= ~RESTORE_FLAGS_INCOMPLETE_FRAME_CONTEXT;
-            frame->eflags = 0x200;
-            fixup_frame_fpu_state( frame, ucontext );
-        }
-        NtGetContextThread( GetCurrentThread(), &context->c );
-        if (xstate_extended_features)
-        {
-            if (user_shared_data->XState.CompactionEnabled)
-                frame->xstate.CompactionMask |= xstate_extended_features;
-            context_init_xstate( &context->c, &frame->xstate );
-            saved_compaction = frame->xstate.CompactionMask;
-        }
-        wait_suspend( &context->c );
-        if (xstate_extended_features) frame->xstate.CompactionMask = saved_compaction;
-        if (context->c.ContextFlags & 0x40)
-        {
-            /* xstate is updated directly in frame's xstate */
-            context->c.ContextFlags &= ~0x40;
-            frame->restore_flags |= 0x40;
-        }
-        if ((wow_context = get_cpu_area( IMAGE_FILE_MACHINE_I386 ))
-             && (wow_context->ContextFlags & CONTEXT_I386_CONTROL) == CONTEXT_I386_CONTROL)
-        {
-            WOW64_CPURESERVED *cpu = NtCurrentTeb()->TlsSlots[WOW64_TLS_CPURESERVED];
-
-            cpu->Flags |= WOW64_CPURESERVED_FLAG_RESET_STATE;
-        }
-        NtSetContextThread( GetCurrentThread(), &context->c );
+        TRACE_(seh)( "deferring SIGUSR1 during syscall entry (rip=%#lx)\n", (long)RIP_sig(ucontext) );
+        amd64_thread_data()->sigusr1_pending = 1;
+        return;
     }
-    else
+    if (RIP_sig(ucontext) >= (ULONG_PTR)__wine_syscall_dispatcher_return_ptr &&
+        RIP_sig(ucontext) < (ULONG_PTR)__wine_syscall_dispatcher_return_end_ptr)
     {
-        struct xcontext context;
-
-        save_context( &context, ucontext );
-        context.c.ContextFlags |= CONTEXT_EXCEPTION_REPORTING;
-        if (is_wow64() && context.c.SegCs == cs64_sel) context.c.ContextFlags |= CONTEXT_EXCEPTION_ACTIVE;
-        wait_suspend( &context.c );
-        restore_context( &context, ucontext );
+        TRACE_(seh)( "rewinding syscall exit due to SIGUSR1 (rip=%#lx, rax=%#lx)\n",
+                     (long)RIP_sig(ucontext), (long)RAX_sig(ucontext) );
+        RAX_sig(ucontext) = frame->retval;
+        R13_sig(ucontext) = (ULONG_PTR)NtCurrentTeb();
+        RBP_sig(ucontext) = (ULONG_PTR)&frame->rbp;
+        RIP_sig(ucontext) = (ULONG_PTR)__wine_syscall_dispatcher_return_ptr;
+        RCX_sig(ucontext) = (ULONG_PTR)frame;
+        RSP_sig(ucontext) = (ULONG_PTR)frame;
     }
+    else if (!is_inside_syscall( RSP_sig(ucontext) ))
+    {
+        struct xcontext outside_context;
+
+        save_context( &outside_context, ucontext );
+        outside_context.c.ContextFlags |= CONTEXT_EXCEPTION_REPORTING;
+        if (is_wow64() && outside_context.c.SegCs == cs64_sel)
+            outside_context.c.ContextFlags |= CONTEXT_EXCEPTION_ACTIVE;
+        wait_suspend( &outside_context.c );
+        restore_context( &outside_context, ucontext );
+        return;
+    }
+    else if (amd64_thread_data()->sigusr1_blocked)
+    {
+        TRACE_(seh)( "deferring SIGUSR1 during critical syscall (rip=%#lx, blocked=%d)\n",
+                     (long)RIP_sig(ucontext), amd64_thread_data()->sigusr1_blocked );
+        amd64_thread_data()->sigusr1_pending = 1;
+        return;
+    }
+
+    context = (struct xcontext *)(((ULONG_PTR)RSP_sig(ucontext) - 128 - sizeof(*context)) & ~15);
+    if ((char *)context < (char *)ntdll_get_thread_data()->kernel_stack)
+    {
+        ERR_(seh)( "kernel stack overflow.\n" );
+        return;
+    }
+    if (frame->restore_flags & RESTORE_FLAGS_INCOMPLETE_FRAME_CONTEXT)
+    {
+        frame->restore_flags &= ~RESTORE_FLAGS_INCOMPLETE_FRAME_CONTEXT;
+        frame->eflags = 0x200;
+        fixup_frame_fpu_state( frame, ucontext );
+    }
+    usr1_inside_syscall( context );
 }
 
 
@@ -3005,7 +3252,10 @@ static void sigsys_handler( int signal, siginfo_t *siginfo, void *sigcontext )
     frame->rcx = RIP_sig(ucontext);
     frame->eflags = EFL_sig(ucontext);
     frame->restore_flags = 0;
-    if (instrumentation_callback) frame->restore_flags |= RESTORE_FLAGS_INSTRUMENTATION;
+    if (instrumentation_callback)
+    {
+        frame->restore_flags |= RESTORE_FLAGS_INSTRUMENTATION;
+    }
     RCX_sig(ucontext) = (ULONG_PTR)frame;
     R11_sig(ucontext) = frame->eflags;
     if (EFL_sig(ucontext) & 0x100)
@@ -3213,6 +3463,9 @@ void init_syscall_frame( LPTHREAD_START_ROUTINE entry, void *arg, BOOL suspend, 
 
     assert( thread_data->frame_size == frame_size );
     thread_data->instrumentation_callback = &instrumentation_callback;
+    thread_data->sigusr1_blocked = 0;
+    thread_data->sigusr1_pending = 0;
+    thread_data->sigusr1_context_depth = 0;
 
 #if defined __linux__
     arch_prctl( ARCH_SET_GS, teb );
@@ -3281,6 +3534,7 @@ void init_syscall_frame( LPTHREAD_START_ROUTINE entry, void *arg, BOOL suspend, 
     ctx = (CONTEXT *)((ULONG_PTR)context.Rsp & ~15) - 1;
     *ctx = context;
     ctx->ContextFlags = CONTEXT_FULL;
+    frame->instrumentation_rip = 0;
     memset( &frame->xstate, 0, sizeof(frame->xstate) );
     if (user_shared_data->XState.CompactionEnabled)
         frame->xstate.CompactionMask = 0x8000000000000000 | user_shared_data->XState.EnabledFeatures;
@@ -3345,6 +3599,23 @@ __ASM_GLOBAL_FUNC( signal_start_thread,
 /***********************************************************************
  *           __wine_syscall_dispatcher
  */
+
+/* The instrumentation entry point comes first. This allows the range between
+ * __wine_syscall_dispatcher_instrumentation and __wine_syscall_dispatcher_save_end
+ * to be considered "entering a syscall" in the SIGUSR1 handler.
+ */
+__ASM_GLOBAL_FUNC( __wine_syscall_dispatcher_instrumentation,
+                   "movq %gs:0x378,%rcx\n\t"       /* thread_data->syscall_frame */
+                   "popq 0x70(%rcx)\n\t"           /* frame->rip */
+                   __ASM_CFI(".cfi_adjust_cfa_offset -8\n\t")
+                   __ASM_CFI_REG_IS_AT2(rip, rcx, 0xf0,0x00)
+                   "pushfq\n\t"
+                   __ASM_CFI(".cfi_adjust_cfa_offset 8\n\t")
+                   "popq 0x80(%rcx)\n\t"
+                   __ASM_CFI(".cfi_adjust_cfa_offset -8\n\t")
+                   "movl $0x10000,0xb4(%rcx)\n\t"    /* frame->restore_flags <- RESTORE_FLAGS_INSTRUMENTATION */
+                   "jmp " __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_prolog_end") )
+
 __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_gs_load") ":\n\t"
                    "movq %gs:0x378,%rcx\n\t"       /* thread_data->syscall_frame */
@@ -3383,30 +3654,35 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    /* Legends of Runeterra hooks the first system call return instruction, and
                     * depends on us returning to it. Adjust the return address accordingly. */
                    "subq $0xb,0x70(%rcx)\n\t"
+                   "testl $0x10000,0xb4(%rcx)\n\t"  /* RESTORE_FLAGS_INSTRUMENTATION */
+                   "jz 9f\n\t"
+                   "movq 0x70(%rcx),%rax\n\t"      /* frame->rip */
+                   "movq %rax,0xc0(%rcx)\n\t"      /* frame->instrumentation_rip */
+                   "9:\n\t"
                    "cmpb $0,0x7ffe0285\n\t"        /* user_shared_data->ProcessorFeatures[PF_XSAVE_ENABLED] */
                    "jz 2f\n\t"
                    "movl 0x7ffe03d8,%eax\n\t"      /* user_shared_data->XState.EnabledFeatures */
                    "xorl %edx,%edx\n\t"
                    "andl $7,%eax\n\t"
                    "xorq %rbp,%rbp\n\t"
-                   "movq %rbp,0x2c0(%rcx)\n\t"
-                   "movq %rbp,0x2c8(%rcx)\n\t"
-                   "movq %rbp,0x2d0(%rcx)\n\t"
+                   "movq %rbp,0x300(%rcx)\n\t"
+                   "movq %rbp,0x308(%rcx)\n\t"
+                   "movq %rbp,0x310(%rcx)\n\t"
                    "testl $2,0x7ffe03ec\n\t"       /* user_shared_data->XState.CompactionEnabled */
                    "jz 1f\n\t"
-                   "movq %rbp,0x2d8(%rcx)\n\t"
-                   "movq %rbp,0x2e0(%rcx)\n\t"
-                   "movq %rbp,0x2e8(%rcx)\n\t"
-                   "movq %rbp,0x2f0(%rcx)\n\t"
-                   "movq %rbp,0x2f8(%rcx)\n\t"
+                   "movq %rbp,0x318(%rcx)\n\t"
+                   "movq %rbp,0x320(%rcx)\n\t"
+                   "movq %rbp,0x328(%rcx)\n\t"
+                   "movq %rbp,0x330(%rcx)\n\t"
+                   "movq %rbp,0x338(%rcx)\n\t"
                    /* The xsavec instruction is not supported by
                     * binutils < 2.25. */
-                   ".byte 0x48, 0x0f, 0xc7, 0xa1, 0xc0, 0x00, 0x00, 0x00\n\t" /* xsavec64 0xc0(%rcx) */
-                   "stmxcsr 0xd8(%rcx)\n\t"        /* frame->xsave.MxCsr */
+                   ".byte 0x48, 0x0f, 0xc7, 0xa1, 0x00, 0x01, 0x00, 0x00\n\t" /* xsavec64 0x100(%rcx) */
+                   "stmxcsr 0x118(%rcx)\n\t"       /* frame->xsave.MxCsr */
                    "jmp 3f\n"
-                   "1:\txsave64 0xc0(%rcx)\n\t"
+                   "1:\txsave64 0x100(%rcx)\n\t"
                    "jmp 3f\n"
-                   "2:\tfxsave64 0xc0(%rcx)\n"
+                   "2:\tfxsave64 0x100(%rcx)\n"
                    "3:\tleaq 0x98(%rcx),%rbp\n\t"
                    __ASM_CFI_CFA_IS_AT1(rbp, 0x70)
                    __ASM_CFI_REG_IS_AT1(rip, rbp, 0x58)
@@ -3455,7 +3731,24 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    "syscall\n\t"
                    "leaq -0x98(%rbp),%rcx\n"
 #endif
-                   "ldmxcsr 0x33c(%r13)\n\t"       /* amd64_thread_data()->mxcsr */
+                   /* If the handler was interrupted while saving context, the
+                    * SIGUSR1 is deferred. Handle it now.
+                    */
+                   "\n" __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_save_end") ":\n\t"
+                   "testb $1,0x341(%r13)\n\t"      /* amd64_thread_data()->sigusr1_pending */
+                   "jz 1f\n\t"
+                   "pushq %r8\n\t"
+                   "pushq %r9\n\t"
+                   "pushq %r10\n\t"
+                   "sub $8,%rsp\n\t"            /* align */
+                   "call " __ASM_NAME("deferred_sigusr1") "\n\t"
+                   "add $8,%rsp\n\t"
+                   "popq %r10\n\t"
+                   "popq %r9\n\t"
+                   "popq %r8\n\t"
+                   "leaq -0x98(%rbp),%rcx\n"
+
+                   "1:\tldmxcsr 0x33c(%r13)\n\t"   /* amd64_thread_data()->mxcsr */
                    "movl 0xb0(%rcx),%eax\n\t"      /* frame->syscall_id */
                    "movq 0x18(%rcx),%r11\n\t"      /* 2nd argument */
                    "movl %eax,%ebx\n\t"
@@ -3489,7 +3782,17 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    "movq 8(%r15),%r9\n\t"          /* 6th argument */
                    "callq *%r12\n\t"
                    "leaq -0x98(%rbp),%rcx\n\t"
+
+                   /* If the handler is interrupted between this point and
+                    * __wine_syscall_dispatcher_return_end below,
+                    * the syscall return will be restarted. Therefore, this
+                    * code should be idempotent. Save the return value first,
+                    * so it can be restored. The register state at this
+                    * point must be restored in usr1_handler().
+                   */
                    __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return") ":\n\t"
+                   "movq %rax,0xb8(%rcx)\n\t"      /* frame->retval */
+                   __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return_restart") ":\n\t"
                    /* push rbp-based kernel stack cfi */
                    __ASM_CFI(".cfi_remember_state\n\t")
                    __ASM_CFI_CFA_IS_AT2(rcx, 0xa8, 0x01) /* frame->syscall_cfa */
@@ -3513,28 +3816,28 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    "movl 0xb4(%rcx),%edx\n\t"      /* frame->restore_flags */
                    "testl $0x48,%edx\n\t"          /* CONTEXT_FLOATING_POINT | CONTEXT_XSTATE */
                    "jnz 2f\n\t"
-                   "ldmxcsr 0xd8(%rcx)\n\t"        /* frame->xsave.MxCsr */
-                   "movaps 0x1c0(%rcx),%xmm6\n\t"
-                   "movaps 0x1d0(%rcx),%xmm7\n\t"
-                   "movaps 0x1e0(%rcx),%xmm8\n\t"
-                   "movaps 0x1f0(%rcx),%xmm9\n\t"
-                   "movaps 0x200(%rcx),%xmm10\n\t"
-                   "movaps 0x210(%rcx),%xmm11\n\t"
-                   "movaps 0x220(%rcx),%xmm12\n\t"
-                   "movaps 0x230(%rcx),%xmm13\n\t"
-                   "movaps 0x240(%rcx),%xmm14\n\t"
-                   "movaps 0x250(%rcx),%xmm15\n\t"
+                   "ldmxcsr 0x118(%rcx)\n\t"       /* frame->xsave.MxCsr */
+                   "movaps 0x200(%rcx),%xmm6\n\t"
+                   "movaps 0x210(%rcx),%xmm7\n\t"
+                   "movaps 0x220(%rcx),%xmm8\n\t"
+                   "movaps 0x230(%rcx),%xmm9\n\t"
+                   "movaps 0x240(%rcx),%xmm10\n\t"
+                   "movaps 0x250(%rcx),%xmm11\n\t"
+                   "movaps 0x260(%rcx),%xmm12\n\t"
+                   "movaps 0x270(%rcx),%xmm13\n\t"
+                   "movaps 0x280(%rcx),%xmm14\n\t"
+                   "movaps 0x290(%rcx),%xmm15\n\t"
                    "jmp 4f\n"
                    "2:\tcmpb $0,0x7ffe0285\n\t"    /* user_shared_data->ProcessorFeatures[PF_XSAVE_ENABLED] */
                    "jz 3f\n\t"
                    "movq %rax,%r11\n\t"
                    "movl 0x7ffe03d8,%eax\n\t"      /* user_shared_data->XState.EnabledFeatures */
                    "movl 0x7ffe03dc,%edx\n\t"
-                   "xrstor64 0xc0(%rcx)\n\t"
+                   "xrstor64 0x100(%rcx)\n\t"
                    "movq %r11,%rax\n\t"
                    "movl 0xb4(%rcx),%edx\n\t"      /* frame->restore_flags */
                    "jmp 4f\n"
-                   "3:\tfxrstor64 0xc0(%rcx)\n"
+                   "3:\tfxrstor64 0x100(%rcx)\n"
                    "4:\tmovq 0x98(%rcx),%rbp\n\t"
                    "movq 0x68(%rcx),%r15\n\t"
                    "movq 0x60(%rcx),%r14\n\t"
@@ -3603,12 +3906,14 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    "jz 3b\n\t"
                    "testl $0x2,%edx\n\t"          /* CONTEXT_INTEGER */
                    "jnz 1b\n\t"
-                   "xchgq %r10,(%rsp)\n\t"
+                   "movq %r10,(%rsp)\n\t"         /* frame->rip */
+                   "movq 0xc0(%rcx),%r10\n\t"     /* frame->instrumentation_rip */
                    "pushq %r11\n\t"
                    /* make sure that if trap flag is set the trap happens on the first instruction after iret */
                    "andq $~0x4000,(%rsp)\n\t" /* make sure NT flag is not set, or iretq will fault */
                    "popfq\n\t"
                    "iretq\n"
+                   __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return_end") ":\n"
 
                    /* pop rbp-based kernel stack cfi */
                    __ASM_CFI("\t.cfi_restore_state\n")
@@ -3655,19 +3960,6 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher_return,
                    "jnz " __ASM_LOCAL_LABEL("trace_syscall_ret" ) "\n\t"
                    "jmp " __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return") )
 
-__ASM_GLOBAL_FUNC( __wine_syscall_dispatcher_instrumentation,
-                   "movq %gs:0x378,%rcx\n\t"       /* thread_data->syscall_frame */
-                   "popq 0x70(%rcx)\n\t"           /* frame->rip */
-                   __ASM_CFI(".cfi_adjust_cfa_offset -8\n\t")
-                   __ASM_CFI_REG_IS_AT2(rip, rcx, 0xf0,0x00)
-                   "pushfq\n\t"
-                   __ASM_CFI(".cfi_adjust_cfa_offset 8\n\t")
-                   "popq 0x80(%rcx)\n\t"
-                   __ASM_CFI(".cfi_adjust_cfa_offset -8\n\t")
-                   "movl $0x10000,0xb4(%rcx)\n\t"    /* frame->restore_flags <- RESTORE_FLAGS_INSTRUMENTATION */
-                   "jmp " __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_prolog_end") )
-
-
 /***********************************************************************
  *           __wine_unix_call_dispatcher
  */
@@ -3699,17 +3991,17 @@ __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
                    "movq %rbp,0x98(%rcx)\n\t"
                    __ASM_CFI_REG_IS_AT2(rbp, rcx, 0x98, 0x01)
                    "movq %gs:0x30,%r13\n\t"
-                   "stmxcsr 0xd8(%rcx)\n\t"        /* frame->xsave.MxCsr */
-                   "movdqa %xmm6,0x1c0(%rcx)\n\t"
-                   "movdqa %xmm7,0x1d0(%rcx)\n\t"
-                   "movdqa %xmm8,0x1e0(%rcx)\n\t"
-                   "movdqa %xmm9,0x1f0(%rcx)\n\t"
-                   "movdqa %xmm10,0x200(%rcx)\n\t"
-                   "movdqa %xmm11,0x210(%rcx)\n\t"
-                   "movdqa %xmm12,0x220(%rcx)\n\t"
-                   "movdqa %xmm13,0x230(%rcx)\n\t"
-                   "movdqa %xmm14,0x240(%rcx)\n\t"
-                   "movdqa %xmm15,0x250(%rcx)\n\t"
+                   "stmxcsr 0x118(%rcx)\n\t"       /* frame->xsave.MxCsr */
+                   "movdqa %xmm6,0x200(%rcx)\n\t"
+                   "movdqa %xmm7,0x210(%rcx)\n\t"
+                   "movdqa %xmm8,0x220(%rcx)\n\t"
+                   "movdqa %xmm9,0x230(%rcx)\n\t"
+                   "movdqa %xmm10,0x240(%rcx)\n\t"
+                   "movdqa %xmm11,0x250(%rcx)\n\t"
+                   "movdqa %xmm12,0x260(%rcx)\n\t"
+                   "movdqa %xmm13,0x270(%rcx)\n\t"
+                   "movdqa %xmm14,0x280(%rcx)\n\t"
+                   "movdqa %xmm15,0x290(%rcx)\n\t"
                    /* switch to kernel stack */
                    "movq %rcx,%rsp\n\t"
                    /* we're now on the kernel stack, stitch unwind info with previous frame */
@@ -3746,17 +4038,17 @@ __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
                    "movq %r8,%rdi\n\t"             /* args */
                    "callq *(%r10,%rdx,8)\n\t"
                    "movq %rsp,%rcx\n\t"
-                   "ldmxcsr 0xd8(%rcx)\n\t"        /* frame->xsave.MxCsr */
-                   "movdqa 0x1c0(%rcx),%xmm6\n\t"
-                   "movdqa 0x1d0(%rcx),%xmm7\n\t"
-                   "movdqa 0x1e0(%rcx),%xmm8\n\t"
-                   "movdqa 0x1f0(%rcx),%xmm9\n\t"
-                   "movdqa 0x200(%rcx),%xmm10\n\t"
-                   "movdqa 0x210(%rcx),%xmm11\n\t"
-                   "movdqa 0x220(%rcx),%xmm12\n\t"
-                   "movdqa 0x230(%rcx),%xmm13\n\t"
-                   "movdqa 0x240(%rcx),%xmm14\n\t"
-                   "movdqa 0x250(%rcx),%xmm15\n\t"
+                   "ldmxcsr 0x118(%rcx)\n\t"       /* frame->xsave.MxCsr */
+                   "movdqa 0x200(%rcx),%xmm6\n\t"
+                   "movdqa 0x210(%rcx),%xmm7\n\t"
+                   "movdqa 0x220(%rcx),%xmm8\n\t"
+                   "movdqa 0x230(%rcx),%xmm9\n\t"
+                   "movdqa 0x240(%rcx),%xmm10\n\t"
+                   "movdqa 0x250(%rcx),%xmm11\n\t"
+                   "movdqa 0x260(%rcx),%xmm12\n\t"
+                   "movdqa 0x270(%rcx),%xmm13\n\t"
+                   "movdqa 0x280(%rcx),%xmm14\n\t"
+                   "movdqa 0x290(%rcx),%xmm15\n\t"
                    "testl $0xffff,0xb4(%rcx)\n\t"  /* frame->restore_flags */
                    "jnz " __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return") "\n\t"
                    /* switch to user stack */
@@ -3796,5 +4088,11 @@ __ASM_GLOBAL_POINTER( __ASM_NAME("__wine_unix_call_dispatcher_gs_load_ptr"),
                       __ASM_LOCAL_LABEL("__wine_unix_call_dispatcher_gs_load") )
 __ASM_GLOBAL_POINTER( __ASM_NAME("__wine_unix_call_dispatcher_end_ptr"),
                       __ASM_LOCAL_LABEL("__wine_unix_call_dispatcher_end") )
+__ASM_GLOBAL_POINTER( __ASM_NAME("__wine_syscall_dispatcher_save_end_ptr"),
+                      __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_save_end") )
+__ASM_GLOBAL_POINTER( __ASM_NAME("__wine_syscall_dispatcher_return_ptr"),
+                      __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return_restart") )
+__ASM_GLOBAL_POINTER( __ASM_NAME("__wine_syscall_dispatcher_return_end_ptr"),
+                      __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return_end") )
 
 #endif  /* __x86_64__ */

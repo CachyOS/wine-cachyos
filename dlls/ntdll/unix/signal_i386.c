@@ -518,11 +518,19 @@ struct x86_thread_data
     UINT               dr6;           /* 1ec */
     UINT               dr7;           /* 1f0 */
     UINT               frame_size;    /* 1f4 syscall frame size including xstate */
+    UINT               syscall_retval; /* 1f8 active syscall return value */
+    volatile char      sigusr1_blocked; /* 1fc */
+    volatile char      sigusr1_pending; /* 1fd */
+    volatile char      sigusr1_context_depth; /* 1fe */
 };
 
 C_ASSERT( sizeof(struct x86_thread_data) <= sizeof(((struct ntdll_thread_data *)0)->cpu_data) );
 C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct x86_thread_data, gs ) == 0x1d8 );
 C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct x86_thread_data, frame_size ) == 0x1f4 );
+C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct x86_thread_data, syscall_retval ) == 0x1f8 );
+C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct x86_thread_data, sigusr1_blocked ) == 0x1fc );
+C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct x86_thread_data, sigusr1_pending ) == 0x1fd );
+C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct x86_thread_data, sigusr1_context_depth ) == 0x1fe );
 
 static unsigned int frame_size;
 static unsigned int xstate_size = sizeof(XSAVE_AREA_HEADER);
@@ -933,54 +941,69 @@ void *get_wow_context( CONTEXT *context )
     return is_old_wow64() ? context : NULL;
 }
 
+void deferred_sigusr1(void);
+
+static inline void block_sigusr1(void)
+{
+    x86_thread_data()->sigusr1_blocked++;
+}
+
+static inline void unblock_sigusr1(void)
+{
+    if (!--x86_thread_data()->sigusr1_blocked && x86_thread_data()->sigusr1_pending)
+        deferred_sigusr1();
+}
+
+static inline void abort_sigusr1_context_block(void)
+{
+    unsigned char depth = x86_thread_data()->sigusr1_context_depth;
+
+    if (!depth) return;
+    x86_thread_data()->sigusr1_context_depth = 0;
+    x86_thread_data()->sigusr1_blocked -= depth;
+}
+
+#define CALL_SIGUSR1_PROTECTED(status, expression) \
+    do \
+    { \
+        block_sigusr1(); \
+        x86_thread_data()->sigusr1_context_depth++; \
+        status = (expression); \
+        x86_thread_data()->sigusr1_context_depth--; \
+        unblock_sigusr1(); \
+    } while (0)
+
 
 /***********************************************************************
- *              NtSetContextThread  (NTDLL.@)
- *              ZwSetContextThread  (NTDLL.@)
+ *              set_current_thread_context
  */
-NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
+static NTSTATUS set_current_thread_context( const CONTEXT *context, DWORD flags,
+                                            BOOL check_debug_regs, BOOL update_debug_regs,
+                                            BOOL *server_needed )
 {
-    NTSTATUS ret = STATUS_SUCCESS;
     struct syscall_frame *frame = get_syscall_frame();
-    DWORD flags = context->ContextFlags & ~CONTEXT_i386;
-    BOOL self = (handle == GetCurrentThread());
 
-    if ((flags & CONTEXT_XSTATE) && xstate_extended_features)
+    *server_needed = FALSE;
+    if (check_debug_regs && (flags & CONTEXT_DEBUG_REGISTERS) &&
+        (x86_thread_data()->dr0 != context->Dr0 ||
+         x86_thread_data()->dr1 != context->Dr1 ||
+         x86_thread_data()->dr2 != context->Dr2 ||
+         x86_thread_data()->dr3 != context->Dr3 ||
+         x86_thread_data()->dr6 != context->Dr6 ||
+         x86_thread_data()->dr7 != context->Dr7))
     {
-        CONTEXT_EX *context_ex = (CONTEXT_EX *)(context + 1);
-        XSAVE_AREA_HEADER *xs = (XSAVE_AREA_HEADER *)((char *)context_ex + context_ex->XState.Offset);
-
-        if (context_ex->XState.Length < sizeof(XSAVE_AREA_HEADER) ||
-            context_ex->XState.Length > xstate_size)
-            return STATUS_INVALID_PARAMETER;
-        if ((xs->Mask & xstate_extended_features)
-            && (context_ex->XState.Length < xstate_get_size( xs->CompactionMask, xs->Mask )))
-            return STATUS_BUFFER_OVERFLOW;
+        *server_needed = TRUE;
+        return STATUS_SUCCESS;
     }
-    else flags &= ~CONTEXT_XSTATE;
 
-    /* debug registers require a server call */
-    if (self && (flags & CONTEXT_DEBUG_REGISTERS))
-        self = (x86_thread_data()->dr0 == context->Dr0 &&
-                x86_thread_data()->dr1 == context->Dr1 &&
-                x86_thread_data()->dr2 == context->Dr2 &&
-                x86_thread_data()->dr3 == context->Dr3 &&
-                x86_thread_data()->dr6 == context->Dr6 &&
-                x86_thread_data()->dr7 == context->Dr7);
-
-    if (!self)
+    if (update_debug_regs)
     {
-        ret = set_thread_context( handle, context, &self, IMAGE_FILE_MACHINE_I386 );
-        if (ret || !self) return ret;
-        if (flags & CONTEXT_DEBUG_REGISTERS)
-        {
-            x86_thread_data()->dr0 = context->Dr0;
-            x86_thread_data()->dr1 = context->Dr1;
-            x86_thread_data()->dr2 = context->Dr2;
-            x86_thread_data()->dr3 = context->Dr3;
-            x86_thread_data()->dr6 = context->Dr6;
-            x86_thread_data()->dr7 = context->Dr7;
-        }
+        x86_thread_data()->dr0 = context->Dr0;
+        x86_thread_data()->dr1 = context->Dr1;
+        x86_thread_data()->dr2 = context->Dr2;
+        x86_thread_data()->dr3 = context->Dr3;
+        x86_thread_data()->dr6 = context->Dr6;
+        x86_thread_data()->dr7 = context->Dr7;
     }
 
     if (flags & CONTEXT_INTEGER)
@@ -1045,173 +1068,215 @@ NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
 
 
 /***********************************************************************
- *              NtGetContextThread  (NTDLL.@)
- *              ZwGetContextThread  (NTDLL.@)
+ *              NtSetContextThread  (NTDLL.@)
+ *              ZwSetContextThread  (NTDLL.@)
+ */
+NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
+{
+    DWORD flags = context->ContextFlags & ~CONTEXT_i386;
+    BOOL self = (handle == GetCurrentThread());
+    BOOL server_needed;
+    NTSTATUS ret;
+
+    if ((flags & CONTEXT_XSTATE) && xstate_extended_features)
+    {
+        CONTEXT_EX *context_ex = (CONTEXT_EX *)(context + 1);
+        XSAVE_AREA_HEADER *xs = (XSAVE_AREA_HEADER *)((char *)context_ex + context_ex->XState.Offset);
+
+        if (context_ex->XState.Length < sizeof(XSAVE_AREA_HEADER) ||
+            context_ex->XState.Length > xstate_size)
+            return STATUS_INVALID_PARAMETER;
+        if ((xs->Mask & xstate_extended_features)
+            && (context_ex->XState.Length < xstate_get_size( xs->CompactionMask, xs->Mask )))
+            return STATUS_BUFFER_OVERFLOW;
+    }
+    else flags &= ~CONTEXT_XSTATE;
+
+    if (self)
+    {
+        CALL_SIGUSR1_PROTECTED( ret, (set_current_thread_context( context, flags, TRUE, FALSE,
+                                                                 &server_needed )) );
+        if (ret || !server_needed) return ret;
+    }
+
+    ret = set_thread_context( handle, context, &self, IMAGE_FILE_MACHINE_I386 );
+    if (ret || !self) return ret;
+    CALL_SIGUSR1_PROTECTED( ret, (set_current_thread_context( context, flags, FALSE,
+                                                             flags & CONTEXT_DEBUG_REGISTERS,
+                                                             &server_needed )) );
+    return ret;
+}
+
+
+/***********************************************************************
+ *              get_current_thread_context
  *
  * Note: we use a small assembly wrapper to save the necessary registers
  *       in case we are fetching the context of the current thread.
  */
-NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
+static NTSTATUS get_current_thread_context( CONTEXT *context, DWORD needed_flags,
+                                            BOOL check_debug_regs, BOOL update_debug_regs,
+                                            BOOL *server_needed )
 {
     struct syscall_frame *frame = get_syscall_frame();
-    DWORD needed_flags = context->ContextFlags & ~CONTEXT_i386;
-    BOOL self = (handle == GetCurrentThread());
     BOOL use_cached_debug_regs = FALSE;
-    NTSTATUS ret;
 
-    if (self && needed_flags & CONTEXT_DEBUG_REGISTERS)
+    *server_needed = FALSE;
+    if (check_debug_regs && (needed_flags & CONTEXT_DEBUG_REGISTERS))
     {
         /* debug registers require a server call if hw breakpoints are enabled */
-        if (x86_thread_data()->dr7 & 0xff) self = FALSE;
+        if (x86_thread_data()->dr7 & 0xff)
+        {
+            *server_needed = TRUE;
+            return STATUS_SUCCESS;
+        }
         else use_cached_debug_regs = TRUE;
     }
 
-    if (!self)
+    if (needed_flags & CONTEXT_INTEGER)
     {
-        if ((ret = get_thread_context( handle, context, &self, IMAGE_FILE_MACHINE_I386 ))) return ret;
+        context->Eax = frame->eax;
+        context->Ebx = frame->ebx;
+        context->Ecx = frame->ecx;
+        context->Edx = frame->edx;
+        context->Esi = frame->esi;
+        context->Edi = frame->edi;
+        context->ContextFlags |= CONTEXT_INTEGER;
     }
-
-    if (self)
+    if (needed_flags & CONTEXT_CONTROL)
     {
-        if (needed_flags & CONTEXT_INTEGER)
-        {
-            context->Eax = frame->eax;
-            context->Ebx = frame->ebx;
-            context->Ecx = frame->ecx;
-            context->Edx = frame->edx;
-            context->Esi = frame->esi;
-            context->Edi = frame->edi;
-            context->ContextFlags |= CONTEXT_INTEGER;
-        }
-        if (needed_flags & CONTEXT_CONTROL)
-        {
-            context->Esp    = frame->esp;
-            context->Ebp    = frame->ebp;
-            context->Eip    = frame->eip;
-            context->EFlags = frame->eflags;
-            context->SegCs  = frame->cs;
-            context->SegSs  = frame->ss;
-            context->ContextFlags |= CONTEXT_CONTROL;
-        }
-        if (needed_flags & CONTEXT_SEGMENTS)
-        {
-            context->SegDs = frame->ds;
-            context->SegEs = frame->es;
-            context->SegFs = frame->fs;
-            context->SegGs = frame->gs;
-            context->ContextFlags |= CONTEXT_SEGMENTS;
-        }
-        if (needed_flags & CONTEXT_FLOATING_POINT)
-        {
-            if (!user_shared_data->ProcessorFeatures[PF_XMMI_INSTRUCTIONS_AVAILABLE])
-            {
-                context->FloatSave = frame->u.fsave;
-            }
-            else if (!user_shared_data->XState.CompactionEnabled ||
-                     (frame->xstate.Mask & XSTATE_MASK_LEGACY_FLOATING_POINT))
-            {
-                fpux_to_fpu( &context->FloatSave, &frame->u.xsave );
-            }
-            else
-            {
-                memset( &context->FloatSave, 0, sizeof(context->FloatSave) );
-                context->FloatSave.ControlWord = 0x37f;
-            }
-            context->ContextFlags |= CONTEXT_FLOATING_POINT;
-        }
-        if (needed_flags & CONTEXT_EXTENDED_REGISTERS)
-        {
-            XSAVE_FORMAT *xs = (XSAVE_FORMAT *)context->ExtendedRegisters;
-
-            if (!user_shared_data->XState.CompactionEnabled ||
-                (frame->xstate.Mask & XSTATE_MASK_LEGACY_FLOATING_POINT))
-            {
-                memcpy( xs, &frame->u.xsave, FIELD_OFFSET( XSAVE_FORMAT, MxCsr ));
-                memcpy( xs->FloatRegisters, frame->u.xsave.FloatRegisters,
-                        sizeof( xs->FloatRegisters ));
-            }
-            else
-            {
-                memset( xs, 0, FIELD_OFFSET( XSAVE_FORMAT, MxCsr ));
-                memset( xs->FloatRegisters, 0, sizeof( xs->FloatRegisters ));
-                xs->ControlWord = 0x37f;
-            }
-
-            if (!user_shared_data->XState.CompactionEnabled ||
-                (frame->xstate.Mask & XSTATE_MASK_LEGACY_SSE))
-            {
-                memcpy( xs->XmmRegisters, frame->u.xsave.XmmRegisters, sizeof( xs->XmmRegisters ));
-                xs->MxCsr      = frame->u.xsave.MxCsr;
-                xs->MxCsr_Mask = frame->u.xsave.MxCsr_Mask;
-            }
-            else
-            {
-                memset( xs->XmmRegisters, 0, sizeof( xs->XmmRegisters ));
-                xs->MxCsr      = 0x1f80;
-                xs->MxCsr_Mask = 0x2ffff;
-            }
-
-            context->ContextFlags |= CONTEXT_EXTENDED_REGISTERS;
-        }
-        if ((needed_flags & CONTEXT_XSTATE) && xstate_extended_features)
-        {
-            CONTEXT_EX *context_ex = (CONTEXT_EX *)(context + 1);
-            XSAVE_AREA_HEADER *xstate = (XSAVE_AREA_HEADER *)((char *)context_ex + context_ex->XState.Offset);
-            UINT64 mask;
-
-            if (context_ex->XState.Length < sizeof(XSAVE_AREA_HEADER) ||
-                context_ex->XState.Length > xstate_size)
-                return STATUS_INVALID_PARAMETER;
-
-            if (user_shared_data->XState.CompactionEnabled)
-            {
-                frame->xstate.CompactionMask |= xstate_extended_features;
-                mask = xstate->CompactionMask & xstate_extended_features;
-                xstate->Mask = frame->xstate.Mask & mask;
-                xstate->CompactionMask = 0x8000000000000000 | mask;
-            }
-            else
-            {
-                mask = xstate->Mask & xstate_extended_features;
-                xstate->Mask = frame->xstate.Mask & mask;
-                xstate->CompactionMask = 0;
-            }
-
-            memset( xstate->Reserved2, 0, sizeof(xstate->Reserved2) );
-            if (xstate->Mask)
-            {
-                if (context_ex->XState.Length < xstate_get_size( xstate->CompactionMask, xstate->Mask ))
-                    return STATUS_BUFFER_OVERFLOW;
-                copy_xstate( xstate, &frame->xstate, xstate->Mask );
-                /* copy_xstate may use avx in memcpy, restore xstate not to break the tests. */
-                frame->restore_flags |= CONTEXT_XSTATE;
-            }
-        }
-        if (context->ContextFlags & (CONTEXT_DEBUG_REGISTERS & ~CONTEXT_i386))
-        {
-            if (use_cached_debug_regs)
-            {
-                context->Dr0 = x86_thread_data()->dr0;
-                context->Dr1 = x86_thread_data()->dr1;
-                context->Dr2 = x86_thread_data()->dr2;
-                context->Dr3 = x86_thread_data()->dr3;
-                context->Dr6 = x86_thread_data()->dr6;
-                context->Dr7 = x86_thread_data()->dr7;
-            }
-            else
-            {
-                /* update the cached version of the debug registers */
-                x86_thread_data()->dr0 = context->Dr0;
-                x86_thread_data()->dr1 = context->Dr1;
-                x86_thread_data()->dr2 = context->Dr2;
-                x86_thread_data()->dr3 = context->Dr3;
-                x86_thread_data()->dr6 = context->Dr6;
-                x86_thread_data()->dr7 = context->Dr7;
-            }
-        }
-        set_context_exception_reporting_flags( &context->ContextFlags, CONTEXT_SERVICE_ACTIVE );
+        context->Esp    = frame->esp;
+        context->Ebp    = frame->ebp;
+        context->Eip    = frame->eip;
+        context->EFlags = frame->eflags;
+        context->SegCs  = frame->cs;
+        context->SegSs  = frame->ss;
+        context->ContextFlags |= CONTEXT_CONTROL;
     }
+    if (needed_flags & CONTEXT_SEGMENTS)
+    {
+        context->SegDs = frame->ds;
+        context->SegEs = frame->es;
+        context->SegFs = frame->fs;
+        context->SegGs = frame->gs;
+        context->ContextFlags |= CONTEXT_SEGMENTS;
+    }
+    if (needed_flags & CONTEXT_FLOATING_POINT)
+    {
+        if (!user_shared_data->ProcessorFeatures[PF_XMMI_INSTRUCTIONS_AVAILABLE])
+        {
+            context->FloatSave = frame->u.fsave;
+        }
+        else if (!user_shared_data->XState.CompactionEnabled ||
+                 (frame->xstate.Mask & XSTATE_MASK_LEGACY_FLOATING_POINT))
+        {
+            fpux_to_fpu( &context->FloatSave, &frame->u.xsave );
+        }
+        else
+        {
+            memset( &context->FloatSave, 0, sizeof(context->FloatSave) );
+            context->FloatSave.ControlWord = 0x37f;
+        }
+        context->ContextFlags |= CONTEXT_FLOATING_POINT;
+    }
+    if (needed_flags & CONTEXT_EXTENDED_REGISTERS)
+    {
+        XSAVE_FORMAT *xs = (XSAVE_FORMAT *)context->ExtendedRegisters;
 
+        if (!user_shared_data->XState.CompactionEnabled ||
+            (frame->xstate.Mask & XSTATE_MASK_LEGACY_FLOATING_POINT))
+        {
+            memcpy( xs, &frame->u.xsave, FIELD_OFFSET( XSAVE_FORMAT, MxCsr ));
+            memcpy( xs->FloatRegisters, frame->u.xsave.FloatRegisters,
+                    sizeof( xs->FloatRegisters ));
+        }
+        else
+        {
+            memset( xs, 0, FIELD_OFFSET( XSAVE_FORMAT, MxCsr ));
+            memset( xs->FloatRegisters, 0, sizeof( xs->FloatRegisters ));
+            xs->ControlWord = 0x37f;
+        }
+
+        if (!user_shared_data->XState.CompactionEnabled ||
+            (frame->xstate.Mask & XSTATE_MASK_LEGACY_SSE))
+        {
+            memcpy( xs->XmmRegisters, frame->u.xsave.XmmRegisters, sizeof( xs->XmmRegisters ));
+            xs->MxCsr      = frame->u.xsave.MxCsr;
+            xs->MxCsr_Mask = frame->u.xsave.MxCsr_Mask;
+        }
+        else
+        {
+            memset( xs->XmmRegisters, 0, sizeof( xs->XmmRegisters ));
+            xs->MxCsr      = 0x1f80;
+            xs->MxCsr_Mask = 0x2ffff;
+        }
+
+        context->ContextFlags |= CONTEXT_EXTENDED_REGISTERS;
+    }
+    if ((needed_flags & CONTEXT_XSTATE) && xstate_extended_features)
+    {
+        CONTEXT_EX *context_ex = (CONTEXT_EX *)(context + 1);
+        XSAVE_AREA_HEADER *xstate = (XSAVE_AREA_HEADER *)((char *)context_ex + context_ex->XState.Offset);
+        UINT64 mask;
+
+        if (context_ex->XState.Length < sizeof(XSAVE_AREA_HEADER) ||
+            context_ex->XState.Length > xstate_size)
+            return STATUS_INVALID_PARAMETER;
+
+        if (user_shared_data->XState.CompactionEnabled)
+        {
+            frame->xstate.CompactionMask |= xstate_extended_features;
+            mask = xstate->CompactionMask & xstate_extended_features;
+            xstate->Mask = frame->xstate.Mask & mask;
+            xstate->CompactionMask = 0x8000000000000000 | mask;
+        }
+        else
+        {
+            mask = xstate->Mask & xstate_extended_features;
+            xstate->Mask = frame->xstate.Mask & mask;
+            xstate->CompactionMask = 0;
+        }
+
+        memset( xstate->Reserved2, 0, sizeof(xstate->Reserved2) );
+        if (xstate->Mask)
+        {
+            if (context_ex->XState.Length < xstate_get_size( xstate->CompactionMask, xstate->Mask ))
+                return STATUS_BUFFER_OVERFLOW;
+            copy_xstate( xstate, &frame->xstate, xstate->Mask );
+            /* copy_xstate may use avx in memcpy, restore xstate not to break the tests. */
+            frame->restore_flags |= CONTEXT_XSTATE;
+        }
+    }
+    if (context->ContextFlags & (CONTEXT_DEBUG_REGISTERS & ~CONTEXT_i386))
+    {
+        if (use_cached_debug_regs)
+        {
+            context->Dr0 = x86_thread_data()->dr0;
+            context->Dr1 = x86_thread_data()->dr1;
+            context->Dr2 = x86_thread_data()->dr2;
+            context->Dr3 = x86_thread_data()->dr3;
+            context->Dr6 = x86_thread_data()->dr6;
+            context->Dr7 = x86_thread_data()->dr7;
+        }
+        else if (update_debug_regs)
+        {
+            /* update the cached version of the debug registers */
+            x86_thread_data()->dr0 = context->Dr0;
+            x86_thread_data()->dr1 = context->Dr1;
+            x86_thread_data()->dr2 = context->Dr2;
+            x86_thread_data()->dr3 = context->Dr3;
+            x86_thread_data()->dr6 = context->Dr6;
+            x86_thread_data()->dr7 = context->Dr7;
+        }
+    }
+    return STATUS_SUCCESS;
+}
+
+/***********************************************************************
+ *              trace_thread_context
+ */
+static void trace_thread_context( HANDLE handle, const CONTEXT *context )
+{
     if (context->ContextFlags & (CONTEXT_INTEGER & ~CONTEXT_i386))
         TRACE( "%p: eax=%08x ebx=%08x ecx=%08x edx=%08x esi=%08x edi=%08x\n", handle,
                context->Eax, context->Ebx, context->Ecx, context->Edx, context->Esi, context->Edi );
@@ -1224,9 +1289,44 @@ NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
     if (context->ContextFlags & (CONTEXT_DEBUG_REGISTERS & ~CONTEXT_i386))
         TRACE( "%p: dr0=%08x dr1=%08x dr2=%08x dr3=%08x dr6=%08x dr7=%08x\n", handle,
                context->Dr0, context->Dr1, context->Dr2, context->Dr3, context->Dr6, context->Dr7 );
-
-    return STATUS_SUCCESS;
 }
+
+
+/***********************************************************************
+ *              NtGetContextThread  (NTDLL.@)
+ *              ZwGetContextThread  (NTDLL.@)
+ *
+ * Note: we use a small assembly wrapper to save the necessary registers
+ *       in case we are fetching the context of the current thread.
+ */
+NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
+{
+    DWORD needed_flags = context->ContextFlags & ~CONTEXT_i386;
+    BOOL self = (handle == GetCurrentThread());
+    BOOL server_needed;
+    NTSTATUS ret;
+
+    if (self)
+    {
+        CALL_SIGUSR1_PROTECTED( ret, (get_current_thread_context( context, needed_flags, TRUE,
+                                                                 FALSE, &server_needed )) );
+        if (ret || !server_needed) goto done;
+    }
+
+    ret = get_thread_context( handle, context, &self, IMAGE_FILE_MACHINE_I386 );
+    if (ret || !self) goto done;
+    CALL_SIGUSR1_PROTECTED( ret, (get_current_thread_context( context, needed_flags, FALSE,
+                                                             needed_flags & CONTEXT_DEBUG_REGISTERS,
+                                                             &server_needed )) );
+
+done:
+    if (!ret && self)
+        set_context_exception_reporting_flags( &context->ContextFlags, CONTEXT_SERVICE_ACTIVE );
+    if (!ret) trace_thread_context( handle, context );
+    return ret;
+}
+
+#undef CALL_SIGUSR1_PROTECTED
 
 
 /***********************************************************************
@@ -2056,6 +2156,7 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
         rec.ExceptionCode = EXCEPTION_ILLEGAL_INSTRUCTION;
         break;
     }
+    abort_sigusr1_context_block();
     if (handle_syscall_fault( ucontext, stack, &rec, &xcontext.c )) return;
     setup_raise_exception( ucontext, stack, &rec, &xcontext );
 }
@@ -2103,6 +2204,7 @@ static void trap_handler( int signal, siginfo_t *siginfo, void *sigcontext )
         rec.ExceptionInformation[2] = 0; /* FIXME */
         break;
     }
+    abort_sigusr1_context_block();
     setup_raise_exception( sigcontext, stack, &rec, &xcontext );
 }
 
@@ -2198,6 +2300,56 @@ static void quit_handler( int signal, siginfo_t *siginfo, void *sigcontext )
 
 
 /**********************************************************************
+ *		usr1_inside_syscall
+ *
+ * Shared code to handle SIGUSR1 within a syscall.
+ */
+static void usr1_inside_syscall( struct xcontext *context )
+{
+    struct syscall_frame *frame = get_syscall_frame();
+    ULONG64 saved_compaction = 0;
+
+    context->c.ContextFlags = CONTEXT_FULL | CONTEXT_EXCEPTION_REQUEST;
+    NtGetContextThread( GetCurrentThread(), &context->c );
+    if (xstate_extended_features)
+    {
+        if (user_shared_data->XState.CompactionEnabled)
+            frame->xstate.CompactionMask |= xstate_extended_features;
+        context_init_xstate( &context->c, &frame->xstate );
+        saved_compaction = frame->xstate.CompactionMask;
+    }
+    wait_suspend( &context->c );
+    if (xstate_extended_features) frame->xstate.CompactionMask = saved_compaction;
+    if (context->c.ContextFlags & 0x40)
+    {
+        context->c.ContextFlags &= ~0x40;
+        frame->restore_flags |= 0x40;
+    }
+    NtSetContextThread( GetCurrentThread(), &context->c );
+}
+
+
+/**********************************************************************
+ *		deferred_sigusr1
+ *
+ * Handle a suspension deferred until syscall entry completed.
+ */
+void deferred_sigusr1(void)
+{
+    struct xcontext context;
+
+    do
+    {
+        x86_thread_data()->sigusr1_pending = 0;
+        /* This block must not enclose faultable user-buffer access because it is not depth-tracked. */
+        x86_thread_data()->sigusr1_blocked++;
+        usr1_inside_syscall( &context );
+        x86_thread_data()->sigusr1_blocked--;
+    } while (x86_thread_data()->sigusr1_pending);
+}
+
+
+/**********************************************************************
  *		usr1_handler
  *
  * Handler for SIGUSR1, used to signal a thread that it got suspended.
@@ -2205,55 +2357,58 @@ static void quit_handler( int signal, siginfo_t *siginfo, void *sigcontext )
 static void usr1_handler( int signal, siginfo_t *siginfo, void *sigcontext )
 {
     ucontext_t *ucontext = sigcontext;
+    struct syscall_frame *frame;
+    struct xcontext *context;
+
+    extern const void *__wine_syscall_dispatcher_save_end_ptr;
+    extern const void *__wine_syscall_dispatcher_return_ptr;
+    extern const void *__wine_syscall_dispatcher_return_end_ptr;
 
     init_handler( sigcontext );
+    frame = get_syscall_frame();
 
-    if (is_inside_syscall( ESP_sig(ucontext) ))
+    if (EIP_sig(ucontext) >= (ULONG_PTR)__wine_syscall_dispatcher &&
+        EIP_sig(ucontext) < (ULONG_PTR)__wine_syscall_dispatcher_save_end_ptr)
     {
-        struct syscall_frame *frame = get_syscall_frame();
-        ULONG64 saved_compaction = 0;
-        struct xcontext *context;
-
-        context = (struct xcontext *)(((ULONG_PTR)ESP_sig(ucontext) - sizeof(*context)) & ~15);
-        if ((char *)context < (char *)ntdll_get_thread_data()->kernel_stack)
-        {
-            ERR_(seh)( "kernel stack overflow.\n" );
-            return;
-        }
-        context->c.ContextFlags = CONTEXT_FULL | CONTEXT_EXCEPTION_REQUEST;
-        if (frame->restore_flags & RESTORE_FLAGS_INCOMPLETE_FRAME_CONTEXT)
-        {
-            frame->restore_flags &= ~RESTORE_FLAGS_INCOMPLETE_FRAME_CONTEXT;
-            frame->eflags = 0x202;
-            fixup_frame_fpu_state( frame, ucontext );
-        }
-        NtGetContextThread( GetCurrentThread(), &context->c );
-        if (xstate_extended_features)
-        {
-            if (user_shared_data->XState.CompactionEnabled)
-                frame->xstate.CompactionMask |= xstate_extended_features;
-            context_init_xstate( &context->c, &frame->xstate );
-            saved_compaction = frame->xstate.CompactionMask;
-        }
-        wait_suspend( &context->c );
-        if (xstate_extended_features) frame->xstate.CompactionMask = saved_compaction;
-        if (context->c.ContextFlags & 0x40)
-        {
-            /* xstate is updated directly in frame's xstate */
-            context->c.ContextFlags &= ~0x40;
-            frame->restore_flags |= 0x40;
-        }
-        NtSetContextThread( GetCurrentThread(), &context->c );
+        x86_thread_data()->sigusr1_pending = 1;
+        return;
     }
-    else
+    if (EIP_sig(ucontext) >= (ULONG_PTR)__wine_syscall_dispatcher_return_ptr &&
+        EIP_sig(ucontext) < (ULONG_PTR)__wine_syscall_dispatcher_return_end_ptr)
     {
-        struct xcontext context;
-
-        save_context( &context, ucontext );
-        context.c.ContextFlags |= CONTEXT_EXCEPTION_REPORTING;
-        wait_suspend( &context.c );
-        restore_context( &context, ucontext );
+        EAX_sig(ucontext) = x86_thread_data()->syscall_retval;
+        EIP_sig(ucontext) = (ULONG_PTR)__wine_syscall_dispatcher_return_ptr;
+        ESP_sig(ucontext) = (ULONG_PTR)frame;
     }
+    else if (!is_inside_syscall( ESP_sig(ucontext) ))
+    {
+        struct xcontext outside_context;
+
+        save_context( &outside_context, ucontext );
+        outside_context.c.ContextFlags |= CONTEXT_EXCEPTION_REPORTING;
+        wait_suspend( &outside_context.c );
+        restore_context( &outside_context, ucontext );
+        return;
+    }
+    else if (x86_thread_data()->sigusr1_blocked)
+    {
+        x86_thread_data()->sigusr1_pending = 1;
+        return;
+    }
+
+    context = (struct xcontext *)(((ULONG_PTR)ESP_sig(ucontext) - sizeof(*context)) & ~15);
+    if ((char *)context < (char *)ntdll_get_thread_data()->kernel_stack)
+    {
+        ERR_(seh)( "kernel stack overflow.\n" );
+        return;
+    }
+    if (frame->restore_flags & RESTORE_FLAGS_INCOMPLETE_FRAME_CONTEXT)
+    {
+        frame->restore_flags &= ~RESTORE_FLAGS_INCOMPLETE_FRAME_CONTEXT;
+        frame->eflags = 0x202;
+        fixup_frame_fpu_state( frame, ucontext );
+    }
+    usr1_inside_syscall( context );
 }
 
 
@@ -2483,6 +2638,9 @@ void init_syscall_frame( LPTHREAD_START_ROUTINE entry, void *arg, BOOL suspend, 
     ldt_set_fs( thread_data->fs, teb );
     thread_data->gs = get_gs();
     assert( thread_data->frame_size == frame_size );
+    thread_data->sigusr1_blocked = 0;
+    thread_data->sigusr1_pending = 0;
+    thread_data->sigusr1_context_depth = 0;
 
     context.SegCs  = get_cs();
     context.SegDs  = get_ds();
@@ -2663,6 +2821,11 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    __ASM_CFI(".cfi_offset %ebx,-12\n\t")
                    __ASM_CFI(".cfi_offset %esi,-16\n\t")
                    __ASM_CFI(".cfi_offset %edi,-20\n\t")
+                   __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_save_end") ":\n\t"
+                   "cmpb $0,%fs:0x1fd\n\t"          /* x86_thread_data()->sigusr1_pending */
+                   "jz " __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_entry_done") "\n\t"
+                   "call " __ASM_NAME("deferred_sigusr1") "\n\t"
+                   __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_entry_done") ":\n\t"
                    "movl 0x1c(%esp),%edx\n\t"      /* frame->eax */
                    "andl $0xfff,%edx\n\t"          /* syscall number */
                    "cmpl 8(%ebx),%edx\n\t"         /* table->ServiceLimit */
@@ -2684,6 +2847,8 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    "leal -0x34(%ebp),%esp\n"
 
                    __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return") ":\t"
+                   "movl %eax,%fs:0x1f8\n\t"       /* x86_thread_data()->syscall_retval */
+                   __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return_restart") ":\t"
                    "movl 0(%esp),%ecx\n\t"         /* frame->restore_flags */
                    "testl $0x68,%ecx\n\t"          /* CONTEXT_FLOATING_POINT | CONTEXT_EXTENDED_REGISTERS | CONTEXT_XSAVE */
                    "jz 3f\n\t"
@@ -2759,6 +2924,7 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    "popl %ds\n\t"
                    __ASM_CFI(".cfi_adjust_cfa_offset -4\n\t")
                    "iret\n"
+                   __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return_end") ":\n"
 
                    /* pop ebp-based kernel stack cfi */
                    __ASM_CFI("\t.cfi_restore_state\n")
@@ -2855,5 +3021,12 @@ __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
                    "pushl %ecx\n\t"
                    __ASM_CFI(".cfi_adjust_cfa_offset 4\n\t")
                    "ret" )
+
+__ASM_GLOBAL_POINTER( __ASM_NAME("__wine_syscall_dispatcher_save_end_ptr"),
+                      __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_save_end") )
+__ASM_GLOBAL_POINTER( __ASM_NAME("__wine_syscall_dispatcher_return_ptr"),
+                      __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return_restart") )
+__ASM_GLOBAL_POINTER( __ASM_NAME("__wine_syscall_dispatcher_return_end_ptr"),
+                      __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return_end") )
 
 #endif  /* __i386__ */

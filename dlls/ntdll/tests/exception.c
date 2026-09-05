@@ -4555,6 +4555,8 @@ static void test_wow64_context(void)
     sprintf( cmdline, "\"%s\" /c for /l %%n in () do @echo >nul", appname );
     r = CreateProcessA( appname, cmdline, NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, NULL, &si, &pi);
     ok( r, "failed to start %s err %lu\n", appname, GetLastError() );
+    if (!r)
+        return;
 
     ret = pRtlWow64GetThreadContext( pi.hThread, &ctx );
     ok(ret == STATUS_SUCCESS, "got %#lx\n", ret);
@@ -9216,6 +9218,8 @@ static void test_debug_registers_wow64(void)
     si.cb = sizeof(si);
     bret = CreateProcessA(cmdline, NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
     ok(bret, "CreateProcessA failed\n");
+    if (!bret)
+        return;
 
     bret = pIsWow64Process(pi.hProcess, &is_wow64);
     ok(bret && is_wow64, "expected Wow64 process\n");
