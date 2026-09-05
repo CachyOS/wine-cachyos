@@ -330,11 +330,16 @@ static void wayland_surface_update_state_toplevel(struct wayland_surface *surfac
             xdg_toplevel_set_minimized(surface->xdg_toplevel);
         }
 
-        surface->comitted.minimized = surface->window.minimized;
-
         /* reset the size hint since we don't want to poison the next configure event with it */
-        xdg_toplevel_set_min_size(surface->xdg_toplevel, 0, 0);
-        xdg_toplevel_set_max_size(surface->xdg_toplevel, 0, 0);
+        if (surface->comitted.state != surface->window.state)
+        {
+            xdg_toplevel_set_min_size(surface->xdg_toplevel, 0, 0);
+            xdg_toplevel_set_max_size(surface->xdg_toplevel, 0, 0);
+            wl_surface_commit(surface->wl_surface);
+        }
+
+        surface->comitted.minimized = surface->window.minimized;
+        surface->comitted.state = surface->window.state;
     }
     else
     {
@@ -613,7 +618,6 @@ static void wayland_configure_window(HWND hwnd)
     SetRect(&rect, 0, 0, width, height);
     OffsetRect(&rect, data->rects.window.left, data->rects.window.top);
     if (!IsRectEmpty(&rect)) rect = window_rect_from_visible(&data->rects, rect);
-    /* TODO: Move window based on which outputs it is mapped on */
     wayland_win_data_release(data);
 
     TRACE("hwnd=%p processing=%s,%#x\n", hwnd, wine_dbgstr_rect(&rect), state);
