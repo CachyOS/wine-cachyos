@@ -29,6 +29,7 @@
 #include "wine/debug.h"
 
 #include <stdlib.h>
+#include <unistd.h>
 
 WINE_DEFAULT_DEBUG_CHANNEL(waylanddrv);
 
@@ -354,6 +355,7 @@ static void wayland_image_description_info_v1_icc_file(void *data,
                                                   struct wp_image_description_info_v1 *info,
                                                   int32_t icc, uint32_t icc_size)
 {
+    close(icc);
 }
 
 static void wayland_image_description_info_v1_primaries_named(void *data,
@@ -410,8 +412,8 @@ static void wayland_image_description_info_v1_target_primaries(void *data,
     primaries->g_y = round((g_y * 1e-6) * 1024);
     primaries->b_x = round((b_x * 1e-6) * 1024);
     primaries->b_y = round((b_y * 1e-6) * 1024);
-    primaries->w_x = round((b_x * 1e-6) * 1024);
-    primaries->w_y = round((b_y * 1e-6) * 1024);
+    primaries->w_x = round((w_x * 1e-6) * 1024);
+    primaries->w_y = round((w_y * 1e-6) * 1024);
 
     TRACE("primaries: {%lf, %lf, %lf, %lf, %lf, %lf, %lf, %lf}\n",
             r_x * 1e-6, r_y * 1e-6, g_x * 1e-6, g_y * 1e-6,
@@ -478,20 +480,16 @@ static void wayland_image_description_v1_ready2(void *user_data,
                     struct wp_image_description_v1 *wp_image_description_v1,
                     uint32_t identity_hi, uint32_t identity_lo)
 {
+    struct wp_image_description_info_v1 *info;
     struct wayland_output *output = user_data;
     TRACE("id=%#x%x\n", identity_hi, identity_lo);
 
-    output->wp_image_description_info_v1 =
-        wp_image_description_v1_get_information(
-            output->wp_image_description_v1);
-    if (!output->wp_image_description_info_v1)
+    if (!(info = wp_image_description_v1_get_information(wp_image_description_v1)))
     {
         ERR("Failed to allocate image description info object!\n");
         return;
     }
-    wp_image_description_info_v1_add_listener(
-        output->wp_image_description_info_v1,
-        &image_description_info_listener, output);
+    wp_image_description_info_v1_add_listener(info, &image_description_info_listener, output);
 }
 
 static void wayland_image_description_v1_ready(void *user_data,
@@ -516,12 +514,6 @@ static void wayland_color_management_output_image_description_changed(void *user
     {
         wp_image_description_v1_destroy(output->wp_image_description_v1);
         output->wp_image_description_v1 = NULL;
-    }
-
-    if (output->wp_image_description_info_v1)
-    {
-        wp_image_description_info_v1_destroy(output->wp_image_description_info_v1);
-        output->wp_image_description_info_v1 = NULL;
     }
 
     wayland_output_use_image_description(output);
@@ -694,8 +686,6 @@ void wayland_output_release(struct wayland_output *output)
     wayland_output_state_deinit(&output->current);
     if (output->wp_color_management_output_v1)
         wp_color_management_output_v1_destroy(output->wp_color_management_output_v1);
-    if (output->wp_image_description_info_v1)
-        wp_image_description_info_v1_destroy(output->wp_image_description_info_v1);
     if (output->wp_image_description_v1)
         wp_image_description_v1_destroy(output->wp_image_description_v1);
     if (output->zxdg_output_v1)
