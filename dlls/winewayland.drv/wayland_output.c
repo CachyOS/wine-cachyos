@@ -278,11 +278,28 @@ static void output_handle_scale(void *data, struct wl_output *wl_output,
 {
 }
 
+static void output_handle_name(void *data, struct wl_output *wl_output,
+                               const char *name)
+{
+    struct wayland_output *output = data;
+
+    free(output->pending.name);
+    output->pending.name = strdup(name);
+    output->pending.flags |= WAYLAND_OUTPUT_NAME;
+}
+
+static void output_handle_description(void *data, struct wl_output *wl_output,
+                                      const char *desc)
+{
+}
+
 static const struct wl_output_listener output_listener = {
     output_handle_geometry,
     output_handle_mode,
     output_handle_done,
-    output_handle_scale
+    output_handle_scale,
+    output_handle_name,
+    output_handle_description,
 };
 
 static void zxdg_output_v1_handle_logical_position(void *data,
@@ -323,11 +340,6 @@ static void zxdg_output_v1_handle_name(void *data,
                                        struct zxdg_output_v1 *zxdg_output_v1,
                                        const char *name)
 {
-    struct wayland_output *output = data;
-
-    free(output->pending.name);
-    output->pending.name = strdup(name);
-    output->pending.flags |= WAYLAND_OUTPUT_NAME;
 }
 
 static void zxdg_output_v1_handle_description(void *data,
@@ -570,10 +582,10 @@ BOOL wayland_output_create(uint32_t id, uint32_t version)
         goto err;
     }
 
-    if (version < 3) goto err;
+    if (version < 4) goto err;
 
     output->wl_output = wl_registry_bind(process_wayland.wl_registry, id,
-                                         &wl_output_interface, 3);
+                                         &wl_output_interface, 4);
     output->global_id = id;
     wl_output_add_listener(output->wl_output, &output_listener, output);
 
