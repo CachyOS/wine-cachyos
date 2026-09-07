@@ -1218,6 +1218,8 @@ struct probe
     uint32_t min_quantum;
     uint32_t force_quantum; /* clock.force-quantum pins the graph: floor and ceiling */
     BOOL core_error;
+    BOOL done;             /* the core acknowledged sync_seq */
+    BOOL timed_out;
     BOOL truncated;        /* a global was dropped by PROBE_MAX_GLOBALS */
 };
 
@@ -1559,7 +1561,10 @@ static void on_probe_core_done(void *data, uint32_t id, int seq)
 {
     struct probe *p = data;
     if (id == PW_ID_CORE && seq == p->sync_seq)
+    {
+        p->done = TRUE;
         pw_thread_loop_signal(p->loop, false);
+    }
 }
 
 static void on_probe_core_error(void *data, uint32_t id, int seq, int res, const char *message)
@@ -1584,8 +1589,16 @@ static void probe_roundtrip(struct probe *p)
 {
     if (p->core_error)
         return;
+    p->done = FALSE;
     p->sync_seq = pw_core_sync(p->core, PW_ID_CORE, p->sync_seq);
-    pw_thread_loop_timed_wait(p->loop, 2);
+    while (!p->done && !p->core_error)
+    {
+        if (pw_thread_loop_timed_wait(p->loop, 2))
+        {
+            p->timed_out = TRUE;
+            return;
+        }
+    }
 }
 
 /* Synthetic default endpoint (empty pw_name -> session manager default
@@ -1893,6 +1906,8 @@ static NTSTATUS pipewire_test_connect(void *args)
     if (p.truncated)
         WARN("More than %u audio globals in the graph; the rest were ignored.\n",
              PROBE_MAX_GLOBALS);
+    if (p.timed_out)
+        WARN("PipeWire probe timed out; the device list may be incomplete.\n");
 
     /* Both probe lists are freed on every path: the error return below used
      * to sit above the cleanup and leak p.devices. */
