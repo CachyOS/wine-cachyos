@@ -26,19 +26,12 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
-/* Requires libpipewire-0.3 >= 1.2.0: pw_stream_get_data_loop() and struct
- * pw_loop::name.  The floor is the minimum API this file consumes, not the
- * version the ship vehicle carries; configure.ac records what it excludes.
- * An older library disables the driver there rather than failing the build,
- * so do not paper one over with version conditionals here.
- *
- * pw_loop_locked() arrived in 1.6.0, above the 1.4.2 steamrt4 ships, so
- * stream_loop_locked() below reconstructs it.  Check any newer entry point
- * exists in the runtime, not merely in the headers: most are static inlines
- * dispatching through a SPA interface, and spa_api_method_r returns its
- * default when the method is missing, so the call compiles, links, runs and
- * silently does nothing.  The i386 unixlib compounds this, building against
- * the container's own PipeWire while resolving against the runtime's. */
+/* Requires libpipewire-0.3 >= 1.2.0 (pw_stream_get_data_loop, pw_loop::name);
+ * configure.ac disables the driver on older versions.  Newer entry points must
+ * exist in the runtime, not only in the headers: most are static inlines
+ * dispatching through a SPA interface, and a missing method silently returns
+ * spa_api_method_r's default.  The i386 unixlib may build against a different
+ * PipeWire than the one it runs with. */
 
 #if 0
 #pragma makedep unix
@@ -100,12 +93,10 @@ WINE_DEFAULT_DEBUG_CHANNEL(pipewire);
 
 #define PW_CHANNELS_MAX 64
 
-/* Bounds for sample rates and daemon-supplied clock settings.  The rate
- * ceiling matches winepulse's effective limit (pa_sample_spec_valid rejects
- * anything above PA_RATE_MAX): the rate reaches nSamplesPerSec in the mix
- * format applications hand back to Initialize, where it scales every buffer
- * allocation and wraps nAvgBytesPerSec.  The quantum only feeds the
- * advertised IAudioClient3 minimum period. */
+/* The rate ceiling matches winepulse (pa_sample_spec_valid rejects anything
+ * above PA_RATE_MAX).  The rate scales every buffer allocation in Initialize
+ * and would wrap nAvgBytesPerSec.  The quantum only feeds the advertised
+ * IAudioClient3 minimum period. */
 #define PW_MIN_CLOCK_RATE 8000
 #define PW_MAX_RATE       384000
 #define PW_MAX_QUANTUM    65536
@@ -114,21 +105,11 @@ WINE_DEFAULT_DEBUG_CHANNEL(pipewire);
  * callers; left 0 for native 64-bit processes. */
 static ULONG_PTR zero_bits = 0;
 
-/* ----------------------------------------------------------------------
- * Stream and device structures (struct pulse_stream transplant)
- * ---------------------------------------------------------------------- */
-
-/* Ownership token for one period-sized capture slot; see the capture ring
- * comment in struct pipewire_stream.
- *
- * State and publication sequence share ONE atomic word so every transition
- * compare-exchanges the exact value it observed.  On the state alone, a slot
- * evicted and republished between a scan and its claim would read FULL both
- * times and be delivered ahead of older slots; folding the sequence in makes
- * any recycle change the compared word, so the exchange fails and the caller
- * rescans.  30 bits of sequence wrap after about 128 days of continuous
- * capture at a 10 ms period, and an ABA needs that wrap inside one
- * scan-to-claim window. */
+/* Capture slot ownership, see the capture ring in struct pipewire_stream.
+ * State and publication sequence share one atomic word, so a slot evicted and
+ * republished between a scan and its claim fails the claim's exchange instead
+ * of being delivered out of order.  An ABA needs the 30-bit sequence to wrap
+ * (about 128 days at a 10 ms period) inside one scan-to-claim window. */
 enum cap_slot_state
 {
     CAP_FREE = 0,   /* nobody owns the bytes */
@@ -151,8 +132,7 @@ struct cap_slot
                      * by whoever owns the slot, so it needs no atomicity */
 };
 
-/* An aligned base only keeps every element aligned if the stride is a whole
- * number of alignments; pin that so a later field cannot break it silently. */
+/* Elements of an aligned array must all stay aligned. */
 C_ASSERT(sizeof(struct cap_slot) % _Alignof(struct cap_slot) == 0);
 
 /* Publication order of two slot words, wraparound safe.  Masking off the
@@ -163,10 +143,8 @@ static BOOL cap_seq_before(UINT32 a, UINT32 b)
     return (INT32)((a & ~CAP_STATE_MASK) - (b & ~CAP_STATE_MASK)) < 0;
 }
 
-/* Per-stream state-transition journal.  pw_stream_state_changed fires on a
- * foreign PipeWire thread with no Wine TEB, so it only records here and Wine
- * threads drain and log later.  The ring is lock-free and drop-oldest:
- * overflow loses the oldest unread transitions rather than blocking. */
+/* Stream state transitions, recorded on the TEB-less PipeWire thread and
+ * logged later by Wine threads.  Lock-free and drop-oldest. */
 #define STATE_JOURNAL_LEN 8
 
 struct stream_journal_entry
@@ -199,30 +177,21 @@ struct pipewire_stream
     INT32 locked;
     BOOL started; /* atomic: control release-stores, process callback load-acquires */
     SIZE_T bufsize_frames, real_bufsize_bytes, period_bytes;
-    /* Render ring bookkeeping.  lcl_offs/held are the application side,
-     * pa_offs/pa_held the process-callback reader (names kept from the
-     * pulse.c transplant).  pa_held_bytes crosses to the callback through
-     * atomics; pa_offs_bytes is the callback's own cursor and control paths
-     * reach it only through the data loop. */
+    /* lcl_* is the application side and pa_* the process-callback reader
+     * (pulse.c names).  pa_held_bytes is shared through atomics; control
+     * paths reach the callback's pa_offs_bytes only through the data loop. */
     SIZE_T lcl_offs_bytes, pa_offs_bytes;
     SIZE_T tmp_buffer_bytes, held_bytes, pa_held_bytes;
     BYTE *local_buffer, *tmp_buffer;
     void *locked_ptr;
     UINT64 mmdev_period_usec;
 
-    /* Capture staging ring, the analogue of PulseAudio's internal record
-     * buffer: the process callback appends raw bytes, the Wine timer thread
-     * slices period-sized ACPackets out with QPC timestamps.
-     *
-     * Ownership of a slot's BYTES follows ownership of its state word, which
-     * only changes by compare-exchange (FREE, FILLING, FULL, INUSE), so
-     * neither side can enter a slot without taking it out of the other's
-     * reach.  That is also what keeps drop-oldest, which a plain SPSC ring
-     * cannot: with nothing free the producer reclaims the oldest FULL slot,
-     * an exchange that can only succeed if the consumer has not claimed it.
-     * Dropping the newest would hand the application a stale backlog after a
-     * stall.  Slots are published in fill order via seq, compared with
-     * wraparound safe signed differences. */
+    /* Capture staging ring: the process callback appends raw bytes and the
+     * timer thread slices period-sized packets out of it.  A slot's bytes
+     * belong to whoever holds its state word, which only changes by
+     * compare-exchange.  With no FREE slot the producer evicts the oldest FULL
+     * one, so a stall drops stale audio rather than the newest.  Slots are
+     * published in fill order via seq. */
     BYTE *capture_ring;
     SIZE_T capture_ring_size;
     struct cap_slot *cap_slots;
@@ -266,12 +235,8 @@ typedef struct _ACPacket
     UINT32 discont;
 } ACPacket;
 
-/* As for the slot array: an aligned base only keeps every element aligned if
- * the stride is a whole number of alignments. */
 C_ASSERT(sizeof(ACPacket) % _Alignof(ACPacket) == 0);
 
-/* PipeWire node.bus / device.bus values we translate into a Windows device
- * path (mirrors winepulse's phys_device_bus_type). */
 enum pw_device_bus
 {
     PW_BUS_OTHER = 0,
@@ -287,9 +252,8 @@ struct pw_phys_device
     UINT channel_mask;
     REFERENCE_TIME min_period, def_period;
     WAVEFORMATEXTENSIBLE fmt;
-    /* Device-path inputs (winepulse get_device_path parity).  index runs
-     * across both lists and the synthetic defaults, because a bus-less
-     * device path is {1}.ROOT\MEDIA\<index> and nothing else in it varies. */
+    /* Indices must be unique across both directions and the defaults:
+     * bus-less endpoints are identified only by their index. */
     enum pw_device_bus bus;
     UINT16 vendor_id, product_id;
     UINT index;
@@ -310,10 +274,6 @@ struct pipewire_period
     BOOL grid_valid;
 };
 
-/* ----------------------------------------------------------------------
- * Globals
- * ---------------------------------------------------------------------- */
-
 static struct pw_thread_loop *pw_loop_global;
 static struct pw_context *pw_ctx;
 static struct pw_core *pw_core_global;
@@ -328,15 +288,11 @@ static struct list g_streams = LIST_INIT(g_streams); /* loop-lock protected */
 
 static pthread_mutex_t pw_init_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-/* device_lists_mutex covers both lists, both default names, and every field
- * of the pw_phys_device entries they hold.  test_connect rebuilds them while
- * unix calls may already be reading; mmdevapi happens to enumerate only after
- * the single test_connect, but nothing here enforces that and the entries are
- * freed, not just replaced.  No reader runs while the loop lock is held:
- * pipewire_create_stream resolves its device_is_sink answer before taking
- * that lock, which is why pipewire_stream_connect is handed capture_sink
- * instead of looking it up.  Keep it that way and the two locks never
- * nest. */
+/* Covers both lists, both default names and every pw_phys_device field:
+ * test_connect frees and rebuilds them while unix calls may be reading.  It
+ * never nests with the loop lock: pipewire_create_stream resolves
+ * device_is_sink before taking that lock and hands capture_sink to
+ * pipewire_stream_connect. */
 static pthread_mutex_t device_lists_mutex = PTHREAD_MUTEX_INITIALIZER;
 static struct list g_render_devices = LIST_INIT(g_render_devices);
 static struct list g_capture_devices = LIST_INIT(g_capture_devices);
@@ -344,10 +300,6 @@ static char g_default_sink[256];
 static char g_default_source[256];
 
 static struct list active_periods = LIST_INIT(active_periods); /* loop-lock protected */
-
-/* ----------------------------------------------------------------------
- * Small helpers
- * ---------------------------------------------------------------------- */
 
 /* Safe for TEB-less PW callback threads (no ntdll). */
 static void copy_cstr(char *dst, size_t dst_size, const char *src)
@@ -396,7 +348,8 @@ static char *wstr_to_str(const WCHAR *wstr)
     return str;
 }
 
-/* Validate before UTF-8 conversion; non-ASCII names must not depend on char signedness. */
+/* Blank names count as absent.  Checked on the WCHAR string, where non-ASCII
+ * is never <= ' '. */
 static char *app_name_from_wstr(const WCHAR *appname)
 {
     const WCHAR *w;
@@ -423,11 +376,10 @@ static WCHAR *utf8_to_wstr(const char *s)
 
 #define MAX_DEVICE_NAME_LEN 62
 
-/* Mirror winepulse get_device_name: some broken apps (Split/Second with
- * fmodex) crash on endpoint names longer than 62 chars, even on native.  The
- * cap is on UTF-16 length, so it is checked here on the unix-call thread
- * where ntdll_umbstowcs is legal, not on the probe thread.  When no shorter
- * candidate fits, keep the long name rather than truncate, matching pulse. */
+/* Like winepulse get_device_name: some apps (Split/Second with fmodex) crash
+ * on endpoint names longer than 62 chars, even on native.  The cap counts
+ * UTF-16 units, so it runs on the unix-call thread.  If no candidate fits,
+ * keep the long name rather than truncate. */
 static WCHAR *utf8_to_wstr_capped(const char *desc, const char *nick, const char *node_name)
 {
     const char *chosen = desc ? desc : (nick ? nick : node_name);
@@ -460,9 +412,7 @@ static WCHAR *utf8_to_wstr_capped(const char *desc, const char *nick, const char
     return w;
 }
 
-/* winepulse prefixes monitor source descriptions with an unlocalized
- * "Monitor of ", so match it.  The result may exceed MAX_DEVICE_NAME_LEN,
- * the same non-guarantee as utf8_to_wstr_capped. */
+/* Unlocalized, like winepulse.  May exceed MAX_DEVICE_NAME_LEN. */
 static WCHAR *monitor_name_from(const WCHAR *sink_display)
 {
     static const WCHAR monitor_of[] = {'M','o','n','i','t','o','r',' ','o','f',' '};
@@ -476,35 +426,23 @@ static WCHAR *monitor_name_from(const WCHAR *sink_display)
     return out;
 }
 
-/* Post-mortem breadcrumb recovered from a core file; the driver never reads
- * it.  Zero means the callback has never run for this stream, otherwise the
- * low bits give the phase and the rest a callback count.  The stores are
- * relaxed, so a mark can be published either side of the code it brackets:
- * read it as "roughly here", not as proof. */
+/* Breadcrumb for core dumps, never read by the driver: zero if the callback
+ * never ran, else (callback count << 2) | phase.  Stores are relaxed, so it
+ * is approximate. */
 #define CB_ENTER 1  /* in the callback, buffer not yet validated */
 #define CB_BODY  2  /* buffer validated, moving audio */
 #define CB_DONE  3  /* buffer queued back, callback returning */
 #define CB_MARK(s, ph) \
     __atomic_store_n(&(s)->cb_mark, ((s)->cb_seq << 2) | (ph), __ATOMIC_RELAXED)
 
-/* Render dispatch mode: on unless WINEPIPEWIRE_RT=0, read once per process.
- * With PW_STREAM_FLAG_RT_PROCESS the callback runs on PipeWire's realtime
- * data thread without the thread-loop lock that otherwise serializes it
- * against the control paths.  Capture never sets it: its source is its own
- * driver. */
+/* RT_PROCESS callbacks run without the thread-loop lock. */
 static BOOL rt_render;
 
-/* Realtime CPU budget below which arming RT_PROCESS is a process kill rather
- * than a latency choice.  RLIMIT_RTTIME counts only CPU burned without a
- * blocking syscall and an audio callback blocks every quantum, so the floor
- * sits well above any sane callback and well below the 200 ms a working rtkit
- * grants.  module-rt itself defaults rt.time.soft/hard to unlimited, so a
- * small value here is always something the environment imposed. */
+/* Refuse tight RLIMIT_RTTIME budgets to avoid SIGKILL before the callback yields. */
 #define RT_TIME_FLOOR_USEC 20000
 
-/* The process-wide budget every SCHED_FIFO/RR thread here is judged against.
- * Either pointer may be NULL.  A failed read reports unlimited: not knowing
- * the budget is no reason to refuse the mode. */
+/* Either pointer may be NULL.  A failed read reports unlimited rather than
+ * refusing RT_PROCESS. */
 static void rt_time_limit(UINT64 *soft, UINT64 *hard)
 {
     struct rlimit rl;
@@ -526,12 +464,8 @@ static const char *rt_time_str(char *buf, size_t len, UINT64 usec)
     return buf;
 }
 
-/* Identifies one process run, so a PROTON_LOG and a core dump can be shown to
- * describe the same run instead of assumed to: every dispatch line carries
- * the value and the global is readable out of a core by name.  Zero is the
- * never-initialised sentinel and the live value is forced off it.  Entropy is
- * getrandom mixed with the pid and a monotonic count, since pids recycle and
- * a collision would certify a mismatched pairing.  Treat it as opaque. */
+/* Per-run identifier on every dispatch line, also readable from a core by
+ * name, so a log and a core can be matched.  Zero means uninitialized. */
 static UINT64 dispatch_token;
 
 static struct pipewire_stream *handle_get_stream(stream_handle h)
@@ -564,12 +498,9 @@ static void silence_buffer(enum spa_audio_format format, BYTE *buffer, UINT32 by
 {
     int fill = 0;
 
-    /* 0x00 is not silence in the companded formats: it decodes to -8031 of
-     * +/-8031 in mu-law (mult.h:710) and to -688 of +/-4032 in A-law
-     * (mult.h:34), so a zeroed period is near full-scale negative DC.  The
-     * codes below are each law's smallest magnitude, exactly 0 for mu-law
-     * (mult.h:741) and +1 for A-law (mult.h:60), and both are fixpoints of
-     * mult_*_sample(), so the volume stage cannot move them off silence. */
+    /* 0x00 decodes near full-scale negative in mu-law and A-law.  These are
+     * each law's smallest magnitude and fixpoints of mult_*_sample(), so volume
+     * cannot move them off silence. */
     switch (format)
     {
     case SPA_AUDIO_FORMAT_U8:
@@ -588,12 +519,9 @@ static void silence_buffer(enum spa_audio_format format, BYTE *buffer, UINT32 by
     memset(buffer, fill, bytes);
 }
 
-/* Take ownership of the slot the producer is due to fill next.  A FREE slot
- * is taken outright; otherwise the oldest FULL slot is evicted, which is what
- * makes the policy drop-oldest.  Either transition is a compare-exchange, so
- * a slot the consumer has already claimed can never be taken from under it,
- * and the producer moves on to the next one.  Runs on the process
- * callback: no allocation, no logging, no Wine calls. */
+/* Take the next slot for the producer: a FREE slot, else evict the oldest
+ * FULL one.  A slot the consumer has claimed is never taken.  Runs on the
+ * process callback: no allocation, logging or Wine calls. */
 static BOOL cap_acquire_slot(struct pipewire_stream *stream)
 {
     UINT32 tries;
@@ -604,20 +532,15 @@ static BOOL cap_acquire_slot(struct pipewire_stream *stream)
         UINT32 w = __atomic_load_n(&slot->word, __ATOMIC_ACQUIRE);
         UINT32 st = CAP_STATE(w);
 
-        /* Exchange the whole observed word, not just the state, so a slot
-         * that was recycled since the load fails here rather than being
-         * silently taken in its new generation. */
+        /* Compare the whole word so a slot recycled since the load fails. */
         if ((st == CAP_FREE || st == CAP_FULL) &&
             __atomic_compare_exchange_n(&slot->word, &w, CAP_WORD(CAP_SEQ(w), CAP_FILLING),
                                         FALSE, __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE))
         {
             if (st == CAP_FULL)
             {
-                /* Evicted unread audio.  Do NOT flag here: eviction removes a
-                 * sequence number, and the consumer turns that missing
-                 * sequence into the discontinuity on exactly the packet that
-                 * gapped.  Flagging the slot we are about to publish would
-                 * put it on a later packet instead. */
+                /* Not flagged: the consumer marks the discontinuity on the
+                 * packet after the missing sequence. */
                 __atomic_add_fetch(&stream->overrun_count, 1, __ATOMIC_RELAXED);
             }
             stream->cap_filling = TRUE;
@@ -630,7 +553,6 @@ static BOOL cap_acquire_slot(struct pipewire_stream *stream)
     return FALSE;
 }
 
-/* copy n bytes out of a byte ring starting at offs, wrapping at ring_size */
 static void copy_from_ring(BYTE *dst, const BYTE *ring, SIZE_T ring_size, SIZE_T offs, SIZE_T n)
 {
     SIZE_T first = min(n, ring_size - offs);
@@ -639,8 +561,7 @@ static void copy_from_ring(BYTE *dst, const BYTE *ring, SIZE_T ring_size, SIZE_T
         memcpy(dst + first, ring, n - first);
 }
 
-/* Parse {"name":"<value>"} metadata values.  spa_json_str_object_find needs
- * PipeWire 1.4; this uses only the stable spa_json core (verified in 1.0.0). */
+/* spa_json_str_object_find requires newer headers than the supported PipeWire 1.2 API. */
 static int parse_json_str_field(const char *json, const char *field, char *dst, size_t maxlen)
 {
     struct spa_json it[2];
@@ -651,9 +572,7 @@ static int parse_json_str_field(const char *json, const char *field, char *dst, 
     spa_json_init(&it[0], json, strlen(json));
     if (spa_json_enter_object(&it[0], &it[1]) <= 0)
         return -1;
-    /* -ENOSPC means the key token did not fit key[], not that the object
-     * ended: consume its value and keep scanning, or one long key hides
-     * every field behind it.  Mirrors spa_json_object_next. */
+    /* Skip oversized keys on SPA versions that distinguish them from malformed JSON. */
     while ((res = spa_json_get_string(&it[1], key, sizeof(key))) != 0)
     {
         if (res < 0 && res != -ENOSPC)
@@ -818,7 +737,8 @@ static void build_format(WAVEFORMATEXTENSIBLE *fmt, uint32_t rate, uint32_t chan
 /* Takes ownership of display, already converted on the unix-call thread, and
  * frees it on failure. */
 static struct pw_phys_device *add_device(struct list *list, const char *pw_name, WCHAR *display,
-                                         EndpointFormFactor form, uint32_t rate, uint32_t channels, UINT mask,
+                                         EndpointFormFactor form, uint32_t rate,
+                                         uint32_t channels, UINT mask,
                                          REFERENCE_TIME def_period, REFERENCE_TIME min_period)
 {
     size_t len = strlen(pw_name);
@@ -844,10 +764,8 @@ static struct pw_phys_device *add_device(struct list *list, const char *pw_name,
     return dev;
 }
 
-/* Callers hold device_lists_mutex, except pipewire_process_detach, which
- * deliberately takes nothing: it can run at process exit with the probe
- * thread already killed, possibly mid-hold, and blocking there would hang
- * teardown.  Same reason that path takes no loop lock and skips pw_deinit. */
+/* Callers hold device_lists_mutex, except process detach at exit, where a
+ * killed thread may still hold it. */
 static void free_device_lists(void)
 {
     static struct list *const lists[] = { &g_render_devices, &g_capture_devices, NULL };
@@ -864,10 +782,6 @@ static void free_device_lists(void)
     } while (*(++list));
 }
 
-/* ----------------------------------------------------------------------
- * Process attach / detach
- * ---------------------------------------------------------------------- */
-
 /* True when dir holds a SPA support plugin of this process's architecture. */
 static BOOL spa_plugin_dir_usable(const char *dir)
 {
@@ -876,10 +790,9 @@ static BOOL spa_plugin_dir_usable(const char *dir)
     int fd, n;
 
     snprintf(path, sizeof(path), "%s/support/libspa-support.so", dir);
-    /* O_CLOEXEC: process_attach can run with application threads already
-     * fork+exec'ing.  O_NONBLOCK: the path comes from the environment, and
-     * opening a FIFO would otherwise block the first mmdevapi unix call
-     * forever instead of failing closed. */
+    /* O_CLOEXEC: application threads may already be fork+exec'ing.
+     * O_NONBLOCK: the path comes from the environment, and a FIFO would block
+     * the first mmdevapi unix call forever. */
     if ((fd = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK)) < 0)
         return FALSE;
     n = read(fd, ident, sizeof(ident));
@@ -889,17 +802,14 @@ static BOOL spa_plugin_dir_usable(const char *dir)
     return ident[EI_CLASS] == (sizeof(void *) == 8 ? ELFCLASS64 : ELFCLASS32);
 }
 
-/* Containers (Steam pressure-vessel) import libpipewire from the host but its
- * compiled-in SPA plugin path does not exist inside the container, so
- * pw_loop_new() fails with "can't make support.system handle".  The plugins
- * live in the same libdir as the loaded library and match its architecture, so
- * derive the path from the loaded object.  A different-architecture parent (a
- * 32-bit launcher spawning a 64-bit game) also leaks its own SPA_PLUGIN_DIR
- * through the environment; drop such an inherited value and re-derive ours.
+/* In containers (Steam pressure-vessel) libpipewire comes from the host and
+ * its compiled-in SPA plugin path does not exist, so pw_loop_new() fails with
+ * "can't make support.system handle".  Derive the path from the loaded
+ * library, whose libdir holds plugins of its architecture.  An inherited
+ * SPA_PLUGIN_DIR may come from a parent of another architecture.
  *
- * The setenv/unsetenv calls below race a concurrent getenv on an application
- * thread, which is formally UB and memory-safe on glibc.  It is unavoidable:
- * libpipewire only reads these variables through getenv. */
+ * setenv/unsetenv race a concurrent getenv on an application thread, formally
+ * UB but memory-safe on glibc; libpipewire only reads these through getenv. */
 static void pipewire_set_plugin_dirs(void)
 {
     Dl_info info;
@@ -913,7 +823,8 @@ static void pipewire_set_plugin_dirs(void)
             TRACE("keeping SPA_PLUGIN_DIR %s\n", existing);
             return;
         }
-        WARN("inherited SPA_PLUGIN_DIR %s is not loadable by this process; re-deriving\n", existing);
+        WARN("inherited SPA_PLUGIN_DIR %s is not loadable by this process; re-deriving\n",
+             existing);
         unsetenv("SPA_PLUGIN_DIR");
         unsetenv("PIPEWIRE_MODULE_DIR");
     }
@@ -942,10 +853,8 @@ static void pipewire_set_plugin_dirs(void)
     snprintf(path, sizeof(path), "%s/spa-0.2", libdir);
     setenv("SPA_PLUGIN_DIR", path, 1);
     snprintf(path, sizeof(path), "%s/pipewire-0.3", libdir);
-    /* Overwrite: reaching here means no usable SPA_PLUGIN_DIR was inherited,
-     * so an inherited module dir is unverified and may be foreign-arch.  Both
-     * must come from the same libdir.  An explicitly configured pair keeps
-     * its values through the early return above. */
+    /* Overwrite: without a usable inherited SPA_PLUGIN_DIR, an inherited
+     * module dir is unverified, and both must come from the same libdir. */
     if (!access(path, F_OK))
         setenv("PIPEWIRE_MODULE_DIR", path, 1);
     TRACE("derived SPA plugin dir from %s\n", libdir);
@@ -961,9 +870,8 @@ static NTSTATUS pipewire_process_attach(void *args)
     pw_init(NULL, NULL);
     TRACE("PipeWire %s, header %s\n", pw_get_library_version(), pw_get_headers_version());
 
-    /* First unix call the driver receives (mmdevapi/main.c:94), so the token
-     * is set before any stream can connect and no dispatch line can be
-     * emitted without one. */
+    /* process_attach is the first unix call, so the token exists before any
+     * stream connects. */
     if (getrandom(&rnd, sizeof(rnd), 0) != (ssize_t)sizeof(rnd))
         rnd = 0;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -980,20 +888,13 @@ static NTSTATUS pipewire_process_attach(void *args)
 
 static NTSTATUS pipewire_process_detach(void *args)
 {
-    /* May run at process exit (DLL_PROCESS_DETACH with lpvReserved set), with
-     * the pw_thread_loop still running: it is a raw pthread that process
-     * termination does not stop, and main_loop_stop is skipped on that path.
-     * Do not take the loop lock (a killed thread may have held it) and do not
-     * pw_deinit() here (it dlcloses the PipeWire modules under the live loop
-     * thread).  Clean library teardown happens in pipewire_main_loop_stop on
-     * the FreeLibrary path; at process exit the OS reclaims everything. */
+    /* May run at process exit with the pw_thread_loop still running, since
+     * termination does not stop that raw pthread and main_loop_stop is
+     * skipped.  Take no loop lock (a killed thread may hold it) and skip
+     * pw_deinit(), which would unload modules under the live loop thread. */
     free_device_lists();
     return STATUS_SUCCESS;
 }
-
-/* ----------------------------------------------------------------------
- * Connection / main loop
- * ---------------------------------------------------------------------- */
 
 static void on_core_error(void *data, uint32_t id, int seq, int res, const char *message)
 {
@@ -1025,11 +926,9 @@ static HRESULT pipewire_connect(const WCHAR *appname)
 
     if (pw_core_global)
     {
-        /* Existing streams still hold pw_stream objects on this core.
-         * Destroy those objects under the loop lock and mark the Wine-side
-         * streams invalidated so a fresh core can be opened for new clients.
-         * The app recovers by releasing the old IAudioClient after creating
-         * its replacement (standard device-lost order). */
+        /* Invalidate streams on the dead core so a fresh one can serve new
+         * clients.  Apps recover by creating a replacement IAudioClient and
+         * releasing the old one (standard device-lost order). */
         if (!list_empty(&g_streams))
         {
             struct pipewire_stream *stream;
@@ -1156,14 +1055,9 @@ static NTSTATUS pipewire_main_loop_stop(void *args)
     return STATUS_SUCCESS;
 }
 
-/* ----------------------------------------------------------------------
- * Probe: device enumeration, defaults, formats (test_connect)
- *
- * All registry / node / metadata / core callbacks below run on the probe
- * thread loop's own (foreign) thread.  They may only call libc, spa and pw
- * APIs, never ntdll/Wine (no TRACE).  Strings are kept as UTF-8 and
- * converted to UTF-16 later, on the unix-call thread.
- * ---------------------------------------------------------------------- */
+/* The probe callbacks below run on the probe loop's own thread: libc, spa and
+ * pw only, never ntdll/Wine (no TRACE).  Strings stay UTF-8 until the
+ * unix-call thread converts them. */
 
 struct probe_node
 {
@@ -1197,9 +1091,8 @@ struct probe_device
     BOOL listener_added;
 };
 
-/* Cap on globals kept per probe.  Every audio node and device allocates and
- * strdups daemon-supplied strings, and any local client can register them,
- * so bound the list rather than the socket. */
+/* Any local client can register globals, and each costs allocations of
+ * daemon-supplied strings, so bound the list. */
 #define PROBE_MAX_GLOBALS 512
 
 struct probe
@@ -1289,11 +1182,8 @@ static const struct pw_metadata_events probe_metadata_events = {
     .property = on_probe_metadata_property,
 };
 
-/* Daemon-supplied properties are free-form text: accept only a number in the
- * given base, fully consumed, inside the range the driver can honour.  A bare
- * strtoul takes "abc" as 0, silently truncates out-of-range values on 64-bit
- * and saturates to ULONG_MAX on 32-bit, so one string can mean two different
- * things across the two unixlib builds. */
+/* Accept only a fully consumed number in range.  Bare strtoul takes "abc" as
+ * 0 and handles overflow differently in the 32-bit and 64-bit builds. */
 static BOOL parse_u32(const char *value, int base, uint32_t lo, uint32_t hi, uint32_t *out)
 {
     unsigned long v;
@@ -1370,8 +1260,7 @@ static void on_probe_device_info(void *data, const struct pw_device_info *info)
                               16, 0, 0xffff, &v) ? (UINT16)v : 0;
     pd->product_id = parse_u32(spa_dict_lookup(info->props, PW_KEY_DEVICE_PRODUCT_ID),
                                16, 0, 0xffff, &v) ? (UINT16)v : 0;
-    /* Probe thread has no Wine TEB: strdup is libc and legal here, an ntdll
-     * call or a TRACE is not.  info repeats, so keep the first path. */
+    /* strdup is libc and legal here.  info repeats, so keep the first path. */
     if (!pd->sysfs_path && (sysfs_path = spa_dict_lookup(info->props, PW_KEY_DEVICE_SYSFS_PATH)))
         pd->sysfs_path = strdup(sysfs_path);
 }
@@ -1400,10 +1289,8 @@ static void on_probe_registry_global(void *data, uint32_t id, uint32_t permissio
         struct probe_node *pn, *dup;
         EDataFlow flow;
 
-        /* An empty node.name aliases the synthetic default endpoint's
-         * placeholder, so both would enumerate with an empty device string
-         * and find_device would only ever reach the first.  winepulse rejects
-         * the same case (pulse.c:757). */
+        /* An empty node.name would alias the synthetic default endpoint;
+         * winepulse rejects it too. */
         if (!media_class || !node_name || !node_name[0])
             return;
         if (!strcmp(media_class, "Audio/Sink"))
@@ -1413,13 +1300,10 @@ static void on_probe_registry_global(void *data, uint32_t id, uint32_t permissio
         else
             return;
 
-        /* Scoped per direction, deliberately: find_device searches the
-         * matching list first, so a sink and a source may share a name and
-         * both stay reachable, while a second node of the same direction
-         * would enumerate and never be reached.  Any local client can
-         * register one.  A source colliding with the monitor endpoint that
-         * build_device_cache synthesizes for a same-named sink is a
-         * different pairing and is not covered here. */
+        /* Per direction: find_device searches the matching list first, so a
+         * sink and a source may share a name, but a second node of the same
+         * direction would never be reached.  A source named like a sink's
+         * synthesized monitor is not caught here. */
         LIST_FOR_EACH_ENTRY(dup, &p->nodes, struct probe_node, entry)
             if (dup->flow == flow && !strcmp(dup->node_name, node_name))
                 return;
@@ -1438,8 +1322,7 @@ static void on_probe_registry_global(void *data, uint32_t id, uint32_t permissio
         if (!parse_u32(dev_id, 10, 0, SPA_ID_INVALID - 1, &pn->device_id))
             pn->device_id = SPA_ID_INVALID;
         pn->bus = parse_device_bus(spa_dict_lookup(props, PW_KEY_DEVICE_BUS));
-        /* Probe thread: keep everything UTF-8, no ntdll/WCHAR work.  The name
-         * cap is applied later, in utf8_to_wstr_capped on the unix-call thread. */
+        /* The name cap needs UTF-16, so utf8_to_wstr_capped applies it later. */
         pn->node_name = strdup(node_name);
         pn->display = strdup(desc ? desc : (nick ? nick : node_name));
         pn->nick = nick ? strdup(nick) : NULL;
@@ -1454,9 +1337,8 @@ static void on_probe_registry_global(void *data, uint32_t id, uint32_t permissio
         list_add_tail(&p->nodes, &pn->entry);
         p->n_nodes++;
 
-        /* Bind the node and ask for its supported formats, which carry the
-         * real channel layout.  The param events arrive during the sync
-         * round-trips below. */
+        /* EnumFormat carries the real channel layout; the params arrive
+         * during the sync round-trips. */
         pn->proxy = pw_registry_bind(p->registry, id, PW_TYPE_INTERFACE_Node, PW_VERSION_NODE, 0);
         if (pn->proxy)
         {
@@ -1520,9 +1402,7 @@ static void on_probe_registry_global_remove(void *data, uint32_t id)
     struct probe_device *pd, *pdnext;
     struct probe_node *pn, *pnnext;
 
-    /* A global that disappears mid-probe is gone from the graph: destroy its
-     * proxy and drop its entry, so the cache does not enumerate a node that
-     * no longer exists and device lookups do not see stale data. */
+    /* Drop globals removed mid-probe so the cache never sees them. */
     LIST_FOR_EACH_ENTRY_SAFE(pn, pnnext, &p->nodes, struct probe_node, entry)
     {
         if (pn->id != id)
@@ -1581,7 +1461,6 @@ static void on_probe_core_done(void *data, uint32_t id, int seq)
 
 static void on_probe_core_error(void *data, uint32_t id, int seq, int res, const char *message)
 {
-    /* Runs on the PipeWire loop thread: pw API only, no ntdll/Wine calls. */
     struct probe *p = data;
     if (id == PW_ID_CORE)
     {
@@ -1627,9 +1506,8 @@ static void add_default_device(struct list *list, EndpointFormFactor form, const
         LIST_FOR_EACH_ENTRY(dev, list, struct pw_phys_device, entry)
             if (!strcmp(dev->pw_name, match)) { def_src = dev; break; }
     }
-    /* calloc a full struct, +1 for the empty pw_name: the placeholder has no
-     * bus and no vendor ids, and the full size keeps -Warray-bounds quiet on
-     * the flexible array member. */
+    /* calloc: the placeholder has no bus or vendor ids.  +1 for the empty
+     * pw_name; the full struct size keeps -Warray-bounds quiet. */
     if (!(def = calloc(1, sizeof(*def) + 1)))
         return;
     /* Burnout Paradise Remastered crashes on a device name with no space,
@@ -1739,12 +1617,11 @@ static GUID get_container_id(const char *sysfs_path)
 }
 #endif
 
-/* Fallback ContainerId for an endpoint with no udev sysfs path to derive one
- * from; the inputs are chosen for being stable across reboots.  A device on
 #define FNV1A_64_BASIS 14695981039346656037ull
 #define FNV1A_64_PRIME 1099511628211ull
 
- * no recognised bus gets a zero GUID, as pulse leaves it without sysfs. */
+/* Fallback ContainerId from inputs stable across reboots.  As with pulse, a
+ * device on no recognised bus gets a zero GUID. */
 static GUID make_container_id(enum pw_device_bus bus, UINT16 vendor_id, UINT16 product_id,
                               const char *node_name)
 {
@@ -1782,11 +1659,8 @@ static void fill_device_path_info(struct pw_phys_device *dev, struct probe *p,
     dev->product_id = pd ? pd->product_id : 0;
     dev->index = index;
     dev->container_id = make_container_id(dev->bus, dev->vendor_id, dev->product_id, pn->node_name);
-    /* winebus.sys reports the udev-derived id for the same physical device,
-     * so only deriving it the same way lets an endpoint be correlated with
-     * its HID sibling.  A walk that reaches no usb_device parent yields
-     * GUID_NULL, which would publish as no container at all, so keep the
-     * hash in that case. */
+    /* winebus.sys derives the same udev id, which correlates the endpoint with
+     * its HID sibling.  GUID_NULL means no usb_device parent: keep the hash. */
     if (dev->bus == PW_BUS_USB && pd && pd->sysfs_path)
     {
         GUID id = get_container_id(pd->sysfs_path);
@@ -1803,25 +1677,18 @@ static void build_device_cache(struct probe *p)
     REFERENCE_TIME min_period = 30000, def_period = 100000;
     UINT index = 0;
 
-    /* IAudioClient3 shared-mode floor.  clock.force-quantum pins the graph
-     * cycle, so it is a hard ceiling as much as a hard floor and takes no
-     * 3 ms clamp: under-advertising a pinned quantum makes clients size
-     * buffers the graph cannot fill in one cycle.  clock.min-quantum is only
-     * a hint, so that path keeps the 128 frame floor (~2.7 ms at 48 kHz,
-     * matching the typical Windows engine floor) and the 3 ms
-     * winepulse-parity ceiling.  Without settings metadata keep 3 ms.  Both
-     * conversions floor because mmdevapi converts back with a ceiling, so
-     * they round-trip to the exact frame count. */
+    /* clock.force-quantum pins the graph cycle, so it is both floor and
+     * ceiling: advertising less makes clients size buffers the graph cannot
+     * fill in one cycle.  clock.min-quantum is only a hint, clamped between
+     * 128 frames (the typical Windows engine floor) and winepulse's 3 ms.
+     * Both conversions floor because mmdevapi converts back with a ceiling. */
     if (p->force_quantum)
     {
         min_period = (REFERENCE_TIME)p->force_quantum * 10000000 / rate;
         TRACE("force_quantum=%u rate=%u -> min_period=%d hns\n",
               p->force_quantum, rate, (int)min_period);
-        /* A 10 ms default on a graph pinned longer than that makes every
-         * shared-mode client wake twice per cycle for one cycle of work.
-         * mmdevapi floors this at 10 ms (client.c:113), so a pinned quantum
-         * shorter than 10 ms lands back on the default and only a longer one
-         * moves it. */
+        /* A 10 ms default on a longer pinned cycle wakes clients twice per
+         * cycle.  mmdevapi raises defaults below 10 ms back to 10 ms. */
         def_period = min_period;
     }
     else if (p->min_quantum)
@@ -1852,11 +1719,9 @@ static void build_device_cache(struct probe *p)
                          def_period, min_period);
         fill_device_path_info(dev, p, pn, index++);
 
-        /* PipeWire has no separate monitor nodes, so synthesize one capture
-         * endpoint per sink under the sink's own name, with the LineLevel
-         * form winepulse gives monitor sources.  Capture streams that name a
-         * sink already connect through PW_KEY_STREAM_CAPTURE_SINK (see
-         * pipewire_stream_connect). */
+        /* PipeWire has no monitor nodes: add a LineLevel capture endpoint per
+         * sink under the sink's name, like winepulse's monitor sources.
+         * pipewire_stream_connect captures it via PW_KEY_STREAM_CAPTURE_SINK. */
         if (pn->flow == eRender && dev)
         {
             WCHAR *mon = monitor_name_from(dev->display);
@@ -2005,8 +1870,6 @@ static NTSTATUS pipewire_test_connect(void *args)
     if (p.timed_out)
         WARN("PipeWire probe timed out; the device list may be incomplete.\n");
 
-    /* Both probe lists are freed on every path: the error return below used
-     * to sit above the cleanup and leak p.devices. */
     failed = p.core_error && list_empty(&p.nodes);
     if (failed)
         WARN("PipeWire core reported an error during the probe\n");
@@ -2042,10 +1905,6 @@ static NTSTATUS pipewire_test_connect(void *args)
     params->priority = Priority_Preferred;
     return STATUS_SUCCESS;
 }
-
-/* ----------------------------------------------------------------------
- * Endpoint enumeration / formats / periods / props
- * ---------------------------------------------------------------------- */
 
 static NTSTATUS pipewire_get_endpoint_ids(void *args)
 {
@@ -2090,12 +1949,10 @@ static NTSTATUS pipewire_get_endpoint_ids(void *args)
     return STATUS_SUCCESS;
 }
 
-/* Resolve a device string to its cache entry.  A loopback capture targets a
- * render sink, so an eCapture lookup that misses the capture list falls back
- * to the render list (the sink's format/period describe the loopback).
- *
- * Called with device_lists_mutex held, and the entry stays valid only while
- * the caller keeps holding it. */
+/* A loopback capture targets a sink, so an eCapture lookup that misses falls
+ * back to the render list, whose format and period describe the loopback.
+ * Called with device_lists_mutex held; the entry is valid only while it stays
+ * held. */
 static struct pw_phys_device *find_device(EDataFlow flow, const char *name)
 {
     struct list *list = (flow == eRender) ? &g_render_devices : &g_capture_devices;
@@ -2272,11 +2129,8 @@ done:
     return STATUS_SUCCESS;
 }
 
-/* ----------------------------------------------------------------------
- * Format mapping (pulse_spec_from_waveformat transplant)
- * ---------------------------------------------------------------------- */
-
-static HRESULT pipewire_info_from_waveformat(struct spa_audio_info_raw *info, const WAVEFORMATEX *fmt)
+static HRESULT pipewire_info_from_waveformat(struct spa_audio_info_raw *info,
+                                             const WAVEFORMATEX *fmt)
 {
     enum spa_audio_format spafmt = SPA_AUDIO_FORMAT_UNKNOWN;
     UINT mask = 0, i = 0, j;
@@ -2337,15 +2191,11 @@ static HRESULT pipewire_info_from_waveformat(struct spa_audio_info_raw *info, co
             case 16: if (valid == 16) spafmt = SPA_AUDIO_FORMAT_S16_LE; break;
             case 24: if (valid == 24) spafmt = SPA_AUDIO_FORMAT_S24_LE; break;
             case 32:
-                /* A 32-bit container carries its wValidBitsPerSample valid
-                 * bits left-aligned, with the unused low bits zero (WDK,
-                 * WAVEFORMATEXTENSIBLE), so the container already holds a
-                 * valid 32-bit sample and S32 is bit-exact for 24 valid bits
-                 * as well as 32.  SPA_AUDIO_FORMAT_S24_32_LE is the opposite
-                 * ALSA layout, 24 bits in the low end of the word, and reads
-                 * such a container 8 bits down with the top 8 bits wrapped.
-                 * Upstream drops the pair instead (e320cfd50bd); we cannot, since
-                 * mmdevapi accepts it: IsFormatSupported says S_OK, Initialize fails. */
+                /* Valid bits are left-aligned in a 32-bit container
+                 * (WAVEFORMATEXTENSIBLE), so S32 is bit-exact for 24 of them
+                 * too, while SPA's S24_32 is right-aligned.  Upstream drops
+                 * 24-in-32 (e320cfd50bd), but mmdevapi's validate_wfx accepts
+                 * it. */
                 if (valid == 32 || valid == 24) spafmt = SPA_AUDIO_FORMAT_S32_LE;
                 break;
             default:
@@ -2389,7 +2239,8 @@ static HRESULT pipewire_info_from_waveformat(struct spa_audio_info_raw *info, co
             FIXME("Unsupported channels %u for LAW\n", fmt->nChannels);
             return AUDCLNT_E_UNSUPPORTED_FORMAT;
         }
-        spafmt = fmt->wFormatTag == WAVE_FORMAT_MULAW ? SPA_AUDIO_FORMAT_ULAW : SPA_AUDIO_FORMAT_ALAW;
+        spafmt = fmt->wFormatTag == WAVE_FORMAT_MULAW ? SPA_AUDIO_FORMAT_ULAW
+                                                       : SPA_AUDIO_FORMAT_ALAW;
         info->channels = fmt->nChannels;
         mask = get_channel_mask(fmt->nChannels);
         break;
@@ -2419,13 +2270,9 @@ static NTSTATUS pipewire_is_format_supported(void *args)
     struct is_format_supported_params *params = args;
     struct spa_audio_info_raw info;
 
-    /* Shared-mode conversion and resampling are the adapter's job, so the only
-     * formats to refuse are the ones this driver cannot describe to SPA at all.
-     * Answering from the same function create_stream uses is what keeps the two
-     * entry points from disagreeing: mmdevapi turns S_FALSE into the
-     * closest-match reply here and into AUDCLNT_E_UNSUPPORTED_FORMAT at
-     * Initialize, so an application that probes and trusts S_OK is not sent
-     * into a failure it cannot see coming.  Exclusive mode is not supported. */
+    /* Conversion and resampling are the adapter's job, so refuse only formats
+     * SPA cannot describe.  Sharing create_stream's check keeps a probed S_OK
+     * from failing at Initialize.  Exclusive mode is not supported. */
     if (params->share == AUDCLNT_SHAREMODE_EXCLUSIVE)
         params->result = AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED;
     else if (FAILED(pipewire_info_from_waveformat(&info, params->fmt_in)))
@@ -2435,10 +2282,6 @@ static NTSTATUS pipewire_is_format_supported(void *args)
 
     return STATUS_SUCCESS;
 }
-
-/* ----------------------------------------------------------------------
- * pw_stream callbacks (foreign thread, loop lock held: no ntdll/TRACE)
- * ---------------------------------------------------------------------- */
 
 /* vol is a caller-owned snapshot: the process callback must not re-read
  * stream->vol, which SetVolumes mutates concurrently. */
@@ -2642,10 +2485,7 @@ static void on_stream_process(void *data)
         __atomic_add_fetch(&stream->bad_buffer_count, 1, __ATOMIC_RELAXED);
         if (stream->dataflow == eCapture)
         {
-            /* The buffer is discarded, so audio was lost.  Charge it to the
-             * next slot published, the same as a clamp or an all-slots-held
-             * drop; without this the application sees the gap with nothing to
-             * explain it.  Producer-private, so a plain store is right. */
+            /* Discarded audio: flag the next published slot. */
             stream->cap_lost = TRUE;
         }
         pw_stream_queue_buffer(stream->pw, b);
@@ -2701,13 +2541,9 @@ static void on_stream_process(void *data)
             const BYTE *src = (const BYTE *)d->data + offs;
             SIZE_T n = avail;
 
-            /* Framing is relative to the start of the valid region, so only
-             * the length matters.  cap_w_fill is producer-private and carried
-             * across callbacks, so one chunk that is not a whole number of
-             * frames would rotate every later frame across channels for the
-             * life of the stream.  Drop the partial tail and report it rather
-             * than silently rotating.  Must precede the ring clamp below,
-             * which subtracts a length from src. */
+            /* cap_w_fill carries across callbacks, so a partial frame would
+             * rotate channels for the rest of the stream: drop it and flag the
+             * loss.  Must precede the ring clamp, which derives src from n. */
             if (n % stream->frame_size)
             {
                 n -= n % stream->frame_size;
@@ -2732,10 +2568,8 @@ static void on_stream_process(void *data)
 
                 if (!stream->cap_filling && !cap_acquire_slot(stream))
                 {
-                    /* Every slot is held by the consumer: the rest of this
-                     * chunk is dropped, and a drop must be reported like any
-                     * other, otherwise the application sees a gap with no
-                     * discontinuity to explain it. */
+                    /* Every slot is held by the consumer: drop the rest of
+                     * the chunk and flag the gap. */
                     __atomic_add_fetch(&stream->overrun_count, 1, __ATOMIC_RELAXED);
                     stream->cap_lost = TRUE;
                     break;
@@ -2749,9 +2583,7 @@ static void on_stream_process(void *data)
                 n -= take;
                 if (stream->cap_w_fill == stream->period_bytes)
                 {
-                    /* We own the slot as CAP_FILLING, so nobody else can
-                     * transition it and a release store suffices.  The
-                     * release also publishes slot->disc. */
+                    /* Only the producer can transition a FILLING slot. */
                     slot->disc = stream->cap_lost;
                     stream->cap_lost = FALSE;
                     __atomic_store_n(&slot->word,
@@ -2774,10 +2606,6 @@ static const struct pw_stream_events stream_events = {
     .state_changed = on_stream_state_changed,
     .process = on_stream_process,
 };
-
-/* ----------------------------------------------------------------------
- * Stream creation / release
- * ---------------------------------------------------------------------- */
 
 /* Called with the loop lock held. Emits one WARN per pending ERROR episode. */
 static BOOL stream_valid(struct pipewire_stream *stream)
@@ -2843,8 +2671,8 @@ static HRESULT stream_await_ready(struct pipewire_stream *stream)
     return AUDCLNT_E_ENDPOINT_CREATE_FAILED;
 }
 
-/* At ERR because the alternative is a process the kernel kills without a
- * diagnostic, and the reporter will not have set WINEDEBUG. */
+/* ERR: the alternative is a SIGKILL with no diagnostic, and the reporter will
+ * not have set WINEDEBUG. */
 static void rt_gate_report(UINT64 soft, UINT64 hard, BOOL late)
 {
     char buf[32];
@@ -2860,12 +2688,10 @@ static void rt_gate_report(UINT64 soft, UINT64 hard, BOOL late)
             rt_time_str(buf, sizeof(buf), hard), (unsigned long long)dispatch_token);
 }
 
-/* Report where the process callback actually ended up: node.loop.class from
- * PIPEWIRE_PROPS or a stream.rules entry overrides RT_PROCESS, and the same
- * overrides can flip node.async, which RT_PROCESS otherwise suppresses.  Once
- * per distinct (dataflow, requested, effective, async) combination; the
- * matched case is WARN so it can be grepped without full tracing.  Called
- * with the loop lock held. */
+/* PIPEWIRE_PROPS or stream.rules can override RT_PROCESS through
+ * node.loop.class and re-enable node.async, so report where the callback
+ * really runs, once per (dataflow, requested, effective, async) combination.
+ * Called with the loop lock held. */
 static void report_dispatch_mode(struct pipewire_stream *stream, BOOL rt_render)
 {
     struct pw_loop *dl = pw_stream_get_data_loop(stream->pw);
@@ -2915,9 +2741,8 @@ static void report_dispatch_mode(struct pipewire_stream *stream, BOOL rt_render)
              async ? async : "absent", req, (unsigned long long)dispatch_token);
 }
 
-/* Called with the loop lock held.  capture_sink is resolved by the caller,
- * before it takes that lock, because device_is_sink reads the device lists
- * and no reader may run underneath the loop lock. */
+/* Called with the loop lock held.  The caller resolves capture_sink before
+ * taking it, as device_is_sink must not run under the loop lock. */
 static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const char *device,
                                        const WCHAR *appname, BOOL capture_sink)
 {
@@ -2946,10 +2771,8 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
     }
     else
         pw_properties_set(props, PW_KEY_NODE_NAME, "winepipewire");
-    /* calc_period_bytes already rejects a period_bytes that cannot fit
-     * SIZE_T, which on 32-bit also covers the UINT32 PW_KEY_NODE_LATENCY
-     * bound.  On 64-bit the frame count can still exceed UINT32_MAX, so
-     * refuse rather than narrow. */
+    /* PW_KEY_NODE_LATENCY takes a UINT32 frame count, which a 64-bit SIZE_T
+     * period can exceed: refuse rather than narrow. */
     period_frames = stream->period_bytes / stream->frame_size;
     if (period_frames > UINT32_MAX)
     {
@@ -2959,6 +2782,8 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
     }
     pw_properties_setf(props, PW_KEY_NODE_LATENCY, "%u/%u",
                        (UINT32)period_frames, stream->info.rate);
+    /* The synthetic default endpoint has an empty name; leaving target.object
+     * unset there lets PIPEWIRE_NODE route it, as libpipewire does itself. */
     if (device && device[0])
         pw_properties_set(props, PW_KEY_TARGET_OBJECT, device);
     if (stream->dataflow == eCapture &&
@@ -2996,25 +2821,13 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
         HRESULT hr;
         int rc;
 
-        /* Arming RT_PROCESS asks module-rt to promote the data loop thread to
-         * a realtime policy, after which the kernel judges it against the
-         * process-wide RLIMIT_RTTIME.  A zero budget kills that thread on its
-         * first quantum: the kernel tests the hard limit first and sends
-         * SIGKILL outright, never reaching the catchable SIGXCPU
-         * (posix-cpu-timers.c, check_thread_timers), and module-rt writes the
-         * advertised value to soft and hard alike.  No core, no handler,
-         * nothing in a crash report.
-         *
-         * Zero arrives by inheritance.  module-rt on the RTKit path clamps
-         * rt.time.soft and rt.time.hard to what the desktop portal
-         * advertises, and a portal exporting Realtime with no rtkit behind it
-         * advertises zero.  The clamp is process-wide, lowers the hard limit
-         * and survives exec, so a launcher that opened audio first hands
-         * every process it spawns a budget of zero.
-         *
-         * Read before arming, not after: the loop runs during negotiation, so
-         * a stream checked once it has settled can be killed before it can be
-         * reconnected, while a thread that was never promoted cannot. */
+        /* With RT_PROCESS, module-rt promotes the data thread to a realtime
+         * policy, judged against the process-wide RLIMIT_RTTIME.  With a zero
+         * budget the kernel SIGKILLs it on its first quantum, never sending the
+         * catchable SIGXCPU.  Zero is inherited: module-rt on the RTKit path
+         * clamps both limits to what the portal advertises, zero without
+         * rtkit, and the clamp survives exec.  Check before arming, since the
+         * loop already runs during negotiation. */
         rt_time_limit(&rt_soft, &rt_hard);
         if (rt_render && stream->dataflow == eRender)
         {
@@ -3037,12 +2850,9 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
         if (FAILED(hr = stream_await_ready(stream)))
             return hr;
 
-        /* Covers the process that started with a healthy budget and was
-         * clamped by module-rt while this connect was in flight.  Best
-         * effort: the promotion has already happened, so this loses the same
-         * race described above, but it bounds the damage to one stream, and
-         * clearing rt_render latches the decision for every later stream in
-         * the process.  Read and written under the loop lock. */
+        /* The budget may have been clamped while connecting.  The thread is
+         * already promoted, but reconnecting bounds the damage to this stream
+         * and clearing rt_render (under the loop lock) covers later ones. */
         rt_time_limit(&rt_soft, &rt_hard);
         if ((flags & PW_STREAM_FLAG_RT_PROCESS) && rt_soft < RT_TIME_FLOOR_USEC)
         {
@@ -3071,10 +2881,8 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
     return S_OK;
 }
 
-/* Checked SIZE_T arithmetic for the buffer sizing below.  mmdevapi's
- * adjust_timing never clamps the requested duration down, so the derived
- * byte sizes can overflow SIZE_T, which is 32-bit under WoW64 and faulted
- * the heap on i386.  On overflow the caller rejects the stream with
+/* mmdevapi's adjust_timing never clamps the duration down, so the byte sizes
+ * below can overflow SIZE_T, which is 32-bit under WoW64.  Callers fail with
  * E_OUTOFMEMORY, like winealsa and winepulse. */
 static BOOL size_mul(SIZE_T a, SIZE_T b, SIZE_T *out)
 {
@@ -3092,13 +2900,9 @@ static BOOL size_add(SIZE_T a, SIZE_T b, SIZE_T *out)
     return TRUE;
 }
 
-/* Size an allocation whose tail array follows head_bytes of audio.  The array
- * must start aligned: head_bytes is a multiple of period_bytes, which is a
- * frame count times a frame size that can be 1, 3 or 6 bytes for packed 8 and
- * 24 bit formats (packed 24 bit stereo at 30 ms gives 7938), and both
- * ACPacket's list pointers and cap_slot's atomics are undefined when
- * misaligned.  Returns the aligned tail offset and the total size, or FALSE
- * on overflow. */
+/* Size an allocation with a tail array after head_bytes of audio.  Frames can
+ * be 1, 3 or 6 bytes, so head_bytes need not be aligned, but ACPacket list
+ * pointers and cap_slot atomics must be.  Returns FALSE on overflow. */
 static BOOL aligned_tail(SIZE_T head_bytes, SIZE_T align, SIZE_T count, SIZE_T elem_size,
                          SIZE_T *tail_offs, SIZE_T *total)
 {
@@ -3112,10 +2916,8 @@ static BOOL aligned_tail(SIZE_T head_bytes, SIZE_T align, SIZE_T count, SIZE_T e
     return size_add(*tail_offs, tail_bytes, total);
 }
 
-/* Every buffer the stream owns, then the stream.  Shared by the create error
- * path and release so a buffer added later cannot be freed in only one of
- * them; tmp_buffer is allocated lazily by get_render_buffer, so it is always
- * NULL on the create path. */
+/* Shared by the create error path and release.  tmp_buffer is allocated
+ * lazily, so it is always NULL on the create path. */
 static void free_stream(struct pipewire_stream *stream)
 {
     SIZE_T size;
@@ -3128,12 +2930,14 @@ static void free_stream(struct pipewire_stream *stream)
     if (stream->local_buffer)
     {
         size = 0;
-        NtFreeVirtualMemory(GetCurrentProcess(), (void **)&stream->local_buffer, &size, MEM_RELEASE);
+        NtFreeVirtualMemory(GetCurrentProcess(), (void **)&stream->local_buffer, &size,
+                            MEM_RELEASE);
     }
     if (stream->capture_ring)
     {
         size = 0;
-        NtFreeVirtualMemory(GetCurrentProcess(), (void **)&stream->capture_ring, &size, MEM_RELEASE);
+        NtFreeVirtualMemory(GetCurrentProcess(), (void **)&stream->capture_ring, &size,
+                            MEM_RELEASE);
     }
     free(stream->device);
     free(stream);
@@ -3166,9 +2970,7 @@ static NTSTATUS pipewire_create_stream(void *args)
         return STATUS_SUCCESS;
     }
 
-    /* Before the loop lock: device_is_sink reads the device lists, and
-     * holding the loop lock across a device_lists_mutex acquisition would be
-     * the only place a reader ran underneath it. */
+    /* Outside the loop lock, so the two locks never nest. */
     pthread_mutex_lock(&device_lists_mutex);
     capture_sink = params->flow == eCapture && params->device && params->device[0] &&
                    device_is_sink(params->device);
@@ -3232,16 +3034,14 @@ static NTSTATUS pipewire_create_stream(void *args)
         BOOL ok = params->duration >= 0 && stream->info.rate &&
                   (UINT64)params->duration <= (UINT64_MAX - 9999999) / stream->info.rate;
 
-        /* Ceiling of duration*rate/1e7, safe only after the check above.  A
-         * wrapped product used to yield a tiny frame count and let Initialize
-         * succeed with a corrupt buffer. */
+        /* Ceiling of duration * rate / 1e7; the check above rules out a
+         * wrapped product. */
         if (ok)
         {
             frames = ((UINT64)params->duration * stream->info.rate + 9999999) / 10000000;
-            /* get_buffer_size and the ring cursors narrow the frame count to
-             * UINT32, so a buffer only fits if the count does too.  Zero is
-             * rejected here too: it would leave real_bufsize_bytes at 0 and
-             * the ring cursors divide by that. */
+            /* Frame counts are UINT32 in get_buffer_size and the ring
+             * cursors, and zero frames would make real_bufsize_bytes a zero
+             * divisor. */
             ok = frames && frames <= UINT32_MAX;
         }
         if (ok)
@@ -3359,10 +3159,8 @@ static NTSTATUS pipewire_create_stream(void *args)
             else
             {
                 stream->cap_slots = (struct cap_slot *)(stream->capture_ring + slots_offs);
-                /* The allocator hands back page-aligned memory and the offset
-                 * above is rounded, so this cannot trip; refuse the stream
-                 * rather than run the atomics on a misaligned word if it
-                 * ever does. */
+                /* Page-aligned memory and a rounded offset cannot trip this,
+                 * but never run the atomics on a misaligned word. */
                 if ((UINT_PTR)stream->cap_slots & (_Alignof(struct cap_slot) - 1))
                 {
                     WARN("Capture slot array misaligned at %p.\n", stream->cap_slots);
@@ -3459,16 +3257,8 @@ static NTSTATUS pipewire_release_stream(void *args)
     return STATUS_SUCCESS;
 }
 
-/* ----------------------------------------------------------------------
- * Capture slicing + period group timer (8628-style shared timer; one Wine
- * thread per (device, period) group)
- * ---------------------------------------------------------------------- */
-
-/* Claim the oldest published slot, if any, and return it owned by us.  Runs
- * on the Wine timer thread.  Slots are ordered by publication sequence with a
- * wraparound safe comparison, and the claim exchanges the whole state and
- * sequence word, so the slot we end up owning is exactly the one the scan
- * chose rather than whatever the producer put there since. */
+/* Claim the oldest published slot for the timer thread.  The claim exchanges
+ * the whole word, so the slot owned is exactly the one the scan chose. */
 static struct cap_slot *cap_claim_slot(struct pipewire_stream *stream, UINT32 *out_idx,
                                       UINT32 *out_seq)
 {
@@ -3493,9 +3283,8 @@ static struct cap_slot *cap_claim_slot(struct pipewire_stream *stream, UINT32 *o
         if (best == stream->cap_n_slots)
             return NULL;
 
-        /* Exchange the exact word the scan saw.  If the producer evicted and
-         * republished this slot in between, its sequence changed and this
-         * fails, so we rescan instead of delivering out of order. */
+        /* Fails if the producer evicted and republished the slot since the
+         * scan, so nothing is delivered out of order. */
         if (__atomic_compare_exchange_n(&stream->cap_slots[best].word, &best_word,
                                         CAP_WORD(CAP_SEQ(best_word), CAP_INUSE),
                                         FALSE, __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE))
@@ -3509,9 +3298,8 @@ static struct cap_slot *cap_claim_slot(struct pipewire_stream *stream, UINT32 *o
     return NULL;
 }
 
-/* Slice period-sized packets out of the staging ring.  Runs on the Wine timer
- * thread with the loop lock held: ntdll (QPC) is legal here.  Only ever
- * touches slots it has taken to CAP_INUSE. */
+/* Timer thread, loop lock held: ntdll (QPC) is legal here.  Touches only
+ * slots it has claimed. */
 static void pipewire_read(struct pipewire_stream *stream)
 {
     struct cap_slot *slot;
@@ -3530,12 +3318,9 @@ static void pipewire_read(struct pipewire_stream *stream)
                 __atomic_store_n(&slot->word, CAP_WORD(seq, CAP_FULL), __ATOMIC_RELEASE);
                 return;
             }
-            /* Recycle the oldest packet, matching the ring below, and move
-             * the discontinuity onto its successor, which is the packet that
-             * gaps.  Recycling the newest instead would discard the freshest
-             * audio, leave the gap unmarked and clear a flag the application
-             * has not read.  The free list is empty here, so the successor
-             * always exists. */
+            /* Recycle the oldest packet, like the ring, and flag its
+             * successor, which now follows the gap.  The free list is empty,
+             * so the successor exists. */
             next = (ACPacket *)p->entry.next;
             next->discont = 1;
         }
@@ -3545,16 +3330,9 @@ static void pipewire_read(struct pipewire_stream *stream)
         }
         NtQueryPerformanceCounter(&stamp, &freq);
         p->qpcpos = (stamp.QuadPart * (INT64)10000000) / freq.QuadPart;
-        /* Two kinds of loss, each attributed to the packet that follows it.
-         * An eviction removes a sequence number, so an unexpected sequence
-         * means audio was lost immediately before this packet.  A clamp or an
-         * all-slots-held drop loses audio without removing a sequence, so the
-         * producer marks the next slot it publishes.
-         *
-         * The expected sequence starts at zero, not at whatever arrives
-         * first, so opening slots evicted before the timer's first claim are
-         * reported too; a first-claim baseline would hide a loss bounded only
-         * by how long that claim is delayed. */
+        /* A skipped sequence means an eviction just before this slot;
+         * slot->disc covers losses that remove no sequence.  cap_next_seq
+         * starts at zero so slots evicted before the first claim count too. */
         p->discont = slot->disc || seq != stream->cap_next_seq;
         stream->cap_next_seq = (seq + 1) & CAP_SEQ_MAX;
         list_remove(&p->entry);
@@ -3614,16 +3392,11 @@ static void pipewire_period_timer_loop(void *args)
             clock_gettime(CLOCK_MONOTONIC, &ts);
             mono_ns = (UINT64)ts.tv_sec * 1000000000 + ts.tv_nsec;
 
-            /* pwt.now and pwt.ticks only advance once per graph cycle, so
-             * comparing the continuous period grid against them directly
-             * makes the grid chase quantum-sized steps with clamp-sized
-             * corrections every tick (the wakeup cadence smears across
-             * period +/- period/2 whenever the quantum does not divide the
-             * period).  Extrapolate the graph clock to the sampling instant
-             * instead, like winepulse's PA_STREAM_INTERPOLATE_TIMING.  A
-             * graph that stopped updating is treated as having no clock, so
-             * the wakeup free-runs at the nominal period and the grid
-             * re-acquires on resume. */
+            /* pwt only advances once per graph cycle, so a period grid steered
+             * by it directly jitters whenever the quantum does not divide the
+             * period.  Extrapolate to now, like PA_STREAM_INTERPOLATE_TIMING.
+             * A clock older than 1 s counts as absent and the wakeup
+             * free-runs until the grid re-acquires. */
             if (mono_ns >= (UINT64)pwt.now && mono_ns - pwt.now < 1000000000)
             {
                 now = pwt.ticks * (UINT64)pwt.rate.num * 1000000 / pwt.rate.denom
@@ -3632,14 +3405,9 @@ static void pipewire_period_timer_loop(void *args)
             }
         }
 
-        /* The graph clock steers the wakeup only.  Audio moves on every tick
-         * regardless of what the clock reports: gating the drain on clock
-         * validity lets a graph that stops updating pwt pin held_bytes
-         * forever, so GetCurrentPadding reports a permanently full buffer
-         * and get_render_buffer fails with AUDCLNT_E_BUFFER_TOO_LARGE while
-         * the process callback drains the ring to silence.  winepulse
-         * likewise advances one period per tick regardless of what the
-         * server reports (pulse.c:1836). */
+        /* The clock only steers the wakeup.  Audio advances every tick
+         * regardless, like winepulse, so a stalled graph cannot pin
+         * held_bytes and leave the buffer reporting full. */
         if (!have_now)
             period->grid_valid = FALSE;
         else if (!period->grid_valid)
@@ -3723,7 +3491,8 @@ static void pipewire_period_timer_loop(void *args)
 /* Called with the loop lock held. */
 static HRESULT pipewire_add_stream_to_period(struct pipewire_stream *stream)
 {
-    static const WCHAR name[] = {'w','i','n','e','p','i','p','e','w','i','r','e','_','t','i','m','e','r',0};
+    static const WCHAR name[] = {'w','i','n','e','p','i','p','e','w','i','r','e','_',
+                                 't','i','m','e','r',0};
     struct pipewire_period *period;
 
     if (stream->period)
@@ -3731,7 +3500,8 @@ static HRESULT pipewire_add_stream_to_period(struct pipewire_stream *stream)
 
     LIST_FOR_EACH_ENTRY(period, &active_periods, struct pipewire_period, entry)
     {
-        if (period->period_usec == stream->mmdev_period_usec && !strcmp(period->device, stream->device))
+        if (period->period_usec == stream->mmdev_period_usec &&
+            !strcmp(period->device, stream->device))
         {
             stream->period = period;
             list_add_tail(&period->streams, &stream->period_entry);
@@ -3799,10 +3569,9 @@ static NTSTATUS pipewire_start(void *args)
         return STATUS_SUCCESS;
     }
 
-    /* Publish started before activating: once the node is active the process
-     * callback may run, and it must not see a started=FALSE stream that is
-     * already producing.  set_active still precedes add_stream_to_period so a
-     * failed activation cannot leave the stream linked into the period. */
+    /* Publish started first: once active, the callback must not see
+     * started=FALSE on a stream that is producing.  set_active precedes
+     * add_stream_to_period so a failed activation leaves nothing linked. */
     __atomic_store_n(&stream->started, TRUE, __ATOMIC_RELEASE);
 
     if (pw_stream_set_active(stream->pw, true) < 0)
@@ -3859,22 +3628,14 @@ static NTSTATUS pipewire_stop(void *args)
     return STATUS_SUCCESS;
 }
 
-/* Run fn with the stream's process callback excluded, from a control path that
- * already holds the thread loop lock.  pw_loop_locked() does this in one call
- * but needs 1.6.0.
+/* Run fn with the process callback excluded, from a control path holding the
+ * thread loop lock (pw_loop_locked() needs 1.6.0).  When the data loop is the
+ * thread loop, that lock already excludes the callback and fn runs inline: a
+ * blocking invoke would release it around the ack wait, and below 1.6 hangs a
+ * nested caller.  Otherwise fn is marshalled to run between dispatches.
  *
- * When the data loop IS the thread loop (every stream without RT_PROCESS) the
- * caller already holds the mutex the callback is dispatched under, so fn runs
- * inline.  A blocking invoke would also complete, but it releases that lock
- * around its ack wait, breaking the operation's atomicity; below 1.6 it
- * releases only one recursion level, so it would hang a nested caller.
- * Otherwise the callback is on a data thread the lock does not hold off, and
- * fn is marshalled to run between dispatches.
- *
- * The invoke can fail on queue allocation.  A negative return means the
- * cursors were not touched, so no caller may publish state assuming the step
- * ran.  -ENODEV is a pw_stream already destroyed by a core reconnect, which
- * callers map to a different HRESULT. */
+ * A negative return means fn did not run and the cursors are untouched.
+ * -ENODEV means the pw_stream was destroyed by a core reconnect. */
 static int stream_loop_locked(struct pipewire_stream *stream, spa_invoke_func_t fn)
 {
     struct pw_loop *data_loop;
@@ -3895,9 +3656,7 @@ static HRESULT ring_op_hresult(int res)
     return res == -ENODEV ? AUDCLNT_E_DEVICE_INVALIDATED : AUDCLNT_E_SERVICE_NOT_RUNNING;
 }
 
-/* Operations that reach the render ring's read cursor.  Used to report a
- * failed marshal once per stream per operation, so a loop that cannot take an
- * invoke cannot flood the log. */
+/* ring_warned bits: a failed marshal is reported once per stream and operation. */
 #define RING_OP_RESET   0
 #define RING_OP_RESYNC  1
 #define RING_OP_RATE    2
@@ -3971,9 +3730,7 @@ static NTSTATUS pipewire_reset(void *args)
 
     if (stream->dataflow == eRender)
     {
-        /* Clear the read cursor before the cursors that describe it, so a
-         * failed marshal leaves every one of them as it was rather than a
-         * zeroed half. */
+        /* The read cursor goes first, so a failed marshal changes nothing. */
         int res = stream_loop_locked(stream, do_reset_ring);
 
         if (res < 0)
@@ -4017,10 +3774,6 @@ static NTSTATUS pipewire_reset(void *args)
     params->result = S_OK;
     return STATUS_SUCCESS;
 }
-
-/* ----------------------------------------------------------------------
- * Render / capture buffer transfer
- * ---------------------------------------------------------------------- */
 
 static BOOL alloc_tmp_buffer(struct pipewire_stream *stream, SIZE_T bytes)
 {
@@ -4132,7 +3885,8 @@ static NTSTATUS pipewire_get_render_buffer(void *args)
 
 static void pipewire_wrap_buffer(struct pipewire_stream *stream, BYTE *buffer, UINT32 written_bytes)
 {
-    UINT32 wri_offs_bytes = (stream->lcl_offs_bytes + stream->held_bytes) % stream->real_bufsize_bytes;
+    UINT32 wri_offs_bytes = (stream->lcl_offs_bytes + stream->held_bytes) %
+                            stream->real_bufsize_bytes;
     UINT32 chunk_bytes = stream->real_bufsize_bytes - wri_offs_bytes;
 
     if (written_bytes <= chunk_bytes)
@@ -4173,7 +3927,8 @@ static NTSTATUS pipewire_release_render_buffer(void *args)
     }
 
     if (stream->locked >= 0)
-        buffer = stream->local_buffer + (stream->lcl_offs_bytes + stream->held_bytes) % stream->real_bufsize_bytes;
+        buffer = stream->local_buffer +
+                 (stream->lcl_offs_bytes + stream->held_bytes) % stream->real_bufsize_bytes;
     else
         buffer = stream->tmp_buffer;
 
@@ -4185,9 +3940,8 @@ static NTSTATUS pipewire_release_render_buffer(void *args)
         pipewire_wrap_buffer(stream, buffer, written_bytes);
 
     stream->held_bytes += written_bytes;
-    /* Resync before publishing.  Adding first would briefly expose an
-     * overfull pa_held_bytes, and the process callback would consume that
-     * many bytes against a stale pa_offs_bytes before the repair landed. */
+    /* Resync before publishing: adding first would let the callback consume
+     * an overfull count against a stale pa_offs_bytes. */
     if (__atomic_load_n(&stream->pa_held_bytes, __ATOMIC_RELAXED) + written_bytes >
         stream->real_bufsize_bytes)
     {
@@ -4196,11 +3950,9 @@ static NTSTATUS pipewire_release_render_buffer(void *args)
         WARN("%p PipeWire buffer overflow.\n", stream);
         if ((res = stream_loop_locked(stream, do_resync_ring)) < 0)
         {
-            /* Without the repair the read cursor does not describe the ring,
-             * so publishing would hand the callback a byte count its offset
-             * does not match.  Take the write back instead: the bytes stay
-             * unpublished for the next GetBuffer to overwrite, which loses
-             * this buffer but leaves every cursor as it was on entry. */
+            /* The read cursor does not describe the ring, so publishing would
+             * desync the callback.  Leave these bytes unpublished and every
+             * cursor as on entry. */
             stream->held_bytes -= written_bytes;
             ring_op_failed(stream, RING_OP_RESYNC, "the render ring overflow repair", res);
             stream->locked = 0;
@@ -4249,7 +4001,8 @@ static NTSTATUS pipewire_get_capture_buffer(void *args)
         if (params->devpos)
         {
             if (packet->discont)
-                *params->devpos = (stream->clock_written + stream->period_bytes) / stream->frame_size;
+                *params->devpos = (stream->clock_written + stream->period_bytes) /
+                                  stream->frame_size;
             else
                 *params->devpos = stream->clock_written / stream->frame_size;
         }
@@ -4299,10 +4052,6 @@ static NTSTATUS pipewire_release_capture_buffer(void *args)
     params->result = S_OK;
     return STATUS_SUCCESS;
 }
-
-/* ----------------------------------------------------------------------
- * Clocks / sizes / volumes / events / rate
- * ---------------------------------------------------------------------- */
 
 static NTSTATUS pipewire_get_current_padding(void *args)
 {
@@ -4508,10 +4257,8 @@ static NTSTATUS pipewire_set_sample_rate(void *args)
         goto exit;
     }
 
-    /* PulseAudio rejects rates outside [1, 48000 * 8] in
-     * pa_stream_update_sample_rate; mirror winepulse's observable failure
-     * code for rates the resampler cannot honor (the negated comparison
-     * also catches NaN). */
+    /* Fail rates PulseAudio rejects with winepulse's error code.  The negated
+     * comparison also catches NaN. */
     if (!(params->rate >= 1.0f && params->rate <= (float)PW_MAX_RATE))
     {
         WARN("Unsupported sample rate %u.\n", (unsigned)params->rate);
@@ -4528,14 +4275,10 @@ static NTSTATUS pipewire_set_sample_rate(void *args)
         goto exit;
     }
 
-    /* Empty the ring before changing the rate.  The control cannot be put
-     * back once set, so the step that can fail comes first: if the read
-     * cursor cannot be reached, nothing has moved and the stream is still
-     * coherent at the old rate.
-     *
-     * The storage is deliberately not cleared: occupancy zero already makes
-     * the callback emit silence and GetBuffer silences what it hands out, so
-     * clearing bytes the callback may be reading would race for no gain. */
+    /* The rate control cannot be undone, so empty the ring first: if that
+     * fails, the stream is still coherent at the old rate.  The storage is not
+     * cleared: zero occupancy already plays silence, and clearing bytes the
+     * callback may be reading would race. */
     if ((rc = stream_loop_locked(stream, do_reset_ring)) < 0)
     {
         ring_op_failed(stream, RING_OP_RATE, "the render ring reset for a rate change", rc);
@@ -4618,10 +4361,6 @@ static NTSTATUS pipewire_get_loopback_capture_device(void *args)
     params->result = S_OK;
     return STATUS_SUCCESS;
 }
-
-/* ----------------------------------------------------------------------
- * MIDI delegation + dispatch tables
- * ---------------------------------------------------------------------- */
 
 static NTSTATUS pipewire_midi_get_driver(void *args)
 {
