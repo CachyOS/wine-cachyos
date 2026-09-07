@@ -486,12 +486,11 @@ static WCHAR *monitor_name_from(const WCHAR *sink_display)
 #define CB_MARK(s, ph) \
     __atomic_store_n(&(s)->cb_mark, ((s)->cb_seq << 2) | (ph), __ATOMIC_RELAXED)
 
-/* Render dispatch mode, read from the environment once per process.  With
- * PW_STREAM_FLAG_RT_PROCESS the callback runs on PipeWire's realtime data
- * thread rather than the thread loop, which removes the lock that serialized
- * it against the control paths; what that is worth in latency is the graph's
- * decision.  Capture never sets it: its source is its own driver, so it has
- * nothing to win for the same exposure. */
+/* Render dispatch mode: on unless WINEPIPEWIRE_RT=0, read once per process.
+ * With PW_STREAM_FLAG_RT_PROCESS the callback runs on PipeWire's realtime
+ * data thread without the thread-loop lock that otherwise serializes it
+ * against the control paths.  Capture never sets it: its source is its own
+ * driver. */
 static BOOL rt_render;
 
 /* Realtime CPU budget below which arming RT_PROCESS is a process kill rather
@@ -972,12 +971,9 @@ static NTSTATUS pipewire_process_attach(void *args)
     if (!dispatch_token)
         dispatch_token = 1;
 
-    rt_render = rt && !strcmp(rt, "1");
-    /* Only what was asked for.  What actually happens is not known until a
-     * stream connects and the data loop can be compared, so the line that a
-     * crash report is read against is emitted there, not here. */
-    TRACE("WINEPIPEWIRE_RT=%d requested, session=%016llx\n", rt_render,
-          (unsigned long long)dispatch_token);
+    rt_render = !(rt && !strcmp(rt, "0"));
+    TRACE("realtime render dispatch %s (WINEPIPEWIRE_RT=%s), session=%016llx\n",
+          rt_render ? "on" : "off", rt ? rt : "unset", (unsigned long long)dispatch_token);
     return STATUS_SUCCESS;
 }
 
