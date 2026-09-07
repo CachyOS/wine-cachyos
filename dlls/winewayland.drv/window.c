@@ -870,12 +870,11 @@ void WAYLAND_FlashWindowEx(FLASHWINFO *info)
 
     TRACE("hwnd %p flags %u\n", info->hwnd, info->dwFlags);
 
-    if ((data = wayland_win_data_get(info->hwnd)))
-    {
-        if (data->wayland_surface && info->dwFlags)
-            wayland_surface_activate(data->wayland_surface, FALSE);
-        wayland_win_data_release(data);
-    }
+    if (!info->dwFlags || !(data = wayland_win_data_get(info->hwnd))) return;
+    if (data->wayland_surface) wayland_surface_flash_window(data->wayland_surface);
+    wayland_win_data_release(data);
+
+    wl_display_flush(process_wayland.wl_display);
 }
 
 /***********************************************************************
@@ -889,12 +888,11 @@ void WAYLAND_ActivateWindow(HWND hwnd, HWND previous)
 
     if (hwnd == previous) return;
 
-    if ((data = wayland_win_data_get(hwnd)))
-    {
-        if (data->wayland_surface)
-            wayland_surface_activate(data->wayland_surface, TRUE);
-        wayland_win_data_release(data);
-    }
+    if (!(data = wayland_win_data_get(hwnd))) return;
+    if (data->wayland_surface) wayland_surface_activate(data->wayland_surface);
+    wayland_win_data_release(data);
+
+    wl_display_flush(process_wayland.wl_display);
 }
 
 /***********************************************************************
