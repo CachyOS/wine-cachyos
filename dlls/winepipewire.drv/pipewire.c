@@ -58,6 +58,7 @@
 #include <pthread.h>
 #include <time.h>
 #include <dlfcn.h>
+#include <elf.h>
 #include <limits.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -871,7 +872,7 @@ static void free_device_lists(void)
 static BOOL spa_plugin_dir_usable(const char *dir)
 {
     char path[PATH_MAX + 64];
-    unsigned char ident[5];
+    unsigned char ident[EI_CLASS + 1];
     int fd, n;
 
     snprintf(path, sizeof(path), "%s/support/libspa-support.so", dir);
@@ -883,9 +884,9 @@ static BOOL spa_plugin_dir_usable(const char *dir)
         return FALSE;
     n = read(fd, ident, sizeof(ident));
     close(fd);
-    if (n != (int)sizeof(ident) || memcmp(ident, "\x7f""ELF", 4))
+    if (n != (int)sizeof(ident) || memcmp(ident, ELFMAG, SELFMAG))
         return FALSE;
-    return ident[4] == (sizeof(void *) == 8 ? 2 : 1); /* ELFCLASS64 : ELFCLASS32 */
+    return ident[EI_CLASS] == (sizeof(void *) == 8 ? ELFCLASS64 : ELFCLASS32);
 }
 
 /* Containers (Steam pressure-vessel) import libpipewire from the host but its
