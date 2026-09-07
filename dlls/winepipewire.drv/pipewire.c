@@ -2849,37 +2849,23 @@ static void rt_gate_report(UINT64 soft, UINT64 hard, BOOL late)
 {
     char buf[32];
 
-    ERR("audio dispatch: realtime CPU budget is %s, under the %u us floor, so a "
-        "realtime data thread would be killed by the kernel on its first "
-        "quantum.  %s  This process keeps the driver loop for every stream from "
-        "here.  session=%016llx\n",
+    ERR("audio dispatch: realtime CPU budget %s is under the %u us floor, %s "
+        "without RT_PROCESS.  session=%016llx\n",
         rt_time_str(buf, sizeof(buf), soft), RT_TIME_FLOOR_USEC,
-        late ? "The budget was written while the stream was connecting, so it is "
-               "being reconnected without RT_PROCESS."
-             : "Connecting without RT_PROCESS.",
-        (unsigned long long)dispatch_token);
+        late ? "reconnecting" : "connecting", (unsigned long long)dispatch_token);
 
     if (hard < RT_TIME_FLOOR_USEC)
-        ERR("audio dispatch: the hard limit is %s, so nothing unprivileged can "
-            "raise it.  Install rtkit and restart xdg-desktop-portal so it "
-            "re-reads the provider, or launch with WINEPIPEWIRE_RT=0.  "
-            "session=%016llx\n", rt_time_str(buf, sizeof(buf), hard),
-            (unsigned long long)dispatch_token);
+        ERR("audio dispatch: the hard limit is %s and cannot be raised unprivileged "
+            "(rtkit, or WINEPIPEWIRE_RT=0).  session=%016llx\n",
+            rt_time_str(buf, sizeof(buf), hard), (unsigned long long)dispatch_token);
 }
 
-/* Certify where the process callback actually ended up.  RT_PROCESS asks for
- * the data thread, but node.loop.class from PIPEWIRE_PROPS or a client.conf
- * stream.rules entry decides independently, in both directions, so report the
- * measured loop rather than the request.  node.async is reported beside it
- * because RT_PROCESS suppresses it while rules are applied afterwards and can
- * restore it alone.  This certifies dispatch, not latency, and not the graph's
- * scheduling mode, which the link derives from both nodes.  rttime= is the
- * process-wide RLIMIT_RTTIME soft limit after connect: the same "data-loop.0"
- * is a latency win with a 200 ms budget and a process kill with none.
- *
- * Once per distinct (dataflow, requested, effective, async) combination.  The
- * matched case is WARN so the A/B recipe can grep it without full tracing;
- * anything needing action is at ERR.  Called with the loop lock held. */
+/* Report where the process callback actually ended up: node.loop.class from
+ * PIPEWIRE_PROPS or a stream.rules entry overrides RT_PROCESS, and the same
+ * overrides can flip node.async, which RT_PROCESS otherwise suppresses.  Once
+ * per distinct (dataflow, requested, effective, async) combination; the
+ * matched case is WARN so it can be grepped without full tracing.  Called
+ * with the loop lock held. */
 static void report_dispatch_mode(struct pipewire_stream *stream, BOOL rt_render)
 {
     struct pw_loop *dl = pw_stream_get_data_loop(stream->pw);
@@ -2909,22 +2895,11 @@ static void report_dispatch_mode(struct pipewire_stream *stream, BOOL rt_render)
     if (want_data != got_data)
     {
         ERR("audio dispatch: %s requested %s, effective %s, node.async=%s, "
-            "loop \"%s\", rttime=%s - MISMATCH, the requested mode is NOT "
-            "in force, session=%016llx\n", flow, req, eff,
-            async ? async : "unset", name,
-            rt_time_str(rt_buf, sizeof(rt_buf), rt_soft),
+            "loop \"%s\", rttime=%s, MISMATCH: %s.  session=%016llx\n", flow, req, eff,
+            async ? async : "unset", name, rt_time_str(rt_buf, sizeof(rt_buf), rt_soft),
+            want_data ? "RT_PROCESS is not in force"
+                      : "node.loop.class moved processing off the driver loop, unvalidated",
             (unsigned long long)dispatch_token);
-
-        if (want_data)
-            ERR("audio dispatch: PW_STREAM_FLAG_RT_PROCESS did not take effect.  "
-                "node.loop.class is pinned to the main loop, so this run does "
-                "not exercise the realtime path and must not be reported as "
-                "one.  session=%016llx\n", (unsigned long long)dispatch_token);
-        else
-            ERR("audio dispatch: processing was redirected off the driver loop "
-                "by node.loop.class; this configuration is not validated and "
-                "can corrupt audio.  session=%016llx\n",
-                (unsigned long long)dispatch_token);
         return;
     }
 
@@ -2934,20 +2909,10 @@ static void report_dispatch_mode(struct pipewire_stream *stream, BOOL rt_render)
          rt_time_str(rt_buf, sizeof(rt_buf), rt_soft),
          (unsigned long long)dispatch_token);
 
-    if (want_data && async_on)
-        ERR("audio dispatch: RT_PROCESS suppresses node.async, so the "
-            "property being set means a stream.rules entry or "
-            "PIPEWIRE_PROPS put it back.  An override is fighting the "
-            "flag: the callback is on the data thread, but the scheduling "
-            "the flag asks for must not be assumed for this run.  "
-            "session=%016llx\n", (unsigned long long)dispatch_token);
-    else if (!want_data && !async_on)
-        ERR("audio dispatch: libpipewire sets node.async for a stream "
-            "without RT_PROCESS, so the property being %s means an "
-            "override cleared it.  The callback runs on the driver loop, "
-            "which is not realtime scheduled, with nothing asking the "
-            "graph for slack in front of it.  session=%016llx\n",
-            async ? async : "absent", (unsigned long long)dispatch_token);
+    if (want_data == async_on)
+        WARN("audio dispatch: node.async=%s contradicts %s, a stream.rules or "
+             "PIPEWIRE_PROPS override is in effect.  session=%016llx\n",
+             async ? async : "absent", req, (unsigned long long)dispatch_token);
 }
 
 /* Called with the loop lock held.  capture_sink is resolved by the caller,
