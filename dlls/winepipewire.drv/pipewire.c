@@ -4556,7 +4556,8 @@ static NTSTATUS pipewire_set_sample_rate(void *args)
         goto exit;
     }
 
-    pw_stream_flush(stream->pw, false);
+    if (pw_stream_flush(stream->pw, false) < 0)
+        WARN("pw_stream_flush failed for stream %p.\n", stream);
 
     stream->period_bytes = period_bytes;
     stream->info.rate = params->rate;
