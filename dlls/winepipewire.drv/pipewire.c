@@ -1878,7 +1878,7 @@ static NTSTATUS pipewire_test_connect(void *args)
 
     if (!(p.core = pw_context_connect(p.context, NULL, 0)))
     {
-        ERR("pw_context_connect failed during probe.\n");
+        WARN("pw_context_connect failed during probe.\n");
         pw_thread_loop_unlock(p.loop);
         pw_thread_loop_stop(p.loop);
         pw_context_destroy(p.context);
