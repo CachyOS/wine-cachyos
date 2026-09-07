@@ -478,7 +478,8 @@ void wayland_surface_set_title(struct wayland_surface *surface, LPCWSTR title);
 void wayland_surface_assign_icon(struct wayland_surface *surface);
 void wayland_surface_set_icon_buffer(struct wayland_surface *surface, UINT type, const ICONINFO *ii);
 void wayland_surface_set_opacity(struct wayland_surface *surface, BYTE alpha, UINT flags);
-void wayland_surface_activate(struct wayland_surface *surface, BOOL serial);
+void wayland_surface_flash_window(struct wayland_surface *surface);
+void wayland_surface_activate(struct wayland_surface *surface);
 void wayland_surface_shortcut_control(struct wayland_surface *surface, BOOL inhibit);
 
 static inline BOOL wayland_surface_is_toplevel(struct wayland_surface *surface)

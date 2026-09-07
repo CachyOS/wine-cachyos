@@ -2023,21 +2023,39 @@ static void xdg_activation_token_handle_done(void *user_data,
     struct wayland_win_data *data;
     struct wayland_surface *surface;
 
-    if ((data = wayland_win_data_get(hwnd)))
-    {
-        if ((surface = data->wayland_surface))
-            xdg_activation_v1_activate(process_wayland.xdg_activation_v1, token, surface->wl_surface);
-        wayland_win_data_release(data);
-    }
+    if (!(data = wayland_win_data_get(hwnd))) goto done;
 
-    if (xdg_activation_token_v1) xdg_activation_token_v1_destroy(xdg_activation_token_v1);
+    if ((surface = data->wayland_surface))
+        xdg_activation_v1_activate(process_wayland.xdg_activation_v1, token, surface->wl_surface);
+    wayland_win_data_release(data);
+
+done:
+    xdg_activation_token_v1_destroy(xdg_activation_token_v1);
 }
 
 const static struct xdg_activation_token_v1_listener xdg_activation_listener = {
     xdg_activation_token_handle_done
 };
 
-void wayland_surface_activate(struct wayland_surface *surface, BOOL activate)
+void wayland_surface_flash_window(struct wayland_surface *surface)
+{
+    struct xdg_activation_token_v1 *token;
+
+    if (!process_wayland.xdg_activation_v1) return;
+    if (!wayland_surface_is_toplevel(surface)) return;
+
+    if (!(token = xdg_activation_v1_get_activation_token(process_wayland.xdg_activation_v1)))
+    {
+        ERR("Failed to create activation token!\n");
+        return;
+    }
+
+    xdg_activation_token_v1_add_listener(token, &xdg_activation_listener, surface->hwnd);
+    xdg_activation_token_v1_set_surface(token, surface->wl_surface);
+    xdg_activation_token_v1_commit(token);
+}
+
+void wayland_surface_activate(struct wayland_surface *surface)
 {
     struct wayland_seat *seat = &process_wayland.seat;
     struct xdg_activation_token_v1 *token;
@@ -2048,9 +2066,9 @@ void wayland_surface_activate(struct wayland_surface *surface, BOOL activate)
     if (!wayland_surface_is_toplevel(surface)) return;
 
     /* fall back to the per process activation token */
-    if (!serial && activate && process_activate_token)
+    if (!serial && process_activate_token)
     {
-        xdg_activation_token_handle_done(surface->hwnd, NULL, process_activate_token);
+        xdg_activation_v1_activate(process_wayland.xdg_activation_v1, process_activate_token, surface->wl_surface);
         free(process_activate_token);
         process_activate_token = NULL;
         return;
@@ -2063,13 +2081,11 @@ void wayland_surface_activate(struct wayland_surface *surface, BOOL activate)
     }
 
     pthread_mutex_lock(&seat->mutex);
-
     xdg_activation_token_v1_add_listener(token, &xdg_activation_listener, surface->hwnd);
     xdg_activation_token_v1_set_surface(token, surface->wl_surface);
-    if (process_name && activate) xdg_activation_token_v1_set_app_id(token, process_name);
-    if (activate) xdg_activation_token_v1_set_serial(token, serial, seat->wl_seat);
+    if (process_name) xdg_activation_token_v1_set_app_id(token, process_name);
+    xdg_activation_token_v1_set_serial(token, serial, seat->wl_seat);
     xdg_activation_token_v1_commit(token);
-
     pthread_mutex_unlock(&seat->mutex);
 }
 
