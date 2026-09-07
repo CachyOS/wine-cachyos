@@ -175,7 +175,7 @@ static VkColorSpaceKHR wayland_vulkan_map_colorspace(VkColorSpaceKHR colorspace,
     if (!wp_image_description_v1) goto err;
 
     wayland_client_surface_attach_image_description(surface, wp_image_description_v1);
-
+    wl_display_flush(process_wayland.wl_display);
     return new;
 err:
     ERR("Failed to configure image description for client surface!\n");
