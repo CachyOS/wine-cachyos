@@ -1741,18 +1741,21 @@ static GUID get_container_id(const char *sysfs_path)
 
 /* Fallback ContainerId for an endpoint with no udev sysfs path to derive one
  * from; the inputs are chosen for being stable across reboots.  A device on
+#define FNV1A_64_BASIS 14695981039346656037ull
+#define FNV1A_64_PRIME 1099511628211ull
+
  * no recognised bus gets a zero GUID, as pulse leaves it without sysfs. */
 static GUID make_container_id(enum pw_device_bus bus, UINT16 vendor_id, UINT16 product_id,
                               const char *node_name)
 {
     GUID id = {0};
-    UINT64 h = 1469598103934665603ull; /* FNV-1a offset basis */
+    UINT64 h = FNV1A_64_BASIS;
     const char *c;
 
     if (bus == PW_BUS_OTHER)
         return id;
     for (c = node_name; c && *c; c++)
-        h = (h ^ (unsigned char)*c) * 1099511628211ull;
+        h = (h ^ (unsigned char)*c) * FNV1A_64_PRIME;
     id.Data1 = MAKELONG(vendor_id, product_id);
     id.Data2 = (UINT16)(h >> 48);
     id.Data3 = (UINT16)(h >> 32);
