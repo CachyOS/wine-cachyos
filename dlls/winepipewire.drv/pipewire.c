@@ -1437,7 +1437,7 @@ static void on_probe_registry_global(void *data, uint32_t id, uint32_t permissio
          * also be what an unparsable id decays to. */
         if (!parse_u32(dev_id, 10, 0, SPA_ID_INVALID - 1, &pn->device_id))
             pn->device_id = SPA_ID_INVALID;
-        pn->bus = parse_device_bus(spa_dict_lookup(props, "device.bus"));
+        pn->bus = parse_device_bus(spa_dict_lookup(props, PW_KEY_DEVICE_BUS));
         /* Probe thread: keep everything UTF-8, no ntdll/WCHAR work.  The name
          * cap is applied later, in utf8_to_wstr_capped on the unix-call thread. */
         pn->node_name = strdup(node_name);
