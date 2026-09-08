@@ -2400,8 +2400,14 @@ static BOOL apply_window_pos( HWND hwnd, HWND insert_after, UINT swp_flags, stru
 
         owner_hint = NtUserGetWindowRelative(hwnd, GW_OWNER);
         /* fallback to any window that is right below our top left corner */
-        if (!owner_hint) owner_hint = NtUserWindowFromPoint(new_rects->window.left - 1, new_rects->window.top - 1);
+        if (!owner_hint) owner_hint = NtUserWindowFromPoint(new_rects->window.left - 1, new_rects->window.top);
         if (owner_hint) owner_hint = NtUserGetAncestor(owner_hint, GA_ROOT);
+        /* GA_ROOT of desktop window is null */
+        if (!owner_hint)
+        {
+            owner_hint = NtUserWindowFromPoint(new_rects->window.left, new_rects->window.top - 1);
+            owner_hint = NtUserGetAncestor(owner_hint, GA_ROOT);
+        }
 
         user_driver->pWindowPosChanged( hwnd, insert_after, owner_hint, swp_flags, &monitor_rects,
                                         get_driver_window_surface( new_surface, raw_dpi ) );
