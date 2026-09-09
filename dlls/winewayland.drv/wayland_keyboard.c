@@ -502,6 +502,7 @@ static void add_xkb_layout(const char *xkb_layout, struct xkb_keymap *xkb_keymap
     case MAKELANGID(LANG_GERMAN, SUBLANG_GERMAN_SWISS): scan2vk = scan2vk_qwertz; break;
     default: scan2vk = scan2vk_qwerty; break;
     }
+    if (strstr(xkb_layout, "qwerty")) scan2vk = scan2vk_qwerty;
     if (strstr(xkb_layout, "dvorak")) scan2vk = scan2vk_dvorak;
 
     layout->tables.pKeyNames = layout->key_names;
