@@ -263,6 +263,7 @@ struct wayland
     LONG input_serial;
     BOOL supports_win_scrgb;
     BOOL supports_win_pq;
+    HANDLE overlay_event;
 };
 
 struct wayland_output_mode
@@ -539,6 +540,7 @@ void set_client_surface(HWND hwnd, struct wayland_client_surface *client);
 BOOL set_window_surface_contents(HWND hwnd, struct wayland_shm_buffer *shm_buffer, HRGN damage_region);
 struct wayland_shm_buffer *get_window_surface_contents(HWND hwnd);
 void wayland_window_init(void);
+BOOL wayland_is_overlay_active(void);
 
 /**********************************************************************
  *          Wayland Keyboard
@@ -604,6 +606,11 @@ static inline BOOL is_decoration_enabled(DWORD style, DWORD ex_style)
         return TRUE;
 
     return FALSE;
+}
+
+static inline void ascii_to_unicode(WCHAR *dst, const char *src, int len)
+{
+    while (len-- && *src) *dst++ = (unsigned char)*src++;
 }
 
 RGNDATA *get_region_data(HRGN region);
