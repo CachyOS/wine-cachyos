@@ -253,6 +253,7 @@ static void pointer_handle_button(void *data, struct wl_pointer *wl_pointer,
     InterlockedExchange(&process_wayland.input_serial, serial);
 
     if (!(hwnd = wayland_pointer_get_focused_hwnd())) return;
+    if (wayland_is_overlay_active()) return;
 
     input.type = INPUT_MOUSE;
 
