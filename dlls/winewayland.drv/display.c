@@ -272,11 +272,6 @@ static void wayland_add_device_source(const struct gdi_device_manager *device_ma
     device_manager->add_source(output->name, state_flags, dpi, param);
 }
 
-static inline void ascii_to_unicode(WCHAR *dst, const char *src, int len)
-{
-    while (len-- && *src) *dst++ = (unsigned char)*src++;
-}
-
 static void wayland_add_device_monitor(const struct gdi_device_manager *device_manager,
                                        void *param, struct wayland_output_state *output,
                                        struct wayland_output_state *primary)
