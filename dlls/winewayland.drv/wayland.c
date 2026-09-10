@@ -135,6 +135,30 @@ static const struct wp_color_manager_v1_listener wp_color_manager_listener = {
     wayland_color_manager_handle_done
 };
 
+static void init_overlay_event(void)
+{
+    OBJECT_ATTRIBUTES attr;
+    WCHAR buffer[MAX_PATH] = {0};
+    char path[MAX_PATH];
+    UNICODE_STRING str;
+
+    RtlInitUnicodeString( &str, buffer );
+    str.MaximumLength = sizeof(buffer);
+    InitializeObjectAttributes( &attr, &str, OBJ_CASE_INSENSITIVE | OBJ_OPENIF, 0, NULL );
+
+    str.Length = sprintf( path, "\\Sessions\\%u\\BaseNamedObjects\\__wine_steamclient_GameOverlayActivated",
+                          (int)NtCurrentTeb()->Peb->SessionId );
+    ascii_to_unicode( buffer, path, str.Length + 1 );
+    str.Length *= sizeof(WCHAR);
+    NtCreateEvent( &process_wayland.overlay_event, EVENT_ALL_ACCESS, &attr, NotificationEvent, FALSE );
+}
+
+BOOL wayland_is_overlay_active(void)
+{
+    LARGE_INTEGER timeout = {0};
+    return NtWaitForSingleObject(process_wayland.overlay_event, FALSE, &timeout) == WAIT_OBJECT_0;
+}
+
 static int wayland_disable_ssd(void)
 {
     static int disabled = -1;
@@ -421,6 +445,8 @@ BOOL wayland_process_init(void)
         ERR("Failed to get to wayland registry\n");
         return FALSE;
     }
+
+    init_overlay_event();
 
     /* initialize win data mutex */
     wayland_window_init();
