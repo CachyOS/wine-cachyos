@@ -1068,6 +1068,7 @@ static void keyboard_handle_key(void *data, struct wl_keyboard *wl_keyboard,
     InterlockedExchange(&process_wayland.input_serial, serial);
 
     if (!(hwnd = wayland_keyboard_get_focused_hwnd())) return;
+    if (wayland_is_overlay_active()) return;
 
     TRACE_(key)("serial=%u hwnd=%p key=%d scan=%#x state=%#x\n", serial, hwnd, key, scan, state);
 
