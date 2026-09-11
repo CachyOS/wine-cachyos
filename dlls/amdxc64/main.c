@@ -190,9 +190,18 @@ static updateffxapi_pfn_ex pUpdateFfxApiProviderEx;
 static updateffxapi_pfn pUpdateFfxApiProvider;
 static HMODULE amdffx;
 static INIT_ONCE init_once = INIT_ONCE_STATIC_INIT;
+static BOOL mlfg_env;
+static BOOL fsr4_env;
+static BOOL fsr4_env_enabled;
+static BOOL mlfg_env_enabled;
 
 BOOL WINAPI init_callback(INIT_ONCE *once, void *param, void **context)
 {
+    const char *env;
+
+    fsr4_env_enabled = (fsr4_env = !!(env = getenv("FSR4_UPGRADE"))) && !strcmp(env, "1");
+    mlfg_env_enabled = (mlfg_env = !!(env = getenv("MLFG_UPGRADE"))) && !strcmp(env, "1");
+
     if (!(amdffx = LoadLibraryA("amdxcffx64"))) return TRUE;
 
     pUpdateFfxApiProviderEx = (updateffxapi_pfn_ex)GetProcAddress(amdffx, "UpdateFfxApiProviderEx");
@@ -211,23 +220,19 @@ HRESULT STDMETHODCALLTYPE AMDFSR4FFX_UpdateFfxApiProvider(IAmdExtFfxApi *iface, 
     };
     /* required to expose MLFG support */
     struct unk_data unk_data[1] = {{{0, 1, 0, 0}, NULL}};
-    const char *env;
-    BOOL fsr4;
 
     TRACE("%p %p %u\n", iface, data, size);
 
     if (!data) return E_INVALIDARG;
 
-    env = getenv("MLFG_UPGRADE");
-    if (this->fp8_supported || (env && !strcmp(env, "1")))
-        unk_data->unk[2] = !env || strcmp(env, "0");
-
-    fsr4 = (env = getenv("FSR4_UPGRADE")) && !strcmp(env, "1");
-    if (!fsr4 && !this->rdna2) return E_NOTIMPL;
-    /* explicitly disabled */
-    if (env && !fsr4) return E_NOTIMPL;
-
     InitOnceExecuteOnce(&init_once, init_callback, NULL, NULL);
+
+    if (this->fp8_supported || mlfg_env_enabled)
+        unk_data->unk[2] = !mlfg_env || mlfg_env_enabled;
+
+    if (!fsr4_env_enabled && !this->rdna2) return E_NOTIMPL;
+    /* explicitly disabled */
+    if (fsr4_env && !fsr4_env_enabled) return E_NOTIMPL;
 
     if (!amdffx)
     {
@@ -256,7 +261,7 @@ HRESULT STDMETHODCALLTYPE AMDFSR4FFX_UpdateFfxApiProvider(IAmdExtFfxApi *iface, 
             return E_NOINTERFACE;
         }
 
-        if (!fsr4) return E_NOINTERFACE;
+        if (!fsr4_env_enabled) return E_NOINTERFACE;
 
         ret = pUpdateFfxApiProvider(data, size);
 
