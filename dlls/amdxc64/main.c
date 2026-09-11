@@ -186,21 +186,32 @@ static void dump_provider(struct ffxExternalProvider *provider)
           debugstr_a(provider->versionName));
 }
 
-struct unk_data {
-    int unk[4];
-    struct unk_data *next;
-};
+static updateffxapi_pfn_ex pUpdateFfxApiProviderEx;
+static updateffxapi_pfn pUpdateFfxApiProvider;
+static HMODULE amdffx;
+static INIT_ONCE init_once = INIT_ONCE_STATIC_INIT;
+
+BOOL WINAPI init_callback(INIT_ONCE *once, void *param, void **context)
+{
+    if (!(amdffx = LoadLibraryA("amdxcffx64"))) return TRUE;
+
+    pUpdateFfxApiProviderEx = (updateffxapi_pfn_ex)GetProcAddress(amdffx, "UpdateFfxApiProviderEx");
+    pUpdateFfxApiProvider = (updateffxapi_pfn)GetProcAddress(amdffx, "UpdateFfxApiProvider");
+
+    return TRUE;
+}
 
 HRESULT STDMETHODCALLTYPE AMDFSR4FFX_UpdateFfxApiProvider(IAmdExtFfxApi *iface, void *_data, unsigned int size)
 {
     struct AMDFSR4FFX *this = impl_from_IAmdExtFfxApi(iface);
     struct ffxExternalProvider *data = _data;
+    struct unk_data {
+        int unk[4];
+        struct unk_data *next;
+    };
     /* required to expose MLFG support */
     struct unk_data unk_data[1] = {{{0, 1, 0, 0}, NULL}};
     const char *env;
-    updateffxapi_pfn_ex pfn_ex;
-    updateffxapi_pfn pfn;
-    HMODULE amdffx;
     BOOL fsr4;
 
     TRACE("%p %p %u\n", iface, data, size);
@@ -216,18 +227,17 @@ HRESULT STDMETHODCALLTYPE AMDFSR4FFX_UpdateFfxApiProvider(IAmdExtFfxApi *iface, 
     /* explicitly disabled */
     if (env && !fsr4) return E_NOTIMPL;
 
-    if (!(amdffx = LoadLibraryA("amdxcffx64")))
+    InitOnceExecuteOnce(&init_once, init_callback, NULL, NULL);
+
+    if (!amdffx)
     {
-        ERR("Failed to load FSR4 dll (amdxcffx64)!\n");
+        ERR("Failed to load FSR4 driver dll (amdxcffx64)!\n");
         return E_NOINTERFACE;
     }
 
-    pfn_ex = (updateffxapi_pfn_ex)GetProcAddress(amdffx, "UpdateFfxApiProviderEx");
-    pfn = (updateffxapi_pfn)GetProcAddress(amdffx, "UpdateFfxApiProvider");
-
-    if (pfn_ex)
+    if (pUpdateFfxApiProviderEx)
     {
-        HRESULT ret = pfn_ex(data, size, unk_data);
+        HRESULT ret = pUpdateFfxApiProviderEx(data, size, unk_data);
 
         TRACE("status: %lx\n", ret);
         dump_provider(data);
@@ -235,7 +245,7 @@ HRESULT STDMETHODCALLTYPE AMDFSR4FFX_UpdateFfxApiProvider(IAmdExtFfxApi *iface, 
         return ret;
     }
 
-    if (pfn)
+    if (pUpdateFfxApiProvider)
     {
         HRESULT ret;
 
@@ -248,7 +258,7 @@ HRESULT STDMETHODCALLTYPE AMDFSR4FFX_UpdateFfxApiProvider(IAmdExtFfxApi *iface, 
 
         if (!fsr4) return E_NOINTERFACE;
 
-        ret = pfn(data, size);
+        ret = pUpdateFfxApiProvider(data, size);
 
         TRACE("status: %lx\n", ret);
         dump_provider(data);
