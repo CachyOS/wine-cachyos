@@ -297,6 +297,7 @@ PHYSICAL_MEMORY_RANGE * WINAPI MmGetPhysicalMemoryRanges(void);
 BOOLEAN   WINAPI MmIsAddressValid(void *);
 LONGLONG  WINAPI PsGetProcessCreateTimeQuadPart(PEPROCESS);
 HANDLE    WINAPI PsGetProcessId(PEPROCESS);
+const char * WINAPI PsGetProcessImageFileName(PEPROCESS);
 PEB *     WINAPI PsGetProcessPeb(PEPROCESS);
 void *    WINAPI PsGetProcessSectionBaseAddress(PEPROCESS);
 ULONG     WINAPI PsGetProcessSessionId(PEPROCESS);
