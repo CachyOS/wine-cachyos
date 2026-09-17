@@ -958,6 +958,15 @@ LONG CALLBACK vectored_handler( EXCEPTION_POINTERS *ptrs )
     EXCEPTION_RECORD *record = ptrs->ExceptionRecord;
     CONTEXT *context = ptrs->ContextRecord;
 
+    /* kernelmode rip */
+    if (record->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && (context->Rip & 0x0000800000000000))
+    {
+        TRACE( "converting kernelmode rip=%Ix\n", context->Rip );
+        context->Rip &= 0x00007FFFFFFFFFFF;
+        TRACE( "resuming on rip=%Ix\n", context->Rip );
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+
     if (record->ExceptionCode == EXCEPTION_PRIV_INSTRUCTION ||
         (record->ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
          record->ExceptionInformation[0] == EXCEPTION_READ_FAULT))

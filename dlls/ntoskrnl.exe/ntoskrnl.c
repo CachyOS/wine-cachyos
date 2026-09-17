@@ -4418,6 +4418,15 @@ static HMODULE load_driver( const WCHAR *driver_name, const UNICODE_STRING *keyn
     return module;
 }
 
+#if defined(__x86_64__) && !defined(__arm64ec__)
+static NTSTATUS __attribute__((naked)) call_driver_init( struct _DRIVER_OBJECT *driver, PUNICODE_STRING keyname, void *init )
+{
+    asm( "movq $0xFFFF800000000000,%r9\n\t"
+         "orq %r9,(%rsp)\n\t" 
+         "jmpq *%r8\n\t" );
+}
+#endif
+
 /* call the driver init entry point */
 static NTSTATUS WINAPI init_driver( DRIVER_OBJECT *driver_object, UNICODE_STRING *keyname )
 {
@@ -4446,7 +4455,11 @@ static NTSTATUS WINAPI init_driver( DRIVER_OBJECT *driver_object, UNICODE_STRING
     TRACE_(relay)( "\1Call driver init %p (obj=%p,str=%s)\n",
                    driver_object->DriverInit, driver_object, wine_dbgstr_w(keyname->Buffer) );
 
+#if defined(__x86_64__) && !defined(__arm64ec__)
+    status = call_driver_init( driver_object, keyname, driver_object->DriverInit );
+#else
     status = driver_object->DriverInit( driver_object, keyname );
+#endif
 
     TRACE_(relay)( "\1Ret  driver init %p (obj=%p,str=%s) retval=%08lx\n",
                    driver_object->DriverInit, driver_object, wine_dbgstr_w(keyname->Buffer), status );
