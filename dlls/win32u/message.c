@@ -2286,7 +2286,7 @@ static LRESULT handle_internal_message( HWND hwnd, UINT msg, WPARAM wparam, LPAR
 
         if (!info || !client_hwnd) return 0;
         if (!NtUserGetClientRect(client_hwnd, &client, NtUserGetDpiForWindow(client_hwnd))) goto done;
-        if (!(hdc = NtUserGetDCEx(client_hwnd, 0, DCX_CACHE | DCX_USESTYLE))) goto done;
+        if (!(hdc = NtUserGetDCEx(client_hwnd, 0, 0))) goto done;
 
         OffsetRect(&client, -client.left, -client.top);
         NtGdiSetDIBitsToDeviceInternal( hdc, client.left, client.top, client.right - client.left,
