@@ -1632,6 +1632,8 @@ static BOOL wayland_surface_ensure_contents(struct wayland_surface *surface, BOO
                            dummy_shm_buffer);
 
     wayland_surface_attach_shm(surface, dummy_shm_buffer, damage);
+    /* attach_shm implicitly adds ref */
+    wayland_shm_buffer_unref(dummy_shm_buffer);
     wl_surface_commit(surface->wl_surface);
     surface->ensured_contents = WAYLAND_SURFACE_ENSURED_DUMMY_BUFFER;
     NtGdiDeleteObjectApp(damage);
