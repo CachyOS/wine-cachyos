@@ -1862,7 +1862,7 @@ static void wayland_image_description_v1_ready2(void *user_data,
         if (!surface->wp_color_management_surface_v1)
         {
             ERR("Failed to create color management surface for client surface!\n");
-            return;
+            goto done;
         }
     }
     wp_color_management_surface_v1_set_image_description(
@@ -1870,6 +1870,7 @@ static void wayland_image_description_v1_ready2(void *user_data,
         wp_image_description_v1,
         WP_COLOR_MANAGER_V1_RENDER_INTENT_PERCEPTUAL);
     wp_image_description_v1_destroy(wp_image_description_v1);
+done:
     client_surface_release(&surface->client);
 }
 
