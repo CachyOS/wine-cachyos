@@ -30,8 +30,6 @@
 #pragma makedep unix
 #endif
 
-#include <sys/prctl.h>
-#include <string.h>
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
 #include "win32u_private.h"
@@ -588,32 +586,12 @@ HWND WINAPI NtUserGetForegroundWindow(void)
     return hwnd;
 }
 
-static int is_DragonAgeInquis = -1;
-
 /* see GetActiveWindow */
 HWND get_active_window(void)
 {
     GUITHREADINFO info;
-    HWND retValueWindow;
-    static HWND prev = 0;
-    const char *sgi;
-    
     info.cbSize = sizeof(info);
-    retValueWindow = NtUserGetGUIThreadInfo( GetCurrentThreadId(), &info ) ? info.hwndActive : 0;
-
-    if (is_DragonAgeInquis)
-    {
-        if ((is_DragonAgeInquis == 1) ||
-            (is_DragonAgeInquis = ((sgi = getenv("SteamGameId")) && !strcmp(sgi, "1222690"))))
-        {
-            if (retValueWindow == 0 && prev != 0)
-                NtUserAttachThreadInput(0, 0, 1);
-            else
-                prev = retValueWindow;
-        }
-    }
-
-    return retValueWindow;
+    return NtUserGetGUIThreadInfo( GetCurrentThreadId(), &info ) ? info.hwndActive : 0;
 }
 
 /* see GetCapture */
@@ -638,40 +616,6 @@ HWND get_focus(void)
 BOOL WINAPI NtUserAttachThreadInput( DWORD from, DWORD to, BOOL attach )
 {
     BOOL ret;
-    static int visited = 0;
-    static DWORD fromThreadForHack = 0;
-    static DWORD toThreadForHack = 0;
-    static char processNameForHack[16];
-    static const char* DAIprocessName = "DragonAgeInquis";
-    static const char* DAIGameLoopName = "GameLoop";
-    const char *sgi;
-
-    if (is_DragonAgeInquis)
-    {
-        if ((is_DragonAgeInquis == 1) ||
-            (is_DragonAgeInquis = ((sgi = getenv("SteamGameId")) && !strcmp(sgi, "1222690"))))
-        {
-            prctl(PR_GET_NAME, processNameForHack);
-            TRACE("Process Name: %s\n", processNameForHack);
-            if (strncmp(DAIprocessName, processNameForHack, 15) == 0 || strncmp(DAIGameLoopName, processNameForHack, 8) == 0)
-            {
-                if (!visited)
-                {
-                    TRACE("First Visit Process Name: %s\n", processNameForHack);
-                    fromThreadForHack = from;
-                    toThreadForHack = to;
-                    visited = 1;
-                }
-
-                if (from == 0 && to == 0 && visited)
-                {
-                    TRACE("00 Process Name: %s\n", processNameForHack);
-                    from = fromThreadForHack;
-                    to = toThreadForHack;
-                }
-            }
-        }
-    }
 
     TRACE( "from %04x, to %04x, attach %u\n", from, to, attach );
 
