@@ -2597,7 +2597,7 @@ HANDLE WINAPI PsGetProcessInheritedFromUniqueProcessId( PEPROCESS process )
  */
 ULONG WINAPI PsGetProcessSessionId( PEPROCESS process )
 {
-    TRACE("%p -> %lu", process, process->session_id);
+    TRACE("%p -> %lu\n", process, process->session_id);
     return process->session_id;
 }
 
