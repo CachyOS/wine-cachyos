@@ -55,11 +55,7 @@ struct _EPROCESS
 {
     DISPATCHER_HEADER header;
     PROCESS_BASIC_INFORMATION info;
-    KERNEL_USER_TIMES times;
-    PEB32 *peb32;
-    DWORD_PTR debug_port;
-    ULONG session_id;
-    char imageName[16];
+    BOOL wow64;
 };
 
 struct _KTHREAD
@@ -69,19 +65,12 @@ struct _KTHREAD
     CLIENT_ID id;
     unsigned int critical_region;
     KAFFINITY user_affinity;
-    void *teb;
 };
 
 struct _ETHREAD
 {
     struct _KTHREAD kthread;
 };
-
-/* FIXME: which header does this go in? */
-typedef struct _PHYSICAL_MEMORY_RANGE {
-    PHYSICAL_ADDRESS BaseAddress;
-    LARGE_INTEGER NumberOfBytes;
-} PHYSICAL_MEMORY_RANGE, *PPHYSICAL_MEMORY_RANGE;
 
 void *alloc_kernel_object( POBJECT_TYPE type, HANDLE handle, SIZE_T size, LONG ref );
 NTSTATUS kernel_object_from_handle( HANDLE handle, POBJECT_TYPE type, void **ret );

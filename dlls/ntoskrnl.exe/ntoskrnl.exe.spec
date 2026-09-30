@@ -52,16 +52,12 @@
 @ stdcall -fastcall IofCompleteRequest(ptr long)
 @ stdcall -arch=!i386 KeAcquireInStackQueuedSpinLock(ptr ptr)
 @ stdcall -fastcall KeAcquireInStackQueuedSpinLockAtDpcLevel(ptr ptr)
-@ stdcall -fastcall KeAcquireGuardedMutexUnsafe(ptr)
-@ stdcall -fastcall KeAcquireGuardedMutex(ptr)
 @ stdcall KeEnterGuardedRegion()
 @ stdcall KeExpandKernelStackAndCallout(ptr ptr long)
 @ stdcall KeExpandKernelStackAndCalloutEx(ptr ptr long long ptr)
 @ stdcall KeLeaveGuardedRegion()
 @ stdcall -arch=!i386 KeReleaseInStackQueuedSpinLock(ptr)
 @ stdcall -fastcall KeReleaseInStackQueuedSpinLockFromDpcLevel(ptr)
-@ stdcall -fastcall KeReleaseGuardedMutexUnsafe(ptr)
-@ stdcall -fastcall KeReleaseGuardedMutex(ptr)
 @ stub KeSetTimeUpdateNotifyRoutine
 @ stub KefAcquireSpinLockAtDpcLevel
 @ stub KefReleaseSpinLockFromDpcLevel
@@ -237,7 +233,7 @@
 @ stub FsRtlFastUnlockSingle
 @ stub FsRtlFindInTunnelCache
 @ stub FsRtlFreeFileLock
-@ stdcall FsRtlGetFileSize(ptr ptr)
+@ stub FsRtlGetFileSize
 @ stub FsRtlGetNextFileLock
 @ stub FsRtlGetNextLargeMcbEntry
 @ stub FsRtlGetNextMcbEntry
@@ -497,7 +493,7 @@
 @ stdcall IoStopTimer(ptr)
 @ stub IoSynchronousInvalidateDeviceRelations
 @ stub IoSynchronousPageWrite
-@ stdcall IoThreadToProcess(ptr) PsGetThreadProcess
+@ stub IoThreadToProcess
 @ stdcall IoUnregisterFileSystem(ptr)
 @ stub IoUnregisterFsRegistrationChange
 @ stdcall IoUnregisterPlugPlayNotification(ptr)
@@ -526,7 +522,6 @@
 @ stub IoWriteOperationCount
 @ stub IoWritePartitionTableEx
 @ stub IoWriteTransferCount
-@ stdcall KdChangeOption(long long ptr long ptr ptr)
 @ extern KdDebuggerEnabled
 @ stub KdDebuggerNotPresent
 @ stdcall KdDisableDebugger()
@@ -550,13 +545,13 @@
 @ stdcall KeBugCheck(long)
 @ stdcall KeBugCheckEx(long long long long long)
 @ stdcall KeCancelTimer(ptr)
-@ stdcall KeCapturePersistentThreadState(ptr ptr long long long long long ptr)
+@ stub KeCapturePersistentThreadState
 @ stdcall KeClearEvent(ptr)
 @ stub KeConnectInterrupt
 @ stub KeDcacheFlushCount
 @ stdcall KeDelayExecutionThread(long long ptr)
 @ stub KeDeregisterBugCheckCallback
-@ stdcall KeDeregisterBugCheckReasonCallback(ptr)
+@ stub KeDeregisterBugCheckReasonCallback
 @ stub KeDetachProcess
 @ stub KeDisconnectInterrupt
 @ stdcall KeEnterCriticalRegion()
@@ -568,7 +563,6 @@
 @ stdcall KeGetCurrentProcessorNumber() NtGetCurrentProcessorNumber
 @ stdcall KeGetCurrentProcessorNumberEx(ptr)
 @ stdcall KeGetCurrentThread()
-@ stdcall -arch=x86_64 KeGetCurrentIrql()
 @ stub KeGetPreviousMode
 @ stub KeGetRecommendedSharedDataAlignment
 @ stub KeI386AbiosCall
@@ -589,7 +583,7 @@
 @ stub KeInitializeInterrupt
 @ stub KeInitializeMutant
 @ stdcall KeInitializeMutex(ptr long)
-@ stdcall -fastcall KeInitializeGuardedMutex(ptr)
+@ stdcall KeInitializeGuardedMutex(ptr)
 @ stub KeInitializeQueue
 @ stdcall KeInitializeSemaphore(ptr long long)
 @ stdcall KeInitializeSpinLock(ptr) NTOSKRNL_KeInitializeSpinLock
@@ -631,8 +625,8 @@
 @ stub KeReadStateQueue
 @ stub KeReadStateSemaphore
 @ stub KeReadStateTimer
-@ stdcall KeRegisterBugCheckCallback(ptr ptr ptr long ptr)
-@ stdcall KeRegisterBugCheckReasonCallback(ptr ptr long ptr)
+@ stub KeRegisterBugCheckCallback
+@ stub KeRegisterBugCheckReasonCallback
 @ stub KeReleaseInterruptSpinLock
 @ stub KeReleaseMutant
 @ stdcall KeReleaseMutex(ptr long)
@@ -729,9 +723,9 @@
 @ stdcall MmFreeNonCachedMemory(ptr long)
 @ stub MmFreePagesFromMdl
 @ stdcall MmGetPhysicalAddress(ptr)
-@ stdcall MmGetPhysicalMemoryRanges()
+@ stub MmGetPhysicalMemoryRanges
 @ stdcall MmGetSystemRoutineAddress(ptr)
-@ stdcall MmGetVirtualForPhysical(int64)
+@ stub MmGetVirtualForPhysical
 @ stub MmGrowKernelStack
 @ stub MmHighestUserAddress
 @ stdcall MmIsAddressValid(ptr)
@@ -908,45 +902,42 @@
 @ stub PsCreateSystemProcess
 @ stdcall PsCreateSystemThread(ptr long ptr long ptr ptr ptr)
 @ stub PsDereferenceImpersonationToken
-@ stdcall PsDereferencePrimaryToken(ptr) ObDereferenceObject
+@ stub PsDereferencePrimaryToken
 @ stub PsDisableImpersonation
 @ stub PsEstablishWin32Callouts
-@ stdcall PsGetContextThread(ptr ptr)
+@ stub PsGetContextThread
 @ stdcall PsGetCurrentProcess() IoGetCurrentProcess
 @ stdcall PsGetCurrentProcessId()
 @ stdcall PsGetCurrentProcessSessionId()
 @ stdcall PsGetCurrentThread() KeGetCurrentThread
 @ stdcall PsGetCurrentThreadId()
-@ stdcall PsGetCurrentThreadTeb()
 @ stub PsGetCurrentThreadPreviousMode
-@ stdcall PsGetCurrentThreadProcess()
-@ stdcall PsGetCurrentThreadProcessId()
 @ stub PsGetCurrentThreadStackBase
 @ stub PsGetCurrentThreadStackLimit
 @ stub PsGetJobLock
 @ stub PsGetJobSessionId
 @ stub PsGetJobUIRestrictionsClass
-@ stdcall PsGetProcessCreateTimeQuadPart(ptr)
-@ stdcall PsGetProcessDebugPort(ptr)
+@ stub PsGetProcessCreateTimeQuadPart
+@ stub PsGetProcessDebugPort
 @ stub PsGetProcessExitProcessCalled
-@ stdcall PsGetProcessExitStatus(ptr)
+@ stub PsGetProcessExitStatus
 @ stub PsGetProcessExitTime
 @ stdcall PsGetProcessId(ptr)
-@ stdcall PsGetProcessImageFileName(ptr)
+@ stub PsGetProcessImageFileName
 @ stdcall PsGetProcessInheritedFromUniqueProcessId(ptr)
 @ stub PsGetProcessJob
-@ stdcall PsGetProcessPeb(ptr)
+@ stub PsGetProcessPeb
 @ stub PsGetProcessPriorityClass
 @ stdcall PsGetProcessSectionBaseAddress(ptr)
 @ stub PsGetProcessSecurityPort
-@ stdcall PsGetProcessSessionId(ptr)
+@ stub PsGetProcessSessionId
 @ stub PsGetProcessWin32Process
 @ stub PsGetProcessWin32WindowStation
 @ stdcall -arch=x86_64 PsGetProcessWow64Process(ptr)
 @ stub PsGetThreadFreezeCount
 @ stub PsGetThreadHardErrorsAreDisabled
 @ stdcall PsGetThreadId(ptr)
-@ stdcall PsGetThreadProcess(ptr)
+@ stub PsGetThreadProcess
 @ stdcall PsGetThreadProcessId(ptr)
 @ stub PsGetThreadSessionId
 @ stub PsGetThreadTeb
@@ -964,7 +955,7 @@
 @ stdcall PsLookupThreadByThreadId(ptr ptr)
 @ extern PsProcessType
 @ stub PsReferenceImpersonationToken
-@ stdcall PsReferencePrimaryToken(ptr)
+@ stub PsReferencePrimaryToken
 @ stdcall PsReferenceProcessFilePointer(ptr ptr)
 @ stdcall PsReleaseProcessExitSynchronization(ptr)
 @ stdcall PsRemoveCreateThreadNotifyRoutine(ptr)
