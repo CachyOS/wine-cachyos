@@ -802,6 +802,9 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR 
             sync_env_var_to_unix( new_env, "UPLAY_ARGUMENTS" );
             sync_env_var_to_unix( new_env, "UPC_GAME_STARTER_RUNNING" );
 
+            /* HACK: tell the sigsys handler that this is the EAC (EOS) dispatcher */
+            __wine_set_unix_env("PROTON_SYSCALL_HACK", "1");
+
             p = app_name + wcslen( app_name );
             while (p != app_name && *p != '/' && *p != '\\') --p;
             if (p != app_name)
@@ -954,6 +957,11 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR 
     }
 
  done:
+
+    /* clean up the syscall hack env now that we are done using it */
+    if (product_name && !strcmp( product_name, "Easy Anti-Cheat Bootstrapper (EOS)" ))
+        __wine_set_unix_env("PROTON_SYSCALL_HACK", NULL);
+
     RtlDestroyProcessParameters( params );
     if (tidy_cmdline != cmd_line) HeapFree( GetProcessHeap(), 0, tidy_cmdline );
     HeapFree( GetProcessHeap(), 0, product_name );

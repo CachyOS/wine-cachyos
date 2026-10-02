@@ -27,7 +27,6 @@
 #include "config.h"
 
 #include <assert.h>
-#include <errno.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdlib.h>
@@ -35,9 +34,10 @@
 #include <stdio.h>
 #include <sys/types.h>
 #include <sys/mman.h>
-#include <sys/stat.h>
-#include <fcntl.h>
 #include <unistd.h>
+#ifdef HAVE_LINK_H
+# include <link.h>
+#endif
 #ifdef HAVE_MACHINE_SYSARCH_H
 # include <machine/sysarch.h>
 #endif
@@ -46,6 +46,9 @@
 #endif
 #ifdef HAVE_SYS_PARAM_H
 # include <sys/param.h>
+#endif
+#ifdef HAVE_SYS_PRCTL_H
+# include <sys/prctl.h>
 #endif
 #ifdef HAVE_SYSCALL_H
 # include <syscall.h>
@@ -74,14 +77,6 @@
  * Note that the dispatchers do the syscall directly to avoid using the stack.
  */
 extern void _thread_set_tsd_base(uint64_t);
-#endif
-
-#if defined(HAVE_LINUX_FILTER_H) && defined(HAVE_LINUX_SECCOMP_H) && defined(HAVE_SYS_PRCTL_H)
-#define HAVE_SECCOMP 1
-# include <linux/filter.h>
-# include <linux/seccomp.h>
-# include <sys/prctl.h>
-# include <linux/audit.h>
 #endif
 
 #include "ntstatus.h"
@@ -173,6 +168,12 @@ __ASM_GLOBAL_FUNC( modify_ldt,
                    "popq %r12\n\t"
                    "popq %rbx\n\t"
                    "ret" );
+
+#ifndef PR_SET_SYSCALL_USER_DISPATCH
+#define PR_SET_SYSCALL_USER_DISPATCH 59
+#define PR_SYS_DISPATCH_OFF          0
+#define PR_SYS_DISPATCH_ON           1
+#endif
 
 #ifndef FP_XSTATE_MAGIC1
 #define FP_XSTATE_MAGIC1 0x46505853
@@ -518,6 +519,7 @@ struct amd64_thread_data
     void                **instrumentation_callback; /* 0330 */
     DWORD                 fs;            /* 0338 WOW TEB selector */
     DWORD                 mxcsr;         /* 033c Unix-side mxcsr register */
+    char                  syscall_dispatch; /* 0340 */
 };
 
 C_ASSERT( sizeof(struct amd64_thread_data) <= sizeof(((struct ntdll_thread_data *)0)->cpu_data) );
@@ -526,6 +528,7 @@ C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct amd64_thread_data, fra
 C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct amd64_thread_data, instrumentation_callback ) == 0x330 );
 C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct amd64_thread_data, fs ) == 0x338 );
 C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct amd64_thread_data, mxcsr ) == 0x33c );
+C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct amd64_thread_data, syscall_dispatch ) == 0x340 );
 
 static inline struct amd64_thread_data *amd64_thread_data(void)
 {
@@ -535,6 +538,7 @@ static inline struct amd64_thread_data *amd64_thread_data(void)
 static unsigned int frame_size;
 static unsigned int xstate_size = sizeof(XSAVE_AREA_HEADER);
 static UINT64 xstate_extended_features;
+static LONG syscall_dispatch_enabled = TRUE;
 
 #if defined(__linux__) || defined(__APPLE__)
 static inline TEB *get_current_teb(void)
@@ -921,16 +925,15 @@ static inline ucontext_t *init_handler( void *sigcontext )
 {
     clear_alignment_flag();
 #ifdef __linux__
-    if (fs32_sel)
     {
-        struct ntdll_thread_data *thread_data = (struct ntdll_thread_data *)&get_current_teb()->GdiTebBatch;
-        if (((struct amd64_thread_data *)thread_data->cpu_data)->pthread_teb)
-            arch_prctl( ARCH_SET_FS, ((struct amd64_thread_data *)thread_data->cpu_data)->pthread_teb );
+        struct amd64_thread_data *thread_data = (struct amd64_thread_data *)&get_current_teb()->GdiTebBatch;
+        thread_data->syscall_dispatch = 0; /* SYSCALL_DISPATCH_FILTER_ALLOW */
+        if (fs32_sel) arch_prctl( ARCH_SET_FS, thread_data->pthread_teb );
     }
 #elif defined __APPLE__
     {
-        struct ntdll_thread_data *thread_data = (struct ntdll_thread_data *)&get_current_teb()->GdiTebBatch;
-        _thread_set_tsd_base( (uint64_t)((struct amd64_thread_data *)thread_data->cpu_data)->pthread_teb );
+        struct amd64_thread_data *thread_data = (struct amd64_thread_data *)&get_current_teb()->GdiTebBatch;
+        _thread_set_tsd_base( (uint64_t)thread_data->pthread_teb );
 
         /* When in a syscall, CS will be the kernel's selector (0x07, SYSCALL_CS in xnu source)
          * instead of the user selector (cs64_sel: 0x2b, USER64_CS).
@@ -952,10 +955,13 @@ static inline ucontext_t *init_handler( void *sigcontext )
 static inline void leave_handler( ucontext_t *sigcontext )
 {
 #ifdef __linux__
-    if (fs32_sel &&
-        !is_inside_signal_stack( (void *)RSP_sig(sigcontext )) &&
+    struct amd64_thread_data *thread_data = (struct amd64_thread_data *)&NtCurrentTeb()->GdiTebBatch;
+    if (!is_inside_signal_stack( (void *)RSP_sig(sigcontext )) &&
         !is_inside_syscall( RSP_sig(sigcontext) ))
-        __asm__ volatile( "movw %0,%%fs" :: "r" (fs32_sel) );
+    {
+        thread_data->syscall_dispatch = 1;  /* SYSCALL_DISPATCH_FILTER_BLOCK */
+        if (fs32_sel) __asm__ volatile( "movw %0,%%fs" :: "r" (fs32_sel) );
+    }
 #elif defined __APPLE__
     if (!is_inside_signal_stack( (void *)RSP_sig(sigcontext )) &&
         !is_inside_syscall( RSP_sig(sigcontext )))
@@ -1833,6 +1839,7 @@ __ASM_GLOBAL_FUNC( call_user_mode_callback,
                    "movq 0x98(%r14),%rbp\n\t"  /* prev_frame->rbp */
                    "ldmxcsr 0xd8(%r14)\n\t"    /* prev_frame->xsave.MxCsr */
 #ifdef __linux__
+                   "movb $1,0x340(%r13)\n\t"   /* amd64_thread_data()->syscall_dispatch */
                    "movw 0x338(%r13),%ax\n"    /* amd64_thread_data()->fs */
                    "testw %ax,%ax\n\t"
                    "jz 1f\n\t"
@@ -2043,186 +2050,6 @@ static inline DWORD is_privileged_instr( CONTEXT *context )
     return 0;
 }
 
-#ifdef HAVE_SECCOMP
-static void sigsys_handler( int signal, siginfo_t *siginfo, void *sigcontext )
-{
-    extern const void *__wine_syscall_dispatcher_prolog_end_ptr;
-    ucontext_t *ucontext = init_handler( sigcontext );
-    struct syscall_frame *frame = get_syscall_frame();
-
-    TRACE_(seh)("SIGSYS, rax %#llx, rip %#llx.\n", RAX_sig(ucontext), RIP_sig(ucontext));
-
-    if (RAX_sig(ucontext) == 0xffff)
-    {
-        /* Test syscall from the Unix side (install_bpf). */
-        RAX_sig(ucontext) = STATUS_INVALID_PARAMETER;
-        return;
-    }
-
-    frame->rip = RIP_sig(ucontext) + 0xb;
-    frame->rcx = RIP_sig(ucontext);
-    frame->eflags = EFL_sig(ucontext);
-    frame->restore_flags = 0;
-    if (instrumentation_callback) frame->restore_flags |= RESTORE_FLAGS_INSTRUMENTATION;
-    RCX_sig(ucontext) = (ULONG_PTR)frame;
-    R11_sig(ucontext) = frame->eflags;
-    if (EFL_sig(ucontext) & 0x100)
-    {
-        EFL_sig(ucontext) &= ~0x100;  /* clear single-step flag */
-        frame->restore_flags |= CONTEXT_CONTROL;
-    }
-    RIP_sig(ucontext) = (ULONG64)__wine_syscall_dispatcher_prolog_end_ptr;
-}
-#endif
-
-#ifdef HAVE_SECCOMP
-static int sc_seccomp(unsigned int operation, unsigned int flags, void *args)
-{
-#ifndef __NR_seccomp
-#   define __NR_seccomp 317
-#endif
-    return syscall(__NR_seccomp, operation, flags, args);
-}
-#endif
-
-static void check_bpf_jit_enable(void)
-{
-    char enabled;
-    int fd;
-
-    fd = open("/proc/sys/net/core/bpf_jit_enable", O_RDONLY);
-    if (fd == -1)
-    {
-        WARN_(seh)("Could not open /proc/sys/net/core/bpf_jit_enable.\n");
-        return;
-    }
-
-    if (read(fd, &enabled, sizeof(enabled)) == sizeof(enabled))
-    {
-        TRACE_(seh)("enabled %#x.\n", enabled);
-
-        if (enabled != '1')
-            ERR_(seh)("BPF JIT is not enabled in the kernel, enable it to reduce syscall emulation overhead.\n");
-    }
-    else
-    {
-        WARN_(seh)("Could not read /proc/sys/net/core/bpf_jit_enable.\n");
-    }
-    close(fd);
-}
-
-static void install_bpf(struct sigaction *sig_act)
-{
-#ifdef HAVE_SECCOMP
-#   ifndef SECCOMP_FILTER_FLAG_SPEC_ALLOW
-#       define SECCOMP_FILTER_FLAG_SPEC_ALLOW (1UL << 2)
-#   endif
-
-#   ifndef SECCOMP_SET_MODE_FILTER
-#       define SECCOMP_SET_MODE_FILTER 1
-#   endif
-    static const BYTE syscall_trap_test[] =
-    {
-        0x48, 0x89, 0xf8,   /* mov %rdi, %rax */
-        0x0f, 0x05,         /* syscall */
-        0xc3,               /* retq */
-    };
-    static const unsigned int flags = SECCOMP_FILTER_FLAG_SPEC_ALLOW;
-
-#define NATIVE_SYSCALL_ADDRESS_START 0x700000000000
-
-    static struct sock_filter filter[] =
-    {
-        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, instruction_pointer) + 4),
-        /* Native libs are loaded at high addresses. */
-        BPF_JUMP(BPF_JMP | BPF_JGT | BPF_K, NATIVE_SYSCALL_ADDRESS_START >> 32, 0, 1),
-        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
-        /* Allow i386. */
-        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)),
-        BPF_JUMP (BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0),
-        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
-        /* Allow wine64-preloader */
-        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, instruction_pointer)),
-        BPF_JUMP(BPF_JMP | BPF_JGE | BPF_K, 0x7d400000, 1, 0),
-        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
-        BPF_JUMP(BPF_JMP | BPF_JGE | BPF_K, 0x7d402000, 0, 1),
-        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
-        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
-    };
-    long (*test_syscall)(long sc_number);
-    struct sock_fprog prog;
-    NTSTATUS status;
-
-    if ((ULONG_PTR)sc_seccomp < NATIVE_SYSCALL_ADDRESS_START
-            || (ULONG_PTR)syscall < NATIVE_SYSCALL_ADDRESS_START)
-    {
-        ERR_(seh)("Native libs are being loaded in low addresses, sc_seccomp %p, syscall %p, not installing seccomp.\n",
-                sc_seccomp, syscall);
-        ERR_(seh)("The known reasons are /proc/sys/vm/legacy_va_layout set to 1 or 'ulimit -s' being 'unlimited'.\n");
-        return;
-    }
-
-    sig_act->sa_sigaction = sigsys_handler;
-    memset(&prog, 0, sizeof(prog));
-
-    sigaction(SIGSYS, sig_act, NULL);
-
-    test_syscall = mmap((void *)0x600000000000, 0x1000, PROT_EXEC | PROT_READ | PROT_WRITE,
-            MAP_FIXED_NOREPLACE | MAP_PRIVATE | MAP_ANON, -1, 0);
-    if (test_syscall != (void *)0x600000000000)
-    {
-        int ret;
-
-        ERR("Could not allocate test syscall, falling back to seccomp presence check, test_syscall %p, errno %d.\n",
-                test_syscall, errno);
-        if (test_syscall != MAP_FAILED) munmap(test_syscall, 0x1000);
-
-        if ((ret = prctl(PR_GET_SECCOMP, 0, NULL, 0, 0)))
-        {
-            if (ret == 2)
-                TRACE_(seh)("Seccomp filters already installed.\n");
-            else
-                ERR_(seh)("Seccomp filters cannot be installed, ret %d, error %s.\n", ret, strerror(errno));
-            return;
-        }
-    }
-    else
-    {
-        memcpy(test_syscall, syscall_trap_test, sizeof(syscall_trap_test));
-        status = test_syscall(0xffff);
-        munmap(test_syscall, 0x1000);
-        if (status == STATUS_INVALID_PARAMETER)
-        {
-            TRACE_(seh)("Seccomp filters already installed.\n");
-            return;
-        }
-        if (status != -ENOSYS && (status != -1 || errno != ENOSYS))
-        {
-            ERR_(seh)("Unexpected status %#x, errno %d.\n", status, errno);
-            return;
-        }
-    }
-
-    TRACE_(seh)("Installing seccomp filters.\n");
-
-    prog.len = ARRAY_SIZE(filter);
-    prog.filter = filter;
-
-    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0))
-    {
-        ERR_(seh)("prctl(PR_SET_NO_NEW_PRIVS, ...): %s.\n", strerror(errno));
-        return;
-    }
-    if (sc_seccomp(SECCOMP_SET_MODE_FILTER, flags, &prog))
-    {
-        ERR_(seh)("prctl(PR_SET_SECCOMP, ...): %s.\n", strerror(errno));
-        return;
-    }
-    check_bpf_jit_enable();
-#else
-    WARN_(seh)("Built without seccomp.\n");
-#endif
-}
 
 /***********************************************************************
  *           handle_interrupt
@@ -2994,12 +2821,15 @@ static void usr1_handler( int signal, siginfo_t *siginfo, void *sigcontext )
 }
 
 
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(__linux__)
+
+static BOOL use_eos_syscall_hack;
+
 /**********************************************************************
  *		sigsys_handler
  *
  * Handler for SIGSYS, signals that a non-existent system call was invoked.
- * Only called on macOS 14 Sonoma and later.
+ * On Mac, this is only called on macOS 14 Sonoma and later.
  */
 static void sigsys_handler( int signal, siginfo_t *siginfo, void *sigcontext )
 {
@@ -3007,7 +2837,43 @@ static void sigsys_handler( int signal, siginfo_t *siginfo, void *sigcontext )
     ucontext_t *ucontext = init_handler( sigcontext );
     struct syscall_frame *frame = get_syscall_frame();
 
-    TRACE_(seh)("SIGSYS, rax %#llx, rip %#llx.\n", RAX_sig(ucontext), RIP_sig(ucontext));
+    TRACE_(seh)("SIGSYS, rax %#lx, rip %#lx.\n", (long)RAX_sig(ucontext), (long)RIP_sig(ucontext));
+
+#ifdef __linux__
+    if (!syscall_dispatch_enabled)
+    {
+        prctl( PR_SET_SYSCALL_USER_DISPATCH, PR_SYS_DISPATCH_OFF, 0, 0, 0 );
+        RIP_sig(ucontext) -= 2;  /* retry the syscall */
+        return;
+    }
+
+    /* HACK: The EOS version of easy anti cheat executes linux syscalls in a high address
+     * to evade the older seccomp based syscall emulation. It maps a page at
+     * 0x700100000000 and uses it to execute syscalls.
+     * The child process does more of the same but at different address.
+     * Detect this case and execute the linux syscall instead. */
+    if ((long)RIP_sig(ucontext) >= 0x700100000000 && use_eos_syscall_hack)
+    {
+        /* block syscall user dispatch, if it was already blocked we wont be in this handler */
+        __asm__ (
+            "movq %%gs:0x30,%%r13\n\t"
+            "movb $0, 0x340(%%r13)\n\t"
+            ::: "r13"
+        );
+
+        RAX_sig(ucontext) = syscall(RAX_sig(ucontext), RDI_sig(ucontext), RSI_sig(ucontext),
+                                    RDX_sig(ucontext), R10_sig(ucontext), R8_sig(ucontext),
+                                    R9_sig(ucontext));
+
+        /* restore syscall user dispatch state */
+        __asm__ (
+            "movq %%gs:0x30,%%r13\n\t"
+            "movb $1, 0x340(%%r13)\n\t"
+            ::: "r13"
+        );
+        return;
+    }
+#endif
 
     frame->rip = RIP_sig(ucontext) + 0xb;
     frame->rcx = RIP_sig(ucontext);
@@ -3119,6 +2985,15 @@ void signal_free_thread( TEB *teb )
     if (teb->WowTebOffset && !fs32_sel) ldt_free_entry( thread_data->fs );
 }
 
+
+/**********************************************************************
+ *		signal_disable_syscall_dispatch
+ */
+void signal_disable_syscall_dispatch(void)
+{
+    if (InterlockedExchange( &syscall_dispatch_enabled, FALSE )) TRACE_(seh)( "disabled\n" );
+}
+
 #ifdef __APPLE__
 /**********************************************************************
  *		mac_thread_gsbase
@@ -3137,6 +3012,26 @@ static void *mac_thread_gsbase(void)
 }
 #endif
 
+#ifdef __linux__
+static uintptr_t libc_addr, libc_size;
+
+static int libc_addr_cb( struct dl_phdr_info *info, size_t info_size, void *arg )
+{
+    uintptr_t restorer_addr = (uintptr_t)arg;
+    uintptr_t size = 0;
+
+    for (unsigned int i = 0; i < info->dlpi_phnum; ++i)
+        size = max( size, info->dlpi_phdr[i].p_vaddr + info->dlpi_phdr[i].p_memsz );
+
+    if (restorer_addr < info->dlpi_addr || restorer_addr >= info->dlpi_addr + size)
+        return 0;
+
+    libc_addr = info->dlpi_addr;
+    libc_size = size;
+    TRACE_(seh)( "found signal trampoline in %s\n", info->dlpi_name);
+    return 1;
+}
+#endif
 
 /**********************************************************************
  *		signal_init_process
@@ -3191,11 +3086,35 @@ void signal_init_process(void)
     if (sigaction( SIGSEGV, &sig_act, NULL ) == -1) goto error;
     if (sigaction( SIGILL, &sig_act, NULL ) == -1) goto error;
     if (sigaction( SIGBUS, &sig_act, NULL ) == -1) goto error;
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(__linux__)
     sig_act.sa_sigaction = sigsys_handler;
     if (sigaction( SIGSYS, &sig_act, NULL ) == -1) goto error;
 #endif
-    install_bpf(&sig_act);
+
+#ifdef __linux__
+    if (syscall_dispatch_enabled)
+    {
+        const char *env;
+        struct sigaction act;
+
+        if (sigaction( SIGSYS, NULL, &act ) == -1)
+        {
+            WARN_(seh)( "failed to retrieve signal restorer trampoline\n" );
+            syscall_dispatch_enabled = FALSE;
+        }
+        else if (!dl_iterate_phdr( libc_addr_cb, act.sa_restorer ))
+        {
+            WARN_(seh)( "could not find library containing signal restorer trampoline\n" );
+            syscall_dispatch_enabled = FALSE;
+        }
+        else
+        {
+            /* We don't unset the env since child processes also need to inherit the same syscall hack */
+            use_eos_syscall_hack = (env = getenv("PROTON_SYSCALL_HACK")) && !strcmp(env, "1");
+            if (use_eos_syscall_hack) ERR_(seh)("Using EAC bootstrapper (EOS) syscall workaround!\n");
+        }
+    }
+#endif
 
     emulate_cpuid();
     return;
@@ -3231,6 +3150,9 @@ void init_syscall_frame( LPTHREAD_START_ROUTINE entry, void *arg, BOOL suspend, 
         arch_prctl( ARCH_GET_FS, &thread_data->pthread_teb );
         alloc_fs_sel( fs32_sel >> 3, get_wow_teb( teb ));
     }
+    if (syscall_dispatch_enabled && prctl( PR_SET_SYSCALL_USER_DISPATCH, PR_SYS_DISPATCH_ON,
+                                           libc_addr, libc_size, &thread_data->syscall_dispatch ) < 0)
+        WARN_(seh)( "could not enable syscall user dispatch\n" );
 #elif defined (__FreeBSD__) || defined (__FreeBSD_kernel__)
     amd64_set_gsbase( teb );
 #elif defined(__NetBSD__)
@@ -3446,6 +3368,7 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                     * (on macOS, signal handlers set gsbase to pthread_teb when on the kernel stack).
                     */
 #ifdef __linux__
+                   "movb $0,0x340(%r13)\n\t"       /* amd64_thread_data()->syscall_dispatch */
                    "movq 0x320(%r13),%rsi\n\t"     /* amd64_thread_data()->pthread_teb */
                    "testq %rsi,%rsi\n\t"
                    "jz 2f\n\t"
@@ -3505,6 +3428,7 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    __ASM_CFI_CFA_IS_AT2(rcx, 0xa8, 0x01) /* frame->syscall_cfa */
                    "leaq 0x70(%rcx),%rsp\n\t"      /* %rsp > frame means no longer inside syscall */
 #ifdef __linux__
+                   "movb $1,0x340(%r13)\n\t"       /* amd64_thread_data()->syscall_dispatch */
                    "movw 0x338(%r13),%dx\n"        /* amd64_thread_data()->fs */
                    "testw %dx,%dx\n\t"
                    "jz 1f\n\t"
@@ -3735,6 +3659,7 @@ __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
                    __ASM_CFI(".cfi_undefined %rdi\n\t")
                    __ASM_CFI(".cfi_undefined %rsi\n\t")
 #ifdef __linux__
+                   "movb $0,0x340(%r13)\n\t"       /* amd64_thread_data()->syscall_dispatch */
                    "movq 0x320(%r13),%rsi\n\t"     /* amd64_thread_data()->pthread_teb */
                    "testq %rsi,%rsi\n\t"
                    "jz 2f\n\t"
@@ -3773,6 +3698,7 @@ __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
                    "movq 0x88(%rcx),%rsp\n\t"
                    __ASM_CFI(".cfi_restore_state\n\t")
 #ifdef __linux__
+                   "movb $1,0x340(%r13)\n\t"       /* amd64_thread_data()->syscall_dispatch */
                    "movw 0x338(%r13),%dx\n"        /* amd64_thread_data()->fs */
                    "testw %dx,%dx\n\t"
                    "jz 1f\n\t"
