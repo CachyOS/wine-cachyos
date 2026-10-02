@@ -26,8 +26,8 @@
 @ stdcall CloseServiceHandle(long)
 @ stdcall CloseTrace(int64)
 @ stdcall ControlService(long long ptr)
-@ stub ControlServiceExA
-@ stub ControlServiceExW
+@ stdcall ControlServiceExA(long long long ptr)
+@ stdcall ControlServiceExW(long long long ptr)
 @ stdcall ControlTraceA(int64 str ptr long)
 @ stdcall ControlTraceW(int64 wstr ptr long)
 @ stub ConvertSDToStringSDRootDomainW
