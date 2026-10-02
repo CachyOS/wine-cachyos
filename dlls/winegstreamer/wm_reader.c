@@ -1804,6 +1804,13 @@ static HRESULT reinit_stream(struct wm_reader *reader, bool read_compressed)
         stream->wg_stream = wg_parser_get_stream(reader->wg_parser, reader->stream_count - i - 1);
         stream->reader = reader;
         wg_parser_stream_get_current_format(stream->wg_stream, &format);
+        if ((stream->format.major_type == WG_MAJOR_TYPE_AUDIO && format.major_type >= WG_MAJOR_TYPE_VIDEO)
+                || (stream->format.major_type == WG_MAJOR_TYPE_VIDEO
+                        && format.major_type > WG_MAJOR_TYPE_UNKNOWN && format.major_type < WG_MAJOR_TYPE_VIDEO))
+        {
+            stream->wg_stream = wg_parser_get_stream(reader->wg_parser, i);
+            wg_parser_stream_get_current_format(stream->wg_stream, &format);
+        }
         if (stream->selection == WMT_ON)
             wg_parser_stream_enable(stream->wg_stream, read_compressed ? &format : &stream->format);
     }
@@ -1847,6 +1854,28 @@ static struct wm_stream *wm_reader_get_stream_by_stream_number(struct wm_reader 
     if (stream_number && stream_number <= reader->stream_count)
         return &reader->streams[stream_number - 1];
     WARN("Invalid stream number %u.\n", stream_number);
+    return NULL;
+}
+
+static struct wm_stream *wm_reader_get_stream_by_parser_index(struct wm_reader *reader, unsigned int stream_index)
+{
+    wg_parser_stream_t wg_stream;
+    unsigned int i;
+
+    if (stream_index >= reader->stream_count)
+    {
+        WARN("Invalid parser stream index %u.\n", stream_index);
+        return NULL;
+    }
+
+    wg_stream = wg_parser_get_stream(reader->wg_parser, stream_index);
+    for (i = 0; i < reader->stream_count; ++i)
+    {
+        if (reader->streams[i].wg_stream == wg_stream)
+            return &reader->streams[i];
+    }
+
+    WARN("Could not find WM stream for parser stream index %u.\n", stream_index);
     return NULL;
 }
 
@@ -1930,7 +1959,7 @@ static HRESULT wm_reader_read_stream_sample(struct wm_reader *reader, struct wg_
     HRESULT hr;
     BYTE *data;
 
-    if (!(stream = wm_reader_get_stream_by_stream_number(reader, buffer->stream + 1)))
+    if (!(stream = wm_reader_get_stream_by_parser_index(reader, buffer->stream)))
         return E_INVALIDARG;
 
     TRACE("Got buffer for '%s' stream %p.\n", get_major_type_string(stream->format.major_type), stream);
@@ -2234,7 +2263,12 @@ static HRESULT WINAPI reader_GetNextSample(IWMSyncReader2 *iface,
         }
 
         if (SUCCEEDED(hr) && SUCCEEDED(hr = wm_reader_read_stream_sample(reader, &wg_buffer, sample, pts, duration, flags)))
-            stream_number = wg_buffer.stream + 1;
+        {
+            struct wm_stream *sample_stream;
+
+            if ((sample_stream = wm_reader_get_stream_by_parser_index(reader, wg_buffer.stream)))
+                stream_number = sample_stream->index + 1;
+        }
     }
 
     if (stream && hr == NS_E_NO_MORE_SAMPLES)
