@@ -119,6 +119,7 @@ uint32_t FACTAudioEngine_GetRendererDetails(
 
 	FAudio_PlatformGetDeviceDetails(
 		nRendererIndex,
+		NULL,
 		&deviceDetails
 	);
 	FAudio_memcpy(

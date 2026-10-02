@@ -614,9 +614,111 @@ static const struct PropertyMapEntry PropertyMap[] = {
 };
 #undef PROPERTY_MAP_ENTRY
 
+#define DeviceContainers L"System\\CurrentControlSet\\Control\\DeviceContainers"
+#define BaseContainers  L"BaseContainers"
+#define GUID_STR_LEN 39
+#define GUID_NULL_STR L"{00000000-0000-0000-0000-000000000000}"
+#define CONTAINER_PATH_LEN 143
+
+static void get_device_containers_path(LPWSTR path, DWORD path_len, LPCWSTR container_str)
+{
+    swprintf(path, path_len,
+        DeviceContainers L"\\%ls\\" BaseContainers L"\\%ls",
+        container_str, container_str);
+}
+
+static void SETUPDI_UpdateDeviceContainersW(struct device *device, const BYTE *buffer, DWORD buffer_size)
+{
+    WCHAR path[CONTAINER_PATH_LEN];
+    WCHAR container_str[GUID_STR_LEN];
+    DWORD container_str_size;
+    HKEY key;
+    DWORD data_size = GUID_STR_LEN * sizeof(WCHAR);
+    LPVOID data = NULL;
+
+    for(;;) {
+        LONG ret;
+
+        free(data);
+        data = malloc(data_size);
+        if (!data)
+            break;
+
+        if (!(ret = RegGetValueW(device->key, NULL, PropertyMap[SPDRP_BASE_CONTAINERID].nameW, RRF_RT_REG_SZ, NULL, data, &data_size))) {
+            HKEY key0, key1, key2, key3;
+            BOOL remove = FALSE;
+            LPWSTR container = data;
+
+            if (!RegOpenKeyW(HKEY_LOCAL_MACHINE, DeviceContainers, &key0))
+            {
+                if (!RegOpenKeyW(key0, container, &key1))
+                {
+                    if (!RegOpenKeyW(key1, BaseContainers, &key2))
+                    {
+                        if (!RegOpenKeyW(key2, container, &key3))
+                        {
+                            DWORD cValues = 0;
+                            TRACE("Deleting instance id from device container: %s, %ls\n", debugstr_w(device->instanceId), container);
+                            RegDeleteValueW(key3, device->instanceId);
+                            remove = !RegQueryInfoKeyW(key3, NULL, NULL, NULL, NULL, NULL, NULL, &cValues, NULL, NULL, NULL, NULL) && !cValues;
+                            RegCloseKey(key3);
+                            if (remove)
+                                remove = !RegDeleteKeyW(key2, container);
+                        }
+                        RegCloseKey(key2);
+                        if (remove)
+                            remove = !RegDeleteKeyW(key1, BaseContainers);
+                    }
+                    RegCloseKey(key1);
+                    if (remove)
+                        remove = !RegDeleteKeyW(key0, container);
+                }
+                RegCloseKey(key0);
+            }
+
+            free(data);
+            break;
+        }
+        else if (ret != ERROR_MORE_DATA)
+        {
+            free(data);
+            break;
+        }
+    }
+
+    if (!buffer_size || !lstrcmpW((LPCWSTR)buffer, GUID_NULL_STR))
+        return;
+    container_str_size = buffer_size < sizeof(container_str) ? buffer_size : sizeof(container_str);
+    memcpy(container_str, buffer, container_str_size);
+    container_str[container_str_size / sizeof(WCHAR) - 1] = 0;
+    _wcslwr(container_str);
+
+    get_device_containers_path(path, ARRAY_SIZE(path), container_str);
+    if (!RegCreateKeyW(HKEY_LOCAL_MACHINE, path, &key))
+    {
+        TRACE("Setting instance id from device container: %s, %ls\n", debugstr_w(device->instanceId), container_str);
+        RegSetValueExW(key, device->instanceId, 0, REG_NONE, NULL, 0);
+        RegCloseKey(key);
+    }
+}
+
+static void SETUPDI_UpdateDeviceContainersA(struct device *device, const BYTE *buffer, DWORD buffer_size)
+{
+    DWORD wbuffer_size;
+    WCHAR *wbuffer = strdupAtoW((const char *)buffer);
+    if (!wbuffer)
+        return;
+    wbuffer_size = (wcslen(wbuffer) + 1) * sizeof(WCHAR);
+    SETUPDI_UpdateDeviceContainersW(device, (const BYTE *)wbuffer, wbuffer_size);
+    free(wbuffer);
+}
+
 static BOOL SETUPDI_SetDeviceRegistryPropertyW(struct device *device,
     DWORD prop, const BYTE *buffer, DWORD size)
 {
+    if (prop == SPDRP_BASE_CONTAINERID)
+        SETUPDI_UpdateDeviceContainersW(device, buffer, size);
+
     if (prop < ARRAY_SIZE(PropertyMap) && PropertyMap[prop].nameW)
     {
         LONG ret = RegSetValueExW(device->key, PropertyMap[prop].nameW, 0,
@@ -733,6 +835,7 @@ static void remove_device(struct device *device)
     struct device_iface *iface;
     HKEY enum_key;
 
+    SETUPDI_UpdateDeviceContainersW(device, (const BYTE *)GUID_NULL_STR, GUID_STR_LEN * sizeof(WCHAR));
     delete_driver_key(device);
 
     LIST_FOR_EACH_ENTRY(iface, &device->interfaces, struct device_iface, entry)
@@ -1935,12 +2038,27 @@ end:
     return ret;
 }
 
+DEFINE_GUID(DEVINTERFACE_AUDIO_RENDER, 0xe6327cad,0xdcec,0x4949,0xae,0x8a,0x99,0x1e,0x97,0x6a,0x79,0xd2);
+DEFINE_GUID(DEVINTERFACE_AUDIO_CAPTURE, 0x2eef81be,0x33fa,0x4800,0x96,0x70,0x1c,0xd4,0x74,0x97,0x2c,0x3f);
+DEFINE_GUID(AM_KSCATEGORY_AUDIO, 0x6994ad04,0x93ef,0x11d0,0xa3,0xcc,0x00,0xa0,0xc9,0x22,0x31,0x96);
+
 static void SETUPDI_AddDeviceInterfaces(struct device *device, HKEY key,
     const GUID *guid, DWORD flags)
 {
     DWORD i, len;
     WCHAR subKeyName[MAX_PATH];
     LONG l = ERROR_SUCCESS;
+
+    /* Fake entries instead of a real driver. See mmdevapi/devenum.c */
+    const GUID *SKIP_PRESENT_CHECK[] = {&DEVINTERFACE_AUDIO_RENDER, &DEVINTERFACE_AUDIO_CAPTURE, &AM_KSCATEGORY_AUDIO, NULL};
+    bool skip_present_check = false;
+
+    for (i = 0; SKIP_PRESENT_CHECK[i] ; i++)
+        if (IsEqualGUID(SKIP_PRESENT_CHECK[i], guid))
+        {
+            skip_present_check = true;
+            break;
+        }
 
     for (i = 0; !l; i++)
     {
@@ -1960,8 +2078,24 @@ static void SETUPDI_AddDeviceInterfaces(struct device *device, HKEY key,
                     WCHAR symbolicLink[MAX_PATH];
                     DWORD dataType;
 
-                    if (!(flags & DIGCF_PRESENT) || is_linked(subKey))
+                    if (!(flags & DIGCF_PRESENT) || is_linked(subKey) || skip_present_check)
                     {
+                        if (skip_present_check)
+                        {
+                            DWORD linked = 1;
+                            HKEY control_key;
+
+                            if (!RegCreateKeyW(subKey, L"Control", &control_key))
+                            {
+                                if (RegSetValueExW(control_key, L"Linked", 0, REG_DWORD, (BYTE *)&linked, sizeof(DWORD)))
+                                    WARN("Set \"Linked\" registry entry failed");
+
+                                RegCloseKey(control_key);
+                            }
+                            else
+                                WARN("Create \"Control\" registry key failed");
+                        }
+
                         iface = SETUPDI_CreateDeviceInterface(device, guid, subKeyName + 1);
 
                         len = sizeof(symbolicLink);
@@ -3236,7 +3370,16 @@ BOOL WINAPI SetupDiGetDeviceRegistryPropertyA(HDEVINFO devinfo,
     if (Property < ARRAY_SIZE(PropertyMap) && PropertyMap[Property].nameA)
     {
         DWORD size = PropertyBufferSize;
-        LONG l = RegQueryValueExA(device->key, PropertyMap[Property].nameA,
+        LONG l;
+
+        /* Despite GUID returned as REG_SZ, it's always wide string on Windows. */
+        if (PropertyMap[Property].devPropType == DEVPROP_TYPE_GUID)
+            return SetupDiGetDeviceRegistryPropertyW(
+                devinfo, device_data, Property, PropertyRegDataType,
+                PropertyBuffer, PropertyBufferSize, RequiredSize
+            );
+
+        l = RegQueryValueExA(device->key, PropertyMap[Property].nameA,
                 NULL, PropertyRegDataType, PropertyBuffer, &size);
 
         if (l == ERROR_FILE_NOT_FOUND)
@@ -3250,6 +3393,7 @@ BOOL WINAPI SetupDiGetDeviceRegistryPropertyA(HDEVINFO devinfo,
         if (RequiredSize)
             *RequiredSize = size;
     }
+
     return ret;
 }
 
@@ -3291,7 +3435,12 @@ BOOL WINAPI SetupDiGetDeviceRegistryPropertyW(HDEVINFO devinfo,
             SetLastError(l);
         if (RequiredSize)
             *RequiredSize = size;
+
+        /* Death Stranding Director's Cut expect the containerId string to be all lower case. */
+        if (ret && PropertyMap[Property].devPropType == DEVPROP_TYPE_GUID)
+            _wcslwr((LPWSTR)PropertyBuffer);
     }
+
     return ret;
 }
 
@@ -3309,6 +3458,9 @@ BOOL WINAPI SetupDiSetDeviceRegistryPropertyA(HDEVINFO devinfo, SP_DEVINFO_DATA 
 
     if (!(device = get_device(devinfo, device_data)))
         return FALSE;
+
+    if (Property == SPDRP_BASE_CONTAINERID)
+        SETUPDI_UpdateDeviceContainersA(device, PropertyBuffer, PropertyBufferSize);
 
     if (Property < ARRAY_SIZE(PropertyMap) && PropertyMap[Property].nameA)
     {

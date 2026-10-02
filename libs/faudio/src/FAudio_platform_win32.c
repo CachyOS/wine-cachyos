@@ -281,7 +281,7 @@ static HRESULT FAudio_DefaultDeviceIndex(
  * default device is always at index 0, so we mimick this behavior here by
  * swapping the devices at indexes 0 and `defaultDeviceIndex`.
  */
-static HRESULT FAudio_OpenDevice(uint32_t deviceIndex, IMMDevice **device)
+static HRESULT FAudio_OpenDevice(uint32_t deviceIndex, const uint16_t *deviceId, IMMDevice **device)
 {
 	IMMDeviceCollection *deviceCollection;
 	HRESULT hr;
@@ -289,6 +289,52 @@ static HRESULT FAudio_OpenDevice(uint32_t deviceIndex, IMMDevice **device)
 	uint32_t actualIndex;
 
 	*device = NULL;
+
+#define MMDEV_ID_FLOW_IDX 5
+/* strlen("{0.0.1.00000000}.{fd47d9cc-4218-4135-9ce2-0c195c87405b}") + 1 */
+#define MMDEV_ID_LEN 56
+/* ARRAY_SIZE(MMDEV_PATH_PREFIX) */
+#define MMDEV_PREFIX_LEN 18
+/* (MMDEV_PREFIX_LEN - 1) + (MMDEV_ID_LEN - 1) + 1 + (ARRAY_SIZE(DEVINTERFACE_AUDIO_RENDER_WSTR) - 1) + 1 */
+#define MMDEV_PATH_LEN 112
+
+	if (deviceId)
+	{
+		ULONG deviceLen = wcslen(deviceId);
+		WCHAR idFromPath[MMDEV_ID_LEN];
+		WCHAR prefixFromPath[MMDEV_PREFIX_LEN];
+		const WCHAR *id = NULL;
+
+		static const WCHAR RENDER_GUID_SUFFIX_STR[] = L"#{E6327CAD-DCEC-4949-AE8A-991E976A79D2}";
+		static const WCHAR CAPTURE_GUID_SUFFIX_STR[] = L"#{2EEF81BE-33FA-4800-9670-1CD474972C3F}";
+		static const WCHAR MMDEV_PATH_PREFIX[] = L"\\\\?\\SWD#MMDEVAPI#";
+
+		if (deviceLen == MMDEV_ID_LEN - 1) {
+			id = deviceId;
+		} else if (deviceLen == MMDEV_PATH_LEN - 1) {
+			memcpy(prefixFromPath, deviceId, (MMDEV_PREFIX_LEN - 1) * sizeof(WCHAR));
+			prefixFromPath[MMDEV_PREFIX_LEN - 1] = 0;
+
+			if (!lstrcmpiW(prefixFromPath, MMDEV_PATH_PREFIX)) {
+				const WCHAR *suffixFromPath = deviceId + (MMDEV_PREFIX_LEN - 1) + (MMDEV_ID_LEN - 1);
+				lstrcpynW(idFromPath, deviceId + (MMDEV_PREFIX_LEN - 1), MMDEV_ID_LEN);
+				if (
+					(idFromPath[MMDEV_ID_FLOW_IDX] == L'0' && !lstrcmpiW(suffixFromPath, RENDER_GUID_SUFFIX_STR)) ||
+					(idFromPath[MMDEV_ID_FLOW_IDX] == L'1' && !lstrcmpiW(suffixFromPath, CAPTURE_GUID_SUFFIX_STR))
+				)
+					id = idFromPath;
+			}
+		}
+
+		if (!id)
+			return E_INVALIDARG;
+
+		return IMMDeviceEnumerator_GetDevice(
+			device_enumerator,
+			id,
+			device
+		);
+	}
 
 	hr = IMMDeviceEnumerator_EnumAudioEndpoints(
 		device_enumerator,
@@ -336,6 +382,7 @@ void FAudio_PlatformInit(
 	FAudio *audio,
 	uint32_t flags,
 	uint32_t deviceIndex,
+	const uint16_t *deviceId,
 	FAudioWaveFormatExtensible *mixFormat,
 	uint32_t *updateSize,
 	void** platformDevice
@@ -393,8 +440,17 @@ void FAudio_PlatformInit(
 	data->stopEvent = CreateEventW(NULL, FALSE, FALSE, NULL);
 	FAudio_assert(!!data->stopEvent && "Failed to create FAudio thread stop event!");
 
-	hr = FAudio_OpenDevice(deviceIndex, &device);
+	hr = FAudio_OpenDevice(deviceIndex, deviceId, &device);
 	FAudio_assert(!FAILED(hr) && "Failed to get audio device!");
+	if (!device)
+	{
+		CloseHandle(data->stopEvent);
+		CloseHandle(audioEvent);
+		FAudio_free(data);
+		FAudio_free(args);
+		FAudio_PlatformRelease();
+		return;
+	}
 
 	hr = IMMDevice_Activate(
 		device,
@@ -543,12 +599,13 @@ uint32_t FAudio_PlatformGetDeviceCount(void)
 
 uint32_t FAudio_PlatformGetDeviceDetails(
 	uint32_t index,
+	const uint16_t *deviceId,
 	FAudioDeviceDetails *details
 ) {
 	WAVEFORMATEX *format, *obtained;
 	WAVEFORMATEXTENSIBLE *ext;
 	IAudioClient *client;
-	IMMDevice *device;
+	IMMDevice *device = NULL;
 	IPropertyStore* properties;
 	PROPVARIANT deviceName;
 	uint32_t count = 0;
@@ -556,28 +613,80 @@ uint32_t FAudio_PlatformGetDeviceDetails(
 	HRESULT hr;
 	WCHAR *str;
 	GUID sub;
+	WCHAR *default_guid = NULL;
 
 	FAudio_memset(details, 0, sizeof(FAudioDeviceDetails));
 
 	FAudio_PlatformAddRef();
 
-	count = FAudio_PlatformGetDeviceCount();
-	if (index >= count)
+	if (deviceId)
 	{
+		/* Open the default device and get its GUID. */
+		hr = IMMDeviceEnumerator_GetDefaultAudioEndpoint(
+			device_enumerator,
+			eRender,
+			eConsole,
+			&device
+		);
+		if (FAILED(hr))
+		{
+			FAudio_PlatformRelease();
+			return FAUDIO_E_INVALID_CALL;
+		}
+		hr = IMMDevice_GetId(device, &default_guid);
+		if (FAILED(hr))
+		{
+			IMMDevice_Release(device);
+			FAudio_PlatformRelease();
+			return FAUDIO_E_INVALID_CALL;
+		}
+
+		/* Free the default device. */
+		IMMDevice_Release(device);
+	}
+	else
+	{
+		count = FAudio_PlatformGetDeviceCount();
+		if (index >= count)
+		{
+			FAudio_PlatformRelease();
+			return FAUDIO_E_INVALID_CALL;
+		}
+	}
+
+	hr = FAudio_OpenDevice(index, deviceId, &device);
+	FAudio_assert(!FAILED(hr) && "Failed to get audio endpoint!");
+	if (!device)
+	{
+		if (default_guid)
+			CoTaskMemFree(default_guid);
 		FAudio_PlatformRelease();
 		return FAUDIO_E_INVALID_CALL;
 	}
 
-	hr = FAudio_OpenDevice(index, &device);
-	FAudio_assert(!FAILED(hr) && "Failed to get audio endpoint!");
-
-	if (index == 0)
+	if (deviceId)
 	{
-		details->Role = FAudioGlobalDefaultDevice;
+		if (lstrcmpiW(default_guid, deviceId) == 0)
+		{
+			details->Role = FAudioGlobalDefaultDevice;
+		}
+		else
+		{
+			details->Role = FAudioNotDefaultDevice;
+		}
+
+		CoTaskMemFree(default_guid);
 	}
 	else
 	{
-		details->Role = FAudioNotDefaultDevice;
+		if (index == 0)
+		{
+			details->Role = FAudioGlobalDefaultDevice;
+		}
+		else
+		{
+			details->Role = FAudioNotDefaultDevice;
+		}
 	}
 
 	/* Set the Device Display Name */
