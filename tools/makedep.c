@@ -1537,7 +1537,7 @@ static bool is_external_header( struct incl_file *file )
     while ((p = strrchr( name, '/' )))
     {
         *p = 0;
-        if (strarray_exists( external_dirs, name )) return true;
+        if (file->is_external) return true;
     }
     return false;
 }
