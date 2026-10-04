@@ -3786,8 +3786,6 @@ WINE_CONFIG_MAKEFILE(tools/wmc)
 WINE_CONFIG_MAKEFILE(tools/wrc)
 dnl End of auto-generated output commands
 
-WINE_EXTERNAL(libs/compiler-rt)
-
 WINE_IGNORE_FILE(TAGS)
 WINE_IGNORE_FILE(tags)
 WINE_IGNORE_FILE(config.log)
