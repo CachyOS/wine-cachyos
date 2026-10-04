@@ -928,8 +928,8 @@ NTSTATUS WINAPI RtlWaitOnAddress( const void *addr, const void *cmp, SIZE_T size
 
     ret = NtWaitForAlertByThreadId( NULL, timeout );
 
-    /* We may have already been removed by a call to RtlWakeAddressSingle() or RtlWakeAddressAll(). */
-    if (entry.addr)
+    /* A cleared address means the waker no longer accesses our stack entry. */
+    if (ReadPointerAcquire( (void * const volatile *)&entry.addr ))
     {
         spin_lock( &queue->lock );
         if (entry.addr)
@@ -966,7 +966,6 @@ void WINAPI RtlWakeAddressAll( const void *addr )
     {
         if (entry->addr == addr)
         {
-            entry->addr = NULL;
             list_remove( &entry->entry );
             if (count == ARRAY_SIZE(tids))
             {
@@ -974,6 +973,8 @@ void WINAPI RtlWakeAddressAll( const void *addr )
                 count = 0;
             }
             tids[count++] = (HANDLE)(ULONG_PTR)entry->tid;
+            /* The waiter may return once the address is cleared. */
+            WritePointerRelease( (void * volatile *)&entry->addr, NULL );
         }
     }
 
@@ -1013,8 +1014,9 @@ void WINAPI RtlWakeAddressSingle( const void *addr )
             /* Remove this entry from the queue, so that a simultaneous call to
              * RtlWakeAddressSingle() will not also wake it—two simultaneous
              * calls must wake at least two waiters if they exist. */
-            entry->addr = NULL;
             list_remove( &entry->entry );
+            /* The waiter may return once the address is cleared. */
+            WritePointerRelease( (void * volatile *)&entry->addr, NULL );
             break;
         }
     }
