@@ -379,6 +379,7 @@ static void registry_handle_global_remove(void *data, struct wl_registry *regist
         {
             TRACE("removing output->name=%s\n", (*output)->current.name);
             wayland_output_remove(output);
+            pthread_mutex_unlock(&process_wayland.output_mutex);
             return;
         }
     }
