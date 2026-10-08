@@ -28,6 +28,7 @@
 
 #include "wine/debug.h"
 
+#include <assert.h>
 #include <stdlib.h>
 #include <unistd.h>
 
@@ -658,24 +659,21 @@ static void wayland_output_state_deinit(struct wayland_output_state *state)
  */
 void wayland_output_remove(struct wayland_output **output)
 {
-    struct wl_array *output_array = &process_wayland.output_array;
-    struct wayland_output **end, *temp;
+    struct wl_array *array = &process_wayland.output_array;
+    struct wayland_output **end = array->data, *temp;
 
-    pthread_mutex_lock(&process_wayland.output_mutex);
-    if ((end = output_array->data) && output_array->size)
-    {
-        end += (output_array->size / sizeof(*output)) - 1;
-        /* swap current element and back element */
-        temp = *end;
-        *end = *output;
-        *output = temp;
-        /* then reduce the size of the array */
-        output_array->size -= sizeof(*output);
-    }
+    assert(array->size && end);
+
+    end += (array->size / sizeof(*output)) - 1;
+    /* swap current element and back element */
+    temp = *end;
+    *end = *output;
+    *output = temp;
+    /* then reduce the size of the array */
+    array->size -= sizeof(*output);
     wayland_output_array_arrange_physical_coords();
-    pthread_mutex_unlock(&process_wayland.output_mutex);
 
-    wayland_output_release(*output);
+    wayland_output_release(*end);
 
     maybe_init_display_devices();
 }
