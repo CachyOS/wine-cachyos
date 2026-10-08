@@ -405,6 +405,7 @@ void wayland_surface_destroy(struct wayland_surface *surface)
         process_wayland.pointer.focused_hwnd = NULL;
         process_wayland.pointer.enter_serial = 0;
     }
+    /* clearing role does wl_surface::commit */
     if (process_wayland.pointer.constraint_hwnd == surface->hwnd)
         wayland_pointer_clear_constraint();
     pthread_mutex_unlock(&process_wayland.pointer.mutex);
