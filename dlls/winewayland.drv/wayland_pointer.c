@@ -1007,21 +1007,21 @@ static void wayland_surface_calc_confine(struct wayland_surface *surface,
 /***********************************************************************
  *           wayland_pointer_update_constraint
  *
- *  Enables/disables pointer confinement.
+ *  Enables/disables pointer confinement. Returns true if a wl_surface commit is needed.
  */
-static void wayland_pointer_update_constraint(struct wl_surface *wl_surface,
+static BOOL wayland_pointer_update_constraint(struct wl_surface *wl_surface,
                                               RECT *confine_rect,
+                                              POINT *position_hint,
                                               BOOL force_lock)
 {
     struct wayland_pointer *pointer = &process_wayland.pointer;
-    BOOL needs_lock, needs_confine, is_visible;
+    BOOL needs_lock, needs_confine, is_visible, ret = TRUE;
     static unsigned int once;
 
     if (!process_wayland.zwp_pointer_constraints_v1)
     {
-        if (!once++)
-            ERR("This function requires zwp_pointer_constraints_v1\n");
-        return;
+        if (!once++) ERR("This function requires zwp_pointer_constraints_v1\n");
+        return FALSE;
     }
 
     is_visible = pointer->cursor.wl_surface || pointer->wp_cursor_shape_device_v1;
@@ -1037,6 +1037,7 @@ static void wayland_pointer_update_constraint(struct wl_surface *wl_surface,
         zwp_confined_pointer_v1_destroy(pointer->zwp_confined_pointer_v1);
         pointer->zwp_confined_pointer_v1 = NULL;
         pointer->constraint_hwnd = NULL;
+        ret = TRUE;
     }
 
     if (!needs_lock && pointer->zwp_locked_pointer_v1)
@@ -1045,6 +1046,7 @@ static void wayland_pointer_update_constraint(struct wl_surface *wl_surface,
         zwp_locked_pointer_v1_destroy(pointer->zwp_locked_pointer_v1);
         pointer->zwp_locked_pointer_v1 = NULL;
         pointer->constraint_hwnd = NULL;
+        ret = TRUE;
     }
 
     if (needs_confine)
@@ -1056,6 +1058,9 @@ static void wayland_pointer_update_constraint(struct wl_surface *wl_surface,
         wl_region_add(region, confine_rect->left, confine_rect->top,
                       confine_rect->right - confine_rect->left,
                       confine_rect->bottom - confine_rect->top);
+
+        TRACE("Confining to hwnd=%p rect=%s\n",
+              pointer->constraint_hwnd, wine_dbgstr_rect(confine_rect));
 
         if (!pointer->zwp_confined_pointer_v1 || pointer->constraint_hwnd != hwnd)
         {
@@ -1076,17 +1081,15 @@ static void wayland_pointer_update_constraint(struct wl_surface *wl_surface,
                                                region);
         }
 
-        TRACE("Confining to hwnd=%p wayland=%d,%d+%d,%d\n",
-              pointer->constraint_hwnd,
-              confine_rect->left, confine_rect->top,
-              confine_rect->right - confine_rect->left,
-              confine_rect->bottom - confine_rect->top);
-
         wl_region_destroy(region);
+        ret = TRUE;
     }
     else if (needs_lock)
     {
         HWND hwnd = wl_surface_get_user_data(wl_surface);
+
+        TRACE("Locking to hwnd=%p, position_hint=%s\n", pointer->constraint_hwnd,
+              wine_dbgstr_point(position_hint));
 
         if (!pointer->zwp_locked_pointer_v1 || pointer->constraint_hwnd != hwnd)
         {
@@ -1100,16 +1103,26 @@ static void wayland_pointer_update_constraint(struct wl_surface *wl_surface,
                     NULL,
                     ZWP_POINTER_CONSTRAINTS_V1_LIFETIME_PERSISTENT);
             pointer->constraint_hwnd = hwnd;
-            TRACE("Locking to hwnd=%p\n", pointer->constraint_hwnd);
+            ret = TRUE;
+        }
+
+        if (position_hint)
+        {
+            zwp_locked_pointer_v1_set_cursor_position_hint(
+                pointer->zwp_locked_pointer_v1,
+                wl_fixed_from_int(position_hint->x),
+                wl_fixed_from_int(position_hint->y));
+            ret = TRUE;
         }
     }
 
     TRACE("lock=%u confine=%u\n", needs_lock, needs_confine);
+    return ret;
 }
 
 void wayland_pointer_clear_constraint(void)
 {
-    wayland_pointer_update_constraint(NULL, NULL, FALSE);
+    wayland_pointer_update_constraint(NULL, NULL, NULL, FALSE);
 }
 
 /***********************************************************************
@@ -1188,6 +1201,7 @@ BOOL WAYLAND_ClipCursor(const RECT *clip, BOOL reset)
     struct wayland_win_data *data;
     RECT confine_rect;
     POINT cursor_pos, warp;
+    BOOL commit = FALSE;
 
     TRACE("clip=%s reset=%d\n", wine_dbgstr_rect(clip), reset);
 
@@ -1213,33 +1227,34 @@ BOOL WAYLAND_ClipCursor(const RECT *clip, BOOL reset)
     pthread_mutex_lock(&pointer->mutex);
     if (wl_surface && pointer->pending_warp)
     {
-        wayland_pointer_update_constraint(wl_surface, NULL, TRUE);
+        commit = wayland_pointer_update_constraint(wl_surface, NULL, &warp, TRUE);
         pointer->pending_warp = FALSE;
     }
 
-    if (wl_surface && hwnd == pointer->constraint_hwnd && pointer->zwp_locked_pointer_v1)
+    if (wl_surface && commit)
     {
-        zwp_locked_pointer_v1_set_cursor_position_hint(
-                pointer->zwp_locked_pointer_v1,
-                wl_fixed_from_int(warp.x),
-                wl_fixed_from_int(warp.y));
         pthread_mutex_unlock(&pointer->mutex);
-
         data = wayland_win_data_get(hwnd);
         wl_surface_commit(wl_surface);
         wayland_win_data_release(data);
-        TRACE("position hint hwnd=%p wayland_xy=%s screen_xy=%s\n",
-                hwnd, wine_dbgstr_point(&warp), wine_dbgstr_point(&cursor_pos));
         pthread_mutex_lock(&pointer->mutex);
     }
 
    /* Since we are running in the context of the foreground thread we know
     * that the wl_surface of the foreground HWND will not be invalidated,
     * so we can access it without having the win data lock. */
-    wayland_pointer_update_constraint(wl_surface,
-                                      (clip && wl_surface) ? &confine_rect : NULL,
-                                      FALSE);
+    commit = wayland_pointer_update_constraint(wl_surface,
+                                               (clip && wl_surface) ? &confine_rect : NULL,
+                                               &warp, FALSE);
     pthread_mutex_unlock(&pointer->mutex);
+
+    /* Starting from version 2, pointer constraint lock/unlock is double buffered */
+    if (wl_surface && commit)
+    {
+        data = wayland_win_data_get(hwnd);
+        wl_surface_commit(wl_surface);
+        wayland_win_data_release(data);
+    }
 
     wl_display_flush(process_wayland.wl_display);
 
