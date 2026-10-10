@@ -2094,25 +2094,34 @@ void wayland_surface_flash_window(struct wayland_surface *surface)
     xdg_activation_token_v1_commit(token);
 }
 
-void wayland_surface_refresh_token(struct wayland_surface *surface)
+void wayland_refresh_activation_token(HWND hwnd)
 {
+    struct wayland_win_data *data;
+    struct wayland_surface *surface;
     struct xdg_activation_token_v1 *token;
 
     if (!process_wayland.xdg_activation_v1) return;
-    if (!wayland_surface_is_toplevel(surface)) return;
+    if (!(data = wayland_win_data_get(hwnd))) return;
+    if (!(surface = data->wayland_surface) || !wayland_surface_is_toplevel(surface))
+        goto done;
 
-    if (!(token = wayland_surface_create_token(surface, TRUE))) return;
+    if (!(token = wayland_surface_create_token(surface, TRUE))) goto done;
     xdg_activation_token_v1_add_listener(token, &save_token_listener, NULL);
     xdg_activation_token_v1_commit(token);
+
+done:
+    wayland_win_data_release(data);
 }
 
 void wayland_surface_activate(struct wayland_surface *surface)
 {
     struct xdg_activation_token_v1 *token;
-    char *token_str = InterlockedExchangePointer((void **)&process_activate_token, NULL);
+    char *token_str;
 
     if (!process_wayland.xdg_activation_v1) return;
     if (!wayland_surface_is_toplevel(surface)) return;
+
+    token_str = InterlockedExchangePointer((void **)&process_activate_token, NULL);
 
     if (token_str)
     {

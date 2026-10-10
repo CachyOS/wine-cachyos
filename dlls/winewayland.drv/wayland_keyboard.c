@@ -930,6 +930,7 @@ static void keyboard_handle_enter(void *private, struct wl_keyboard *wl_keyboard
 
     NtUserPostMessage(hwnd, WM_INPUTLANGCHANGEREQUEST, 0 /*FIXME*/, (LPARAM)keyboard_hkl);
     NtUserPostMessage(hwnd, WM_WINE_WINDOW_STATE_CHANGED, 0, 0);
+    wayland_refresh_activation_token(hwnd);
 }
 
 static BOOL wayland_disable_focus_loss(void)
@@ -1086,6 +1087,7 @@ static void keyboard_handle_key(void *data, struct wl_keyboard *wl_keyboard,
     if (state == WL_KEYBOARD_KEY_STATE_RELEASED) input.ki.dwFlags |= KEYEVENTF_KEYUP;
     NtUserSendHardwareInput(hwnd, 0, &input, 0);
     update_keystate(key, state);
+    wayland_refresh_activation_token(hwnd);
 }
 
 static void keyboard_handle_modifiers(void *data, struct wl_keyboard *wl_keyboard,
