@@ -285,6 +285,7 @@ static void pointer_handle_button(void *data, struct wl_pointer *wl_pointer,
     TRACE("hwnd=%p button=%#x state=%u\n", hwnd, button, state);
 
     NtUserSendHardwareInput(hwnd, 0, &input, 0);
+    wayland_refresh_activation_token(hwnd);
 }
 
 static void pointer_handle_axis(void *user_data, struct wl_pointer *wl_pointer,
