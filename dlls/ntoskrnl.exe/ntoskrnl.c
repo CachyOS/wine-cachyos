@@ -2844,10 +2844,7 @@ HANDLE WINAPI PsGetThreadProcessId( PETHREAD thread )
     return thread->kthread.id.UniqueProcess;
 }
 
-/*********************************************************************
- *           PsGetContextThread    (NTOSKRNL.@)
- */
-NTSTATUS WINAPI PsGetContextThread(PETHREAD thread, CONTEXT *context, KPROCESSOR_MODE mode)
+NTSTATUS WINAPI get_context_thread( PETHREAD thread, CONTEXT *context, KPROCESSOR_MODE mode )
 {
     NTSTATUS status;
     HANDLE h;
@@ -2868,6 +2865,26 @@ NTSTATUS WINAPI PsGetContextThread(PETHREAD thread, CONTEXT *context, KPROCESSOR
 
     return status;
 }
+
+/*********************************************************************
+ *           PsGetContextThread    (NTOSKRNL.@)
+ */
+#if defined(__x86_64__) && !defined(__arm64ec__)
+__ASM_GLOBAL_FUNC( PsGetContextThread,
+                   "subq $0x28,%rsp\n\t"
+                   __ASM_SEH(".seh_stackalloc 0x28\n\t")
+                   __ASM_SEH(".seh_endprologue\n\t")
+                   __ASM_CFI(".cfi_adjust_cfa_offset 0x28\n\t")
+                   "call " __ASM_NAME("get_context_thread") "\n\t"
+                   "addq $0x28,%rsp\n\t"
+                   __ASM_CFI(".cfi_adjust_cfa_offset -0x28\n\t")
+                   "ret" )
+#else
+NTSTATUS WINAPI PsGetContextThread( PETHREAD thread, CONTEXT *context, KPROCESSOR_MODE mode )
+{
+    return get_context_thread( thread, context, mode );
+}
+#endif
 
 /***********************************************************************
  *           KeInsertQueue   (NTOSKRNL.EXE.@)
