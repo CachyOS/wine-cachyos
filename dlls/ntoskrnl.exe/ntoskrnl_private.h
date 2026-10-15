@@ -100,6 +100,7 @@ struct wine_driver
 {
     DRIVER_OBJECT driver_obj;
     DRIVER_EXTENSION driver_extension;
+    UNICODE_STRING registry_path;
     SERVICE_STATUS_HANDLE service_handle;
     struct wine_rb_entry entry;
     struct list root_pnp_devices;
