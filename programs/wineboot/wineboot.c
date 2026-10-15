@@ -1488,6 +1488,27 @@ static BOOL start_services_process(void)
     return TRUE;
 }
 
+static void start_samss_service(void)
+{
+    SC_HANDLE scm, service;
+
+    if (!(scm = OpenSCManagerW( NULL, NULL, SC_MANAGER_CONNECT )))
+    {
+        WINE_ERR( "Failed to open service manager: error %lu\n", GetLastError() );
+        return;
+    }
+    if (!(service = OpenServiceW( scm, L"SamSs", SERVICE_START )))
+    {
+        WINE_WARN( "Failed to open SamSs service: error %lu\n", GetLastError() );
+        CloseServiceHandle( scm );
+        return;
+    }
+    if (!StartServiceW( service, 0, NULL ) && GetLastError() != ERROR_SERVICE_ALREADY_RUNNING)
+        WINE_ERR( "Failed to start SamSs service: error %lu\n", GetLastError() );
+    CloseServiceHandle( service );
+    CloseServiceHandle( scm );
+}
+
 static HANDLE start_rundll32( const WCHAR *inf_path, const WCHAR *install, WORD machine )
 {
     WCHAR app[MAX_PATH + ARRAY_SIZE(L"\\rundll32.exe" )];
@@ -1971,6 +1992,7 @@ int __cdecl main( int argc, char *argv[] )
         start_services_process();
     }
     if (init || update) update_wineprefix( update );
+    if (init || (kill && !restart)) start_samss_service();
 
     create_digitalproductid();
     create_volatile_environment_registry_key();
