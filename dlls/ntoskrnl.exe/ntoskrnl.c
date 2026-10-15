@@ -1516,6 +1516,7 @@ static void free_driver_object( void *obj )
     struct wine_driver *driver = obj;
     RtlFreeUnicodeString( &driver->driver_obj.DriverName );
     RtlFreeUnicodeString( &driver->driver_obj.DriverExtension->ServiceKeyName );
+    RtlFreeUnicodeString( &driver->registry_path );
     free_kernel_object( driver );
 }
 
@@ -1537,6 +1538,7 @@ POBJECT_TYPE IoDriverObjectType = &driver_type;
 NTSTATUS WINAPI IoCreateDriver( UNICODE_STRING *name, PDRIVER_INITIALIZE init )
 {
     struct wine_driver *driver;
+    const WCHAR *key_name;
     NTSTATUS status;
     unsigned int i;
 
@@ -1555,7 +1557,10 @@ NTSTATUS WINAPI IoCreateDriver( UNICODE_STRING *name, PDRIVER_INITIALIZE init )
     driver->driver_obj.DriverInit      = init;
     driver->driver_obj.DriverExtension = &driver->driver_extension;
     driver->driver_extension.DriverObject   = &driver->driver_obj;
-    build_driver_keypath( driver->driver_obj.DriverName.Buffer, &driver->driver_extension.ServiceKeyName );
+    build_driver_keypath( driver->driver_obj.DriverName.Buffer, &driver->registry_path );
+    if ((key_name = wcsrchr( driver->registry_path.Buffer, '\\' ))) key_name++;
+    else key_name = driver->registry_path.Buffer;
+    RtlCreateUnicodeString( &driver->driver_extension.ServiceKeyName, key_name );
     for (i = 0; i <= IRP_MJ_MAXIMUM_FUNCTION; i++)
         driver->driver_obj.MajorFunction[i] = unhandled_irp;
     list_init( &driver->root_pnp_devices );
@@ -1565,7 +1570,7 @@ NTSTATUS WINAPI IoCreateDriver( UNICODE_STRING *name, PDRIVER_INITIALIZE init )
         ERR( "failed to insert driver %s in tree\n", debugstr_us(name) );
     LeaveCriticalSection( &drivers_cs );
 
-    status = driver->driver_obj.DriverInit( &driver->driver_obj, &driver->driver_extension.ServiceKeyName );
+    status = driver->driver_obj.DriverInit( &driver->driver_obj, &driver->registry_path );
     if (status)
     {
         IoDeleteDriver( &driver->driver_obj );
