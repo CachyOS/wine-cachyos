@@ -4758,6 +4758,18 @@ PEB32 * WINAPI PsGetProcessWow64Process(PEPROCESS process)
 }
 
 /*********************************************************************
+ *           MmCopyMemory    (NTOSKRNL.@)
+ */
+NTSTATUS WINAPI MmCopyMemory(void *target, MM_COPY_ADDRESS source, SIZE_T size, ULONG flags, SIZE_T *copied)
+{
+    FIXME("target %p, source %s, size %Iu, flags %#lx, copied %p stub.\n",
+            target, wine_dbgstr_longlong(source.PhysicalAddress.QuadPart), size, flags, copied);
+
+    *copied = 0;
+    return STATUS_NOT_IMPLEMENTED;
+}
+
+/*********************************************************************
  *           MmCopyVirtualMemory    (NTOSKRNL.@)
  */
 NTSTATUS WINAPI MmCopyVirtualMemory(PEPROCESS fromprocess, void *fromaddress, PEPROCESS toprocess,
