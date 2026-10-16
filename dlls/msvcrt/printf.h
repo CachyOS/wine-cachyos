@@ -375,7 +375,7 @@ static inline int FUNC_NAME(pf_output_special_fp)(FUNC_NAME(puts_clbk) pf_puts, 
     if(!flags->Alternate && (flags->Format == 'g' || flags->Format == 'G')) sfx_len = frac_len;
     else sfx_len = flags->Precision;
 
-    if(sfx_len == -1) {
+    if(sfx_len < 0) {
         if(strchr("fFeE", flags->Format)) sfx_len = 6;
         else if(flags->Format == 'a' || flags->Format == 'A') sfx_len = 13;
     }
@@ -614,7 +614,7 @@ static inline int FUNC_NAME(pf_output_fp)(FUNC_NAME(puts_clbk) pf_puts, void *pu
     ULONGLONG m;
     DWORD l;
 
-    if(flags->Precision == -1)
+    if(flags->Precision < 0)
         flags->Precision = 6;
 
     v = frexp(v, &e2);
