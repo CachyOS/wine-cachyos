@@ -584,6 +584,7 @@ This is an error since --enable-archs=$wine_arch was requested.])])
 
     case $wine_arch in
       i386) WINE_TRY_PE_CFLAGS([-fno-omit-frame-pointer])
+            WINE_TRY_PE_CFLAGS([-mstack-alignment=4])
             WINE_TRY_PE_CFLAGS([-mpreferred-stack-boundary=2])
             WINE_TRY_PE_CFLAGS([-Wl,--disable-stdcall-fixup],
                                [AS_VAR_APPEND([${wine_arch}_LDFLAGS],[" -Wl,--disable-stdcall-fixup"])]) ;;
@@ -1461,6 +1462,12 @@ else
     WINE_NOTICE_WITH(x,[test "x$X_LIBS" = "x"],
                      [X ${notice_platform}development files not found, the X11 driver won't be supported.],
                      [enable_winex11_drv])
+fi
+
+dnl **** Check for OpenCL ****
+if test "$ac_cv_header_CL_cl_h" = "yes"
+then
+    AC_CHECK_LIB(OpenCL,clGetPlatformInfo,[AC_SUBST(OPENCL_LIBS,["-lOpenCL"])])
 fi
 
 dnl **** Check for libpcap ****
@@ -2486,6 +2493,7 @@ fi
 
 dnl Disable some programs for other PE archs
 enable_conhost=${enable_conhost:-$HOST_ARCH}
+enable_lsass=${enable_lsass:-$HOST_ARCH}
 enable_plugplay=${enable_plugplay:-$HOST_ARCH}
 enable_rpcss=${enable_rpcss:-$HOST_ARCH}
 enable_services=${enable_services:-$HOST_ARCH}
@@ -3671,6 +3679,7 @@ WINE_CONFIG_MAKEFILE(programs/iexplore)
 WINE_CONFIG_MAKEFILE(programs/ipconfig)
 WINE_CONFIG_MAKEFILE(programs/klist)
 WINE_CONFIG_MAKEFILE(programs/lodctr)
+WINE_CONFIG_MAKEFILE(programs/lsass)
 WINE_CONFIG_MAKEFILE(programs/makecab)
 WINE_CONFIG_MAKEFILE(programs/mofcomp)
 WINE_CONFIG_MAKEFILE(programs/mshta)
@@ -3867,7 +3876,7 @@ dnl Rules for generated source files
 
 WINE_APPEND_RULE(
 [dlls/ntdll/unix/version.c: dummy
-	@version=\`(GIT_DIR=${wine_srcdir}.git git describe HEAD 2>/dev/null || echo \"wine-\$(PACKAGE_VERSION)\") | sed -n -e '\$\$s/\(.*\)/const char wine_build[[]] = \"\\1\";/p'\` && (echo \$\$version | cmp -s - \$[@]) || echo \$\$version >\$[@] || (rm -f \$[@] && exit 1)
+	@version=\`(GIT_DIR=${wine_srcdir}.git git describe HEAD 2>/dev/null || echo \"wine-\$(PACKAGE_VERSION)\") | sed -n -e '\$\$s/\(.*\)/const char wine_build[[]] = \"\\1 (CachyOS)\";/p'\` && (echo \$\$version | cmp -s - \$[@]) || echo \$\$version >\$[@] || (rm -f \$[@] && exit 1)
 programs/winetest/build.rc: dummy
 	@build=\"STRINGTABLE { 1 \\\"\`GIT_DIR=${wine_srcdir}.git git rev-parse HEAD 2>/dev/null\`\\\" }\" && (echo \$\$build | cmp -s - \$[@]) || echo \$\$build >\$[@] || (rm -f \$[@] && exit 1)
 dlls/wineandroid.drv/wine-debug.apk: dlls/wineandroid.drv/build.gradle ${wine_srcdir}dlls/wineandroid.drv/AndroidManifest.xml ${wine_srcdir}dlls/wineandroid.drv/WineActivity.java ${wine_srcdir}dlls/wineandroid.drv/wine.svg
