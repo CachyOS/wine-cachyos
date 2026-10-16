@@ -565,6 +565,13 @@ static DWORD WINAPI activate_async_threadproc(void *user)
     return 0;
 }
 
+#define MMDEV_ID_FLOW_IDX 5
+/* strlen("{0.0.1.00000000}.{fd47d9cc-4218-4135-9ce2-0c195c87405b}") + 1 */
+#define MMDEV_ID_LEN 56
+/* ARRAY_SIZE(MMDEV_PATH_PREFIX) */
+#define MMDEV_PREFIX_LEN 18
+/* (MMDEV_PREFIX_LEN - 1) + (MMDEV_ID_LEN - 1) + 1 + (ARRAY_SIZE(DEVINTERFACE_AUDIO_RENDER_WSTR) - 1) + 1 */
+#define MMDEV_PATH_LEN 112
 static HRESULT get_mmdevice_by_activatepath(const WCHAR *path, IMMDevice **mmdev)
 {
     IMMDeviceEnumerator *devenum;
@@ -580,16 +587,29 @@ static HRESULT get_mmdevice_by_activatepath(const WCHAR *path, IMMDevice **mmdev
         return hr;
     }
 
-    if (!lstrcmpiW(path, DEVINTERFACE_AUDIO_RENDER_WSTR)){
+    if (!lstrcmpiW(path, DEVINTERFACE_AUDIO_RENDER_WSTR)) {
         hr = IMMDeviceEnumerator_GetDefaultAudioEndpoint(devenum, eRender, eMultimedia, mmdev);
-    } else if (!lstrcmpiW(path, DEVINTERFACE_AUDIO_CAPTURE_WSTR)){
+    } else if (!lstrcmpiW(path, DEVINTERFACE_AUDIO_CAPTURE_WSTR)) {
         hr = IMMDeviceEnumerator_GetDefaultAudioEndpoint(devenum, eCapture, eMultimedia, mmdev);
-    } else if (!memcmp(path, MMDEV_PATH_PREFIX, sizeof(MMDEV_PATH_PREFIX) - sizeof(WCHAR))) {
-        WCHAR device_id[56]; /* == strlen("{0.0.1.00000000}.{fd47d9cc-4218-4135-9ce2-0c195c87405b}") + 1 */
+    } else if (wcslen(path) == MMDEV_PATH_LEN - 1) {
+        WCHAR path_prefix[MMDEV_PREFIX_LEN];
+        memcpy(path_prefix, path, (MMDEV_PREFIX_LEN - 1) * sizeof(WCHAR));
+        path_prefix[MMDEV_PREFIX_LEN - 1] = 0;
 
-        lstrcpynW(device_id, path + (ARRAY_SIZE(MMDEV_PATH_PREFIX) - 1), ARRAY_SIZE(device_id));
+        if (
+            !lstrcmpiW(path_prefix, MMDEV_PATH_PREFIX) &&
+            path[(MMDEV_PREFIX_LEN - 1) + (MMDEV_ID_LEN - 1)] == L'#'
+        ) {
+            const WCHAR *path_suffix = path + (MMDEV_PREFIX_LEN - 1) + (MMDEV_ID_LEN - 1) + 1;
+            WCHAR device_id[MMDEV_ID_LEN];
+            lstrcpynW(device_id, path + (MMDEV_PREFIX_LEN - 1), MMDEV_ID_LEN);
 
-        hr = IMMDeviceEnumerator_GetDevice(devenum, device_id, mmdev);
+            if (
+                (device_id[MMDEV_ID_FLOW_IDX] == L'0' && !lstrcmpiW(path_suffix, DEVINTERFACE_AUDIO_RENDER_WSTR)) ||
+                (device_id[MMDEV_ID_FLOW_IDX] == L'1' && !lstrcmpiW(path_suffix, DEVINTERFACE_AUDIO_CAPTURE_WSTR))
+            )
+                hr = IMMDeviceEnumerator_GetDevice(devenum, device_id, mmdev);
+        }
     } else {
         FIXME("Unrecognized device id format: %s\n", debugstr_w(path));
         hr = HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
