@@ -932,6 +932,9 @@ static NTSTATUS dlopen_dll( const char *so_name, UNICODE_STRING *nt_name, void *
         dlclose( handle );
         return STATUS_NO_MEMORY;
     }
+#ifdef __x86_64__
+    signal_disable_syscall_dispatch();
+#endif
     *ret_module = module;
     return STATUS_SUCCESS;
 }
@@ -2239,6 +2242,7 @@ char *release_reserved_memory_low_bound;
 BOOL alert_simulate_sched_quantum;
 BOOL fsync_simulate_sched_quantum;
 BOOL fsync_yield_to_waiters;
+BOOL hack_native_syscalls;
 
 static void hacks_init(void)
 {
@@ -2386,6 +2390,12 @@ static void hacks_init(void)
                         !strcmp( sgi, "518920" )
                     ))
         release_reserved_memory_low_bound = (void *)0x00200000;
+#else
+    if ((env_str = getenv( "WINE_HACK_NATIVE_SYSCALLS" )) && *env_str == '1')
+    {
+        ERR( "Hack native syscalls.\n" );
+        hack_native_syscalls = TRUE;
+    }
 #endif
 
     if (main_argc > 1 && strstr(main_argv[1], "edCefRenderProcess.exe"))

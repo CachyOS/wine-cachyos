@@ -145,6 +145,7 @@ struct surface
 {
     struct vulkan_surface obj;
     struct client_surface *client;
+    struct swapchain *swapchain;
     HWND hwnd;
 };
 
@@ -2494,7 +2495,7 @@ static VkResult win32u_vkGetPhysicalDeviceSurfaceFormatsKHR( VkPhysicalDevice cl
     struct vulkan_instance *instance = physical_device->instance;
 
     return instance->p_vkGetPhysicalDeviceSurfaceFormatsKHR( physical_device->host.physical_device,
-                                                                surface->obj.host.surface, format_count, formats );
+                                                             surface->obj.host.surface, format_count, formats );
 }
 
 static VkResult win32u_vkGetPhysicalDeviceSurfaceFormats2KHR( VkPhysicalDevice client_physical_device, const VkPhysicalDeviceSurfaceInfo2KHR *surface_info,
@@ -3069,6 +3070,8 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
     VkSwapchainCreateInfoKHR create_info_host = *create_info;
     VkSurfaceCapabilitiesKHR capabilities;
     VkSwapchainKHR host_swapchain;
+    uint32_t format_count = 0;
+    VkSurfaceFormatKHR *formats;
     RECT client_rect;
     VkResult res;
 
@@ -3085,6 +3088,7 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
     res = instance->p_vkGetPhysicalDeviceSurfaceCapabilitiesKHR( physical_device->host.physical_device, surface->obj.host.surface, &capabilities );
     if (res) return res;
 
+    create_info_host.imageColorSpace = driver_funcs->p_vulkan_map_colorspace( create_info_host.imageColorSpace, NULL );
     create_info_host.imageExtent.width = max( create_info_host.imageExtent.width, capabilities.minImageExtent.width );
     create_info_host.imageExtent.height = max( create_info_host.imageExtent.height, capabilities.minImageExtent.height );
 
@@ -3105,17 +3109,7 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
 
     if ((swapchain->fshack_dpi = surface_get_fshack_dpi( surface )))
     {
-        VkSurfaceCapabilitiesKHR caps = {0};
-
-        if ((res = instance->p_vkGetPhysicalDeviceSurfaceCapabilitiesKHR( physical_device->host.physical_device,
-                                                                          create_info_host.surface, &caps )))
-        {
-            TRACE( "vkGetPhysicalDeviceSurfaceCapabilities failed, res=%d\n", res );
-            free( swapchain );
-            return res;
-        }
-
-        if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_STORAGE_BIT))
+        if (!(capabilities.supportedUsageFlags & VK_IMAGE_USAGE_STORAGE_BIT))
             FIXME( "Swapchain does not support required VK_IMAGE_USAGE_STORAGE_BIT\n" );
 
         swapchain->host_extents = capabilities.minImageExtent;
@@ -3128,14 +3122,62 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
                    create_info_host.imageFormat );
     }
 
+    /* check if the new colorspace works with the provided format */
+    if (create_info_host.imageColorSpace != create_info->imageColorSpace)
+    {
+        BOOL found = FALSE;
+
+        res = instance->p_vkGetPhysicalDeviceSurfaceFormatsKHR( physical_device->host.physical_device, surface->obj.host.surface, &format_count, NULL );
+
+        if (!(formats = calloc( format_count, sizeof(*formats) ))) return VK_ERROR_OUT_OF_HOST_MEMORY;
+
+        res = instance->p_vkGetPhysicalDeviceSurfaceFormatsKHR( physical_device->host.physical_device, surface->obj.host.surface, &format_count, formats );
+
+        if (res)
+        {
+            free(formats);
+            return res;
+        }
+
+    again:
+        for (unsigned i = 0; i < format_count; i++)
+        {
+            if (formats[i].format == create_info_host.imageFormat &&
+                formats[i].colorSpace == create_info_host.imageColorSpace)
+                found = TRUE;
+        }
+
+        /* HACK: try again with VK_COLOR_SPACE_SRGB_NONLINEAR_KHR */
+        if (!found && create_info_host.imageColorSpace == VK_COLOR_SPACE_PASS_THROUGH_EXT)
+        {
+            create_info_host.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+            goto again;
+        }
+
+        if (!found)
+        {
+            ERR("Colorspace %u is not compatible with format %u\n",
+                create_info_host.imageColorSpace, create_info_host.imageFormat);
+            create_info_host.imageColorSpace = create_info->imageColorSpace;
+        }
+        else driver_funcs->p_vulkan_map_colorspace( create_info->imageColorSpace, surface->client );
+
+        free(formats);
+    }
+    else driver_funcs->p_vulkan_map_colorspace( create_info->imageColorSpace, surface->client );
+
+    InterlockedIncrement( &surface->client->busy_ref );
+
     if ((res = device->p_vkCreateSwapchainKHR( device->host.device, &create_info_host, NULL, &host_swapchain )))
     {
+        InterlockedDecrement( &surface->client->busy_ref );
         free( swapchain );
         return res;
     }
 
     vulkan_object_init( &swapchain->obj.obj, host_swapchain );
     swapchain->surface = surface;
+    surface->swapchain = swapchain;
     swapchain->extents = create_info->imageExtent;
     instance->p_insert_object( instance, &swapchain->obj.obj );
 
@@ -3157,7 +3199,7 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
             return res;
         }
 
-        WARN( "Enabled fullscreen hack on swapchain %p, scalind from %s -> %s\n", swapchain,
+        WARN( "Enabled fullscreen hack on swapchain %p, scaling from %s -> %s\n", swapchain,
               debugstr_vkextent2d(&swapchain->extents), debugstr_vkextent2d(&swapchain->host_extents) );
     }
 
@@ -3171,6 +3213,7 @@ void win32u_vkDestroySwapchainKHR( VkDevice client_device, VkSwapchainKHR client
     struct vulkan_device *device = vulkan_device_from_handle( client_device );
     struct vulkan_instance *instance = device->physical_device->instance;
     struct swapchain *swapchain = swapchain_from_handle( client_swapchain );
+    struct surface *surface;
 
     if (allocator) FIXME( "Support for allocation callbacks not implemented yet\n" );
     if (!swapchain) return;
@@ -3198,6 +3241,11 @@ void win32u_vkDestroySwapchainKHR( VkDevice client_device, VkSwapchainKHR client
     }
 
     device->p_vkDestroySwapchainKHR( device->host.device, swapchain->obj.host.swapchain, NULL );
+    if ((surface = swapchain->surface))
+    {
+        surface->swapchain = NULL;
+        InterlockedDecrement( &surface->client->busy_ref );
+    }
     instance->p_remove_object( instance, &swapchain->obj.obj );
 
     free( swapchain );
@@ -4727,6 +4775,11 @@ static VkResult nulldrv_vulkan_surface_create( HWND hwnd, BOOL raw, const struct
     return res;
 }
 
+static VkColorSpaceKHR nulldrv_vulkan_map_colorspace( VkColorSpaceKHR colorspace, struct client_surface *client )
+{
+    return colorspace;
+}
+
 static VkBool32 nulldrv_get_physical_device_presentation_support( struct vulkan_physical_device *physical_device, uint32_t queue )
 {
     return VK_TRUE;
@@ -4753,6 +4806,7 @@ static void nulldrv_map_device_extensions( struct vulkan_device_extensions *exte
 static const struct vulkan_driver_funcs nulldrv_funcs =
 {
     .p_vulkan_surface_create = nulldrv_vulkan_surface_create,
+    .p_vulkan_map_colorspace = nulldrv_vulkan_map_colorspace,
     .p_get_physical_device_presentation_support = nulldrv_get_physical_device_presentation_support,
     .p_map_instance_extensions = nulldrv_map_instance_extensions,
     .p_map_device_extensions = nulldrv_map_device_extensions,
@@ -4785,6 +4839,12 @@ static VkResult lazydrv_vulkan_surface_create( HWND hwnd, BOOL raw, const struct
     return driver_funcs->p_vulkan_surface_create( hwnd, raw, instance, surface, client );
 }
 
+static VkColorSpaceKHR lazydrv_vulkan_map_colorspace( VkColorSpaceKHR colorspace, struct client_surface *client )
+{
+    vulkan_driver_load();
+    return driver_funcs->p_vulkan_map_colorspace( colorspace, client );
+}
+
 static VkBool32 lazydrv_get_physical_device_presentation_support( struct vulkan_physical_device *physical_device, uint32_t queue )
 {
     vulkan_driver_load();
@@ -4806,6 +4866,7 @@ static void lazydrv_map_device_extensions( struct vulkan_device_extensions *exte
 static const struct vulkan_driver_funcs lazydrv_funcs =
 {
     .p_vulkan_surface_create = lazydrv_vulkan_surface_create,
+    .p_vulkan_map_colorspace = lazydrv_vulkan_map_colorspace,
     .p_get_physical_device_presentation_support = lazydrv_get_physical_device_presentation_support,
     .p_map_instance_extensions = lazydrv_map_instance_extensions,
     .p_map_device_extensions = lazydrv_map_device_extensions,

@@ -19,7 +19,7 @@
 @ stub ADL2_Adapter_Active_SetPrefer
 @ cdecl ADL2_Adapter_AdapterInfoX2_Get(ptr ptr)
 @ stub ADL2_Adapter_AdapterInfoX3_Get
-@ stub ADL2_Adapter_AdapterInfoX4_Get
+@ cdecl ADL2_Adapter_AdapterInfoX4_Get(ptr long ptr ptr)
 @ cdecl ADL2_Adapter_AdapterInfo_Get(ptr ptr long)
 @ stub ADL2_Adapter_AdapterList_Disable
 @ stub ADL2_Adapter_AdapterLocationPath_Get
@@ -93,7 +93,7 @@
 @ stub ADL2_Adapter_LocalDisplayState_Get
 @ stub ADL2_Adapter_MVPU_Set
 @ stub ADL2_Adapter_MaxCursorSize_Get
-@ stub ADL2_Adapter_MemoryInfo2_Get
+@ cdecl ADL2_Adapter_MemoryInfo2_Get(ptr long ptr)
 @ cdecl ADL2_Adapter_MemoryInfo_Get(ptr long ptr)
 @ stub ADL2_Adapter_MirabilisSupport_Get
 @ stub ADL2_Adapter_ModeSwitch
@@ -111,7 +111,7 @@
 @ stub ADL2_Adapter_PreFlipPostProcessing_Select_LUT_Algorithm
 @ stub ADL2_Adapter_PreFlipPostProcessing_Select_LUT_Buffer
 @ stub ADL2_Adapter_PreFlipPostProcessing_Unselect_LUT_Buffer
-@ stub ADL2_Adapter_Primary_Get
+@ cdecl ADL2_Adapter_Primary_Get(ptr ptr)
 @ stub ADL2_Adapter_Primary_Set
 @ stub ADL2_Adapter_RAS_ErrorInjection_Set
 @ stub ADL2_Adapter_RegValueInt_Get
@@ -146,7 +146,7 @@
 @ stub ADL2_ApplicationProfiles_DriverAreaPrivacy_Get
 @ stub ADL2_ApplicationProfiles_GetCustomization
 @ stub ADL2_ApplicationProfiles_HitListsX2_Get
-@ stub ADL2_ApplicationProfiles_HitListsX3_Get
+@ cdecl ADL2_ApplicationProfiles_HitListsX3_Get(ptr long ptr ptr)
 @ stub ADL2_ApplicationProfiles_HitLists_Get
 @ stub ADL2_ApplicationProfiles_ProfileApplicationX2_Assign
 @ stub ADL2_ApplicationProfiles_ProfileApplication_Assign
@@ -281,7 +281,7 @@
 @ stub ADL2_Display_FormatsOverride_Set
 @ stub ADL2_Display_FreeSyncState_Get
 @ stub ADL2_Display_FreeSyncState_Set
-@ stub ADL2_Display_FreeSync_Cap
+@ cdecl ADL2_Display_FreeSync_Cap(ptr long long ptr)
 @ stub ADL2_Display_GamutMapping_Get
 @ stub ADL2_Display_GamutMapping_Reset
 @ stub ADL2_Display_GamutMapping_Set
@@ -315,7 +315,7 @@
 @ stub ADL2_Display_ModeTimingOverride_Delete
 @ stub ADL2_Display_ModeTimingOverride_Get
 @ stub ADL2_Display_ModeTimingOverride_Set
-@ stub ADL2_Display_Modes_Get
+@ cdecl ADL2_Display_Modes_Get(ptr long long ptr ptr)
 @ stub ADL2_Display_Modes_Set
 @ stub ADL2_Display_Modes_X2_Get
 @ stub ADL2_Display_MonitorPowerState_Set
@@ -376,7 +376,7 @@
 @ stub ADL2_Display_SLSMapConfig_SupportedImageCropType_Get
 @ stub ADL2_Display_SLSMapConfig_Valid
 @ stub ADL2_Display_SLSMapIndexList_Get
-@ stub ADL2_Display_SLSMapIndex_Get
+@ cdecl ADL2_Display_SLSMapIndex_Get(ptr long long ptr ptr)
 @ stub ADL2_Display_SLSMiddleMode_Get
 @ stub ADL2_Display_SLSMiddleMode_Set
 @ stub ADL2_Display_SLSRecords_Get
@@ -387,7 +387,7 @@
 @ stub ADL2_Display_Size_Get
 @ stub ADL2_Display_Size_Set
 @ stub ADL2_Display_SourceContentAttribute_Get
-@ stub ADL2_Display_SourceContentAttribute_Set
+@ cdecl ADL2_Display_SourceContentAttribute_Set(ptr long long ptr)
 @ stub ADL2_Display_SplitDisplay_Caps
 @ stub ADL2_Display_SplitDisplay_Get
 @ stub ADL2_Display_SplitDisplay_RestoreDesktopConfiguration
@@ -433,6 +433,7 @@
 @ stub ADL2_Graphics_MantleVersion_Get
 @ cdecl ADL2_Graphics_Platform_Get(ptr ptr)
 @ cdecl ADL2_Graphics_VersionsX2_Get(ptr ptr)
+@ cdecl ADL2_Graphics_VersionsX3_Get(ptr long ptr)
 @ cdecl ADL2_Graphics_Versions_Get(ptr ptr)
 @ stub ADL2_Graphics_VulkanVersion_Get
 @ stub ADL2_HybridGraphicsGPU_Set
@@ -478,7 +479,7 @@
 @ stub ADL2_Overdrive5_ThermalDevices_Enum
 @ stub ADL2_Overdrive6_AdvancedFan_Caps
 @ stub ADL2_Overdrive6_CapabilitiesEx_Get
-@ stub ADL2_Overdrive6_Capabilities_Get
+@ cdecl ADL2_Overdrive6_Capabilities_Get(ptr long ptr)
 @ stub ADL2_Overdrive6_ControlI2C
 @ stub ADL2_Overdrive6_CurrentPower_Get
 @ stub ADL2_Overdrive6_CurrentStatus_Get
@@ -497,7 +498,7 @@
 @ stub ADL2_Overdrive6_PowerControl_Set
 @ stub ADL2_Overdrive6_StateEx_Get
 @ stub ADL2_Overdrive6_StateEx_Set
-@ stub ADL2_Overdrive6_StateInfo_Get
+@ cdecl ADL2_Overdrive6_StateInfo_Get(ptr long long ptr)
 @ stub ADL2_Overdrive6_State_Reset
 @ stub ADL2_Overdrive6_State_Set
 @ stub ADL2_Overdrive6_TargetTemperatureData_Get
@@ -687,7 +688,7 @@
 @ stub ADL_Adapter_Active_Get
 @ stub ADL_Adapter_Active_Set
 @ stub ADL_Adapter_Active_SetPrefer
-@ stub ADL_Adapter_AdapterInfoX2_Get
+@ cdecl ADL_Adapter_AdapterInfoX2_Get(ptr)
 @ cdecl ADL_Adapter_AdapterInfo_Get(ptr long)
 @ stub ADL_Adapter_AdapterList_Disable
 @ stub ADL_Adapter_Aspects_Get
@@ -744,7 +745,7 @@
 @ stub ADL_Adapter_NumberOfActivatableSources_Get
 @ cdecl ADL_Adapter_NumberOfAdapters_Get(ptr)
 @ cdecl ADL_Adapter_ObservedClockInfo_Get(long ptr ptr)
-@ stub ADL_Adapter_ObservedGameClockInfo_Get
+@ cdecl ADL_Adapter_ObservedGameClockInfo_Get(ptr long ptr ptr ptr ptr)
 @ stub ADL_Adapter_Primary_Get
 @ stub ADL_Adapter_Primary_Set
 @ stub ADL_Adapter_RegValueInt_Get
@@ -864,7 +865,7 @@
 @ stub ADL_Display_FormatsOverride_Set
 @ stub ADL_Display_FreeSyncState_Get
 @ stub ADL_Display_FreeSyncState_Set
-@ stub ADL_Display_FreeSync_Cap
+@ cdecl ADL_Display_FreeSync_Cap(long long ptr)
 @ stub ADL_Display_GamutMapping_Get
 @ stub ADL_Display_GamutMapping_Reset
 @ stub ADL_Display_GamutMapping_Set
@@ -890,7 +891,7 @@
 @ stub ADL_Display_ModeTimingOverride_Delete
 @ stub ADL_Display_ModeTimingOverride_Get
 @ stub ADL_Display_ModeTimingOverride_Set
-@ stub ADL_Display_Modes_Get
+@ cdecl ADL_Display_Modes_Get(long long ptr ptr)
 @ stub ADL_Display_Modes_Set
 @ stub ADL_Display_MonitorPowerState_Set
 @ stub ADL_Display_NativeAUXChannel_Access
@@ -936,7 +937,7 @@
 @ stub ADL_Display_SLSMapConfig_Rearrange
 @ stub ADL_Display_SLSMapConfig_SetState
 @ stub ADL_Display_SLSMapIndexList_Get
-@ stub ADL_Display_SLSMapIndex_Get
+@ cdecl ADL_Display_SLSMapIndex_Get(long long ptr ptr)
 @ stub ADL_Display_SLSMiddleMode_Get
 @ stub ADL_Display_SLSMiddleMode_Set
 @ stub ADL_Display_SLSRecords_Get
@@ -947,7 +948,7 @@
 @ stub ADL_Display_Size_Get
 @ stub ADL_Display_Size_Set
 @ stub ADL_Display_SourceContentAttribute_Get
-@ stub ADL_Display_SourceContentAttribute_Set
+@ cdecl ADL_Display_SourceContentAttribute_Set(long long ptr)
 @ stub ADL_Display_SplitDisplay_Caps
 @ stub ADL_Display_SplitDisplay_Get
 @ stub ADL_Display_SplitDisplay_RestoreDesktopConfiguration
@@ -1040,7 +1041,7 @@
 @ stub ADL_Overdrive6_VoltageControlInfo_Get
 @ stub ADL_Overdrive6_VoltageControl_Get
 @ stub ADL_Overdrive6_VoltageControl_Set
-@ stub ADL_Overdrive_Caps
+@ cdecl ADL_Overdrive_Caps(long ptr ptr ptr)
 @ stub ADL_PowerXpress_AncillaryDevices_Get
 @ stub ADL_PowerXpress_Config_Caps
 @ stub ADL_PowerXpress_ExtendedBatteryMode_Caps

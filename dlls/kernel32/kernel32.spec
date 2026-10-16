@@ -744,8 +744,8 @@
 @ stdcall -import GetNLSVersion(long long ptr)
 @ stdcall -import GetNLSVersionEx(long wstr ptr)
 # @ stub GetNamedPipeAttribute
-# @ stub GetNamedPipeClientComputerNameA
-# @ stub GetNamedPipeClientComputerNameW
+@ stdcall GetNamedPipeClientComputerNameA(long str long)
+@ stdcall GetNamedPipeClientComputerNameW(long wstr long)
 @ stdcall GetNamedPipeClientProcessId(long ptr)
 @ stdcall GetNamedPipeClientSessionId(long ptr)
 @ stdcall GetNamedPipeHandleStateA(long ptr ptr ptr ptr ptr long)
@@ -1010,6 +1010,7 @@
 @ stdcall -import IsDBCSLeadByteEx(long long)
 @ stdcall -import IsDebuggerPresent()
 @ stub -i386 IsLSCallback
+@ stdcall IsNativeVhdBoot(ptr)
 @ stdcall -import IsNLSDefinedString(long long ptr wstr long)
 @ stdcall -import IsNormalizedString(long wstr long)
 @ stdcall -import IsProcessInJob(long long ptr)

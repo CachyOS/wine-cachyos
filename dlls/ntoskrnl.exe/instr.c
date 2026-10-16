@@ -480,7 +480,13 @@ WINE_DEFAULT_DEBUG_CHANNEL(int);
 #define REX_R   4
 #define REX_W   8
 
-#define MSR_LSTAR   0xc0000082
+#define MSR_DEBUGCTL   0x1d9
+#define MSR_HYPERV     0x40000000
+#define MSR_HYPERV2    0x40000001
+#define MSR_KVM        0x4b564d00
+#define MSR_LSTAR      0xc0000082
+
+#define VMW_PORT       0x5658
 
 #define REGMODRM_MOD( regmodrm, rex )   ((regmodrm) >> 6)
 #define REGMODRM_REG( regmodrm, rex )   (((regmodrm) >> 3) & 7) | (((rex) & REX_R) ? 8 : 0)
@@ -732,10 +738,10 @@ static DWORD emulate_instruction( EXCEPTION_RECORD *rec, CONTEXT *context )
             TRACE( "mov cr%u,%s at %Ix\n", reg, reg_names[rm], context->Rip );
             switch (reg)
             {
-            case 0: *data = 0x10; break; /* FIXME: set more bits ? */
+            case 0: *data = CR0_PE|CR0_ET|CR0_NE|CR0_WP|CR0_AM|CR0_PG; break;
             case 2: *data = 0; break;
             case 3: *data = 0; break;
-            case 4: *data = 0; break;
+            case 4: *data = 0x20; break;
             case 8: *data = 0; break;
             default: return ExceptionContinueSearch;
             }
@@ -813,6 +819,20 @@ static DWORD emulate_instruction( EXCEPTION_RECORD *rec, CONTEXT *context )
                 ULONG_PTR syscall_address = (ULONG_PTR)fake_syscall_function;
                 context->Rdx = (ULONG)(syscall_address >> 32);
                 context->Rax = (ULONG)syscall_address;
+                break;
+            }
+            case MSR_HYPERV:
+            case MSR_HYPERV2:
+            case MSR_KVM:
+            {
+                /* we are not a VM */
+                return ExceptionContinueSearch;
+            }
+            case MSR_DEBUGCTL:
+            {
+                TRACE("MSR_DEBUGCTL, returning 0.\n");
+                context->Rdx = 0;
+                context->Rax = 0;
                 break;
             }
             default:
@@ -902,7 +922,22 @@ static DWORD emulate_instruction( EXCEPTION_RECORD *rec, CONTEXT *context )
         }
         break;  /* Unable to emulate it */
     }
+    case 0xed: /* inl eAX, DX */
+    {
+        WORD port = context->Rdx & 0xffff;
 
+        switch (port)
+        {
+            /* we are not a VM! */
+            case VMW_PORT:
+                context->Rax = 0;
+                context->Rip += prefixlen + 1;
+                return ExceptionContinueExecution;
+            default:
+                FIXME("Unkown port %#x!\n", port);
+                return ExceptionContinueSearch;
+        }
+    }
     case 0xfa: /* cli */
     case 0xfb: /* sti */
         context->Rip += prefixlen + 1;

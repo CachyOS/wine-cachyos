@@ -975,7 +975,7 @@ static void load_steam_overlay(const char *unix_lib_path)
     unsigned int len;
     void *handle;
 
-    if (!strstr(unix_lib_path, "winex11.so")) return;
+    if (!strstr(unix_lib_path, "winex11.so") && !strstr(unix_lib_path, "winewayland.so")) return;
     if (getenv("LD_PRELOAD") || !(preload = getenv("WINE_LD_PRELOAD"))) return;
 
     p = preload;
@@ -2472,28 +2472,6 @@ static void clear_native_views(void)
     }
 }
 
-static void fixup_effective_user_space_limit( const void **effective_user_space_limit )
-{
-#ifdef _WIN64
-    static int cached = -1;
-
-    if (cached == -1)
-    {
-        const char *e = getenv( "PROTON_LIMIT_ADDRESS_SPACE" );
-        const char *sgi = getenv( "SteamGameId" );
-        if (e) cached = e[0] != '0';
-        else cached = sgi &&
-            (
-                !strcmp( sgi, "3092660" )
-                || !strcmp( sgi, "3681810" )
-            );
-        if (cached) FIXME( "fixing up effective user space limit.\n" );
-    }
-    if (cached)
-        *effective_user_space_limit = min( *effective_user_space_limit, (void *)0x700000000000 );
-#endif
-}
-
 /***********************************************************************
  *           map_view
  *
@@ -2510,8 +2488,6 @@ static NTSTATUS map_view( struct file_view **view_ret, void *base, size_t size,
     NTSTATUS status;
     const void *effective_user_space_limit = !is_win64 && wine_allocs_2g_limit ?
         (void *)0x7fff0000 : min( user_space_limit, host_addr_space_limit);
-
-    fixup_effective_user_space_limit( &effective_user_space_limit );
 
     if (!align_mask) align_mask = granularity_mask;
     assert( align_mask >= host_page_mask );

@@ -35,9 +35,45 @@
 #include "wine/vulkan.h"
 #include "wine/vulkan_driver.h"
 
-WINE_DEFAULT_DEBUG_CHANNEL(vulkan);
+WINE_DEFAULT_DEBUG_CHANNEL(waylanddrv);
 
 static const struct vulkan_driver_funcs wayland_vulkan_driver_funcs;
+
+static struct wayland_client_surface *stash_client_surface(HWND hwnd,
+                                                           struct wayland_client_surface *surface)
+{
+    struct wayland_client_surface *ret = NULL;
+    struct wayland_win_data *data;
+
+    if (!(data = wayland_win_data_get(hwnd))) return NULL;
+
+    if (surface)
+    {
+        if ((ret = data->stashed_client) == surface)
+        {
+            wayland_win_data_release(data);
+            return ret;
+        }
+        client_surface_add_ref(&surface->client);
+        data->stashed_client = surface;
+    }
+    else if ((ret = data->stashed_client) && !ReadAcquire(&ret->client.busy_ref))
+    {
+        /* cannot decrease the ref count here as there is a
+         * new VkSurface referencing this client surface */
+        data->stashed_client = NULL;
+        /* detach the client surface to ensure it is reparented */
+        wayland_client_surface_attach(ret, NULL);
+        if (data->client_surface == ret) data->client_surface = NULL;
+    }
+    else ret = NULL;
+
+    wayland_win_data_release(data);
+
+    if (ret && surface) client_surface_release(&ret->client);
+
+    return ret;
+}
 
 static VkResult wayland_vulkan_surface_create(HWND hwnd, BOOL raw, const struct vulkan_instance *instance,
                                               VkSurfaceKHR *handle, struct client_surface **client)
@@ -48,7 +84,13 @@ static VkResult wayland_vulkan_surface_create(HWND hwnd, BOOL raw, const struct 
 
     TRACE("%p %p %p %p\n", hwnd, instance, handle, client);
 
-    if (!(surface = wayland_client_surface_create(hwnd))) return VK_ERROR_OUT_OF_HOST_MEMORY;
+    if (!(surface = stash_client_surface(hwnd, NULL)) &&
+        !(surface = wayland_client_surface_create(hwnd)))
+    {
+        ERR("Failed to create vulkan client surface\n");
+        return VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
+
     create_info_host.sType = VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR;
     create_info_host.pNext = NULL;
     create_info_host.flags = 0; /* reserved */
@@ -64,6 +106,7 @@ static VkResult wayland_vulkan_surface_create(HWND hwnd, BOOL raw, const struct 
     }
 
     set_client_surface(hwnd, surface);
+    stash_client_surface(hwnd, surface);
     *client = &surface->client;
 
     TRACE("Created surface=0x%s, client=%p\n", wine_dbgstr_longlong(*handle), *client);
@@ -97,9 +140,52 @@ static void wayland_map_device_extensions(struct vulkan_device_extensions *exten
     if (extensions->has_VK_KHR_external_fence_fd) extensions->has_VK_KHR_external_fence_win32 = 1;
 }
 
+static VkColorSpaceKHR wayland_vulkan_map_colorspace(VkColorSpaceKHR colorspace, struct client_surface *client)
+{
+    struct wayland_client_surface *surface = impl_from_client_surface(client);
+    struct wp_image_description_v1 *wp_image_description_v1 = NULL;
+    VkColorSpaceKHR new = colorspace;
+
+    if (process_wayland.supports_win_scrgb && colorspace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT)
+        new = VK_COLOR_SPACE_PASS_THROUGH_EXT;
+    else if (process_wayland.supports_win_pq && colorspace == VK_COLOR_SPACE_HDR10_ST2084_EXT)
+        new = VK_COLOR_SPACE_PASS_THROUGH_EXT;
+
+    TRACE("mapping colorspace %u => %u\n", colorspace, new);
+
+    if (!client) return new;
+    if (new == colorspace)
+    {
+        wayland_client_surface_attach_image_description(surface, NULL);
+        return colorspace;
+    }
+
+    switch (colorspace)
+    {
+    case VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT:
+        wp_image_description_v1 =
+            wp_color_manager_v1_create_windows_scrgb(process_wayland.wp_color_manager_v1);
+        break;
+    case VK_COLOR_SPACE_HDR10_ST2084_EXT:
+        wp_image_description_v1 =
+            wp_color_manager_v1_create_windows_bt2100(process_wayland.wp_color_manager_v1);
+    default: break;
+    }
+
+    if (!wp_image_description_v1) goto err;
+
+    wayland_client_surface_attach_image_description(surface, wp_image_description_v1);
+    wl_display_flush(process_wayland.wl_display);
+    return new;
+err:
+    ERR("Failed to configure image description for client surface!\n");
+    return colorspace;
+}
+
 static const struct vulkan_driver_funcs wayland_vulkan_driver_funcs =
 {
     .p_vulkan_surface_create = wayland_vulkan_surface_create,
+    .p_vulkan_map_colorspace = wayland_vulkan_map_colorspace,
     .p_get_physical_device_presentation_support = wayland_get_physical_device_presentation_support,
     .p_map_instance_extensions = wayland_map_instance_extensions,
     .p_map_device_extensions = wayland_map_device_extensions,

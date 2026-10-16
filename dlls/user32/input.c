@@ -270,18 +270,22 @@ UINT WINAPI MapVirtualKeyW(UINT code, UINT maptype)
  */
 UINT WINAPI MapVirtualKeyExA(UINT code, UINT maptype, HKL hkl)
 {
+    UINT top_bit = 0;
     UINT ret;
 
     ret = NtUserMapVirtualKeyEx( code, maptype, hkl );
     if (maptype == MAPVK_VK_TO_CHAR)
     {
         BYTE ch = 0;
-        WCHAR wch = ret;
+        WCHAR wch;
+
+        top_bit = ret & (1u << 31);
+        wch = ret & ~top_bit;
 
         WideCharToMultiByte( CP_ACP, 0, &wch, 1, (LPSTR)&ch, 1, NULL, NULL );
         ret = ch;
     }
-    return ret;
+    return ret | top_bit;
 }
 
 /****************************************************************************

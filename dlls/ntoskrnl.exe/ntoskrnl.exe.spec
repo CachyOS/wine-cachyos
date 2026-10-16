@@ -917,16 +917,19 @@
 @ stdcall PsGetCurrentProcessSessionId()
 @ stdcall PsGetCurrentThread() KeGetCurrentThread
 @ stdcall PsGetCurrentThreadId()
+@ stdcall PsGetCurrentThreadTeb()
 @ stub PsGetCurrentThreadPreviousMode
+@ stdcall PsGetCurrentThreadProcess()
+@ stdcall PsGetCurrentThreadProcessId()
 @ stub PsGetCurrentThreadStackBase
 @ stub PsGetCurrentThreadStackLimit
 @ stub PsGetJobLock
 @ stub PsGetJobSessionId
 @ stub PsGetJobUIRestrictionsClass
 @ stdcall PsGetProcessCreateTimeQuadPart(ptr)
-@ stub PsGetProcessDebugPort
+@ stdcall PsGetProcessDebugPort(ptr)
 @ stub PsGetProcessExitProcessCalled
-@ stub PsGetProcessExitStatus
+@ stdcall PsGetProcessExitStatus(ptr)
 @ stub PsGetProcessExitTime
 @ stdcall PsGetProcessId(ptr)
 @ stdcall PsGetProcessImageFileName(ptr)
@@ -1393,6 +1396,7 @@
 @ stub VfFailDriver
 @ stub VfFailSystemBIOS
 @ stub VfIsVerificationEnabled
+@ stdcall VslGetSecurePciEnabled()
 @ stub WRITE_REGISTER_BUFFER_UCHAR
 @ stub WRITE_REGISTER_BUFFER_ULONG
 @ stub WRITE_REGISTER_BUFFER_USHORT
