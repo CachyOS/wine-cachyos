@@ -926,9 +926,12 @@ static inline ucontext_t *init_handler( void *sigcontext )
     clear_alignment_flag();
 #ifdef __linux__
     {
-        struct amd64_thread_data *thread_data = (struct amd64_thread_data *)&get_current_teb()->GdiTebBatch;
+        TEB *teb = get_current_teb();
+        struct amd64_thread_data *thread_data = (struct amd64_thread_data *)&teb->GdiTebBatch;
         thread_data->syscall_dispatch = 0; /* SYSCALL_DISPATCH_FILTER_ALLOW */
-        if (fs32_sel) arch_prctl( ARCH_SET_FS, thread_data->pthread_teb );
+        /* system threads never switch %fs, so they have no pthread_teb to restore */
+        if (fs32_sel && !((struct ntdll_thread_data *)&teb->GdiTebBatch)->system_thread)
+            arch_prctl( ARCH_SET_FS, thread_data->pthread_teb );
     }
 #elif defined __APPLE__
     {
@@ -956,7 +959,8 @@ static inline void leave_handler( ucontext_t *sigcontext )
 {
 #ifdef __linux__
     struct amd64_thread_data *thread_data = (struct amd64_thread_data *)&NtCurrentTeb()->GdiTebBatch;
-    if (!is_inside_signal_stack( (void *)RSP_sig(sigcontext )) &&
+    if (!((struct ntdll_thread_data *)thread_data)->system_thread &&
+        !is_inside_signal_stack( (void *)RSP_sig(sigcontext )) &&
         !is_inside_syscall( RSP_sig(sigcontext) ))
     {
         thread_data->syscall_dispatch = 1;  /* SYSCALL_DISPATCH_FILTER_BLOCK */
@@ -2749,7 +2753,8 @@ static void quit_handler( int signal, siginfo_t *siginfo, void *sigcontext )
 {
     ucontext_t *ucontext = init_handler( sigcontext );
 
-    if (!is_inside_syscall( RSP_sig(ucontext) )) user_mode_abort_thread( 0, get_syscall_frame() );
+    if (!ntdll_get_thread_data()->system_thread && !is_inside_syscall( RSP_sig(ucontext) ))
+        user_mode_abort_thread( 0, get_syscall_frame() );
     abort_thread( 0 );
 }
 
@@ -2763,7 +2768,11 @@ static void usr1_handler( int signal, siginfo_t *siginfo, void *sigcontext )
 {
     ucontext_t *ucontext = init_handler( sigcontext );
 
-    if (is_inside_syscall( RSP_sig(ucontext) ))
+    if (ntdll_get_thread_data()->system_thread)
+    {
+        server_select( NULL, 0, SELECT_INTERRUPTIBLE, 0, NULL, NULL );
+    }
+    else if (is_inside_syscall( RSP_sig(ucontext) ))
     {
         struct syscall_frame *frame = get_syscall_frame();
         ULONG64 saved_compaction = 0;

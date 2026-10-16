@@ -52,6 +52,7 @@ struct oss_stream
     UINT flags;
     AUDCLNT_SHAREMODE share;
     HANDLE event;
+    HANDLE timer_thread;
 
     int fd;
 
@@ -234,13 +235,6 @@ static NTSTATUS oss_process_attach(void *args)
         zero_bits = (ULONG_PTR)info.HighestUserAddress | 0x7fffffff;
     }
 #endif
-    return STATUS_SUCCESS;
-}
-
-static NTSTATUS oss_main_loop(void *args)
-{
-    struct main_loop_params *params = args;
-    NtSetEvent(params->event, NULL);
     return STATUS_SUCCESS;
 }
 
@@ -637,10 +631,10 @@ static NTSTATUS oss_release_stream(void *args)
     struct oss_stream *stream = handle_get_stream(params->stream);
     SIZE_T size;
 
-    if(params->timer_thread){
+    if(stream->timer_thread){
         stream->please_quit = TRUE;
-        NtWaitForSingleObject(params->timer_thread, FALSE, NULL);
-        NtClose(params->timer_thread);
+        NtWaitForSingleObject(stream->timer_thread, FALSE, NULL);
+        NtClose(stream->timer_thread);
     }
 
     close(stream->fd);
@@ -658,66 +652,6 @@ static NTSTATUS oss_release_stream(void *args)
 
     params->result = S_OK;
     return STATUS_SUCCESS;
-}
-
-static NTSTATUS oss_start(void *args)
-{
-    struct start_params *params = args;
-    struct oss_stream *stream = handle_get_stream(params->stream);
-
-    oss_lock(stream);
-
-    if((stream->flags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) && !stream->event)
-        return oss_unlock_result(stream, &params->result, AUDCLNT_E_EVENTHANDLE_NOT_SET);
-
-    if(stream->playing)
-        return oss_unlock_result(stream, &params->result, AUDCLNT_E_NOT_STOPPED);
-
-    stream->playing = TRUE;
-
-    return oss_unlock_result(stream, &params->result, S_OK);
-}
-
-static NTSTATUS oss_stop(void *args)
-{
-    struct stop_params *params = args;
-    struct oss_stream *stream = handle_get_stream(params->stream);
-
-    oss_lock(stream);
-
-    if(!stream->playing)
-        return oss_unlock_result(stream, &params->result, S_FALSE);
-
-    stream->playing = FALSE;
-    stream->in_oss_frames = 0;
-
-    return oss_unlock_result(stream, &params->result, S_OK);
-}
-
-static NTSTATUS oss_reset(void *args)
-{
-    struct reset_params *params = args;
-    struct oss_stream *stream = handle_get_stream(params->stream);
-
-    oss_lock(stream);
-
-    if(stream->playing)
-        return oss_unlock_result(stream, &params->result, AUDCLNT_E_NOT_STOPPED);
-
-    if(stream->getbuf_last)
-        return oss_unlock_result(stream, &params->result, AUDCLNT_E_BUFFER_OPERATION_PENDING);
-
-    if(stream->flow == eRender){
-        stream->written_frames = 0;
-        stream->last_pos_frames = 0;
-    }else{
-        stream->written_frames += stream->held_frames;
-    }
-    stream->held_frames = 0;
-    stream->lcl_offs_frames = 0;
-    stream->in_oss_frames = 0;
-
-    return oss_unlock_result(stream, &params->result, S_OK);
 }
 
 static void silence_buffer(struct oss_stream *stream, BYTE *buffer, UINT32 frames)
@@ -867,10 +801,9 @@ static void oss_read_data(struct oss_stream *stream)
     }
 }
 
-static NTSTATUS oss_timer_loop(void *args)
+static void oss_timer_loop(void *args)
 {
-    struct timer_loop_params *params = args;
-    struct oss_stream *stream = handle_get_stream(params->stream);
+    struct oss_stream *stream = args;
     LARGE_INTEGER delay, now, next;
     int adjust;
 
@@ -905,8 +838,68 @@ static NTSTATUS oss_timer_loop(void *args)
     }
 
     oss_unlock(stream);
+}
 
-    return STATUS_SUCCESS;
+static NTSTATUS oss_start(void *args)
+{
+    struct start_params *params = args;
+    struct oss_stream *stream = handle_get_stream(params->stream);
+    static const WCHAR name[] = {'a','u','d','i','o','_','c','l','i','e','n','t','_','t','i','m','e','r',0};
+
+    oss_lock(stream);
+
+    if((stream->flags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) && !stream->event)
+        return oss_unlock_result(stream, &params->result, AUDCLNT_E_EVENTHANDLE_NOT_SET);
+
+    if(stream->playing)
+        return oss_unlock_result(stream, &params->result, AUDCLNT_E_NOT_STOPPED);
+
+    stream->playing = TRUE;
+    if (!stream->timer_thread) create_unix_thread( &stream->timer_thread, name, oss_timer_loop, stream );
+
+    return oss_unlock_result(stream, &params->result, S_OK);
+}
+
+static NTSTATUS oss_stop(void *args)
+{
+    struct stop_params *params = args;
+    struct oss_stream *stream = handle_get_stream(params->stream);
+
+    oss_lock(stream);
+
+    if(!stream->playing)
+        return oss_unlock_result(stream, &params->result, S_FALSE);
+
+    stream->playing = FALSE;
+    stream->in_oss_frames = 0;
+
+    return oss_unlock_result(stream, &params->result, S_OK);
+}
+
+static NTSTATUS oss_reset(void *args)
+{
+    struct reset_params *params = args;
+    struct oss_stream *stream = handle_get_stream(params->stream);
+
+    oss_lock(stream);
+
+    if(stream->playing)
+        return oss_unlock_result(stream, &params->result, AUDCLNT_E_NOT_STOPPED);
+
+    if(stream->getbuf_last)
+        return oss_unlock_result(stream, &params->result, AUDCLNT_E_BUFFER_OPERATION_PENDING);
+
+    if(stream->flow == eRender){
+        stream->written_frames = 0;
+        stream->last_pos_frames = 0;
+    }else{
+        stream->written_frames += stream->held_frames;
+    }
+    stream->held_frames = 0;
+    stream->lcl_offs_frames = 0;
+    stream->in_oss_frames = 0;
+
+    return oss_unlock_result(stream, &params->result, S_OK);
 }
 
 static NTSTATUS oss_get_render_buffer(void *args)
@@ -1639,14 +1632,14 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
 {
     oss_process_attach,
     oss_not_implemented,
-    oss_main_loop,
+    oss_not_implemented,
+    oss_not_implemented,
     oss_get_endpoint_ids,
     oss_create_stream,
     oss_release_stream,
     oss_start,
     oss_stop,
     oss_reset,
-    oss_timer_loop,
     oss_get_render_buffer,
     oss_release_render_buffer,
     oss_get_capture_buffer,
@@ -1696,19 +1689,6 @@ static NTSTATUS oss_wow64_test_connect(void *args)
     oss_test_connect(&params);
     params32->priority = params.priority;
     return STATUS_SUCCESS;
-}
-
-static NTSTATUS oss_wow64_main_loop(void *args)
-{
-    struct
-    {
-        PTR32 event;
-    } *params32 = args;
-    struct main_loop_params params =
-    {
-        .event = ULongToHandle(params32->event)
-    };
-    return oss_main_loop(&params);
 }
 
 static NTSTATUS oss_wow64_get_endpoint_ids(void *args)
@@ -1775,13 +1755,11 @@ static NTSTATUS oss_wow64_release_stream(void *args)
     struct
     {
         stream_handle stream;
-        PTR32 timer_thread;
         HRESULT result;
     } *params32 = args;
     struct release_stream_params params =
     {
         .stream = params32->stream,
-        .timer_thread = ULongToHandle(params32->timer_thread)
     };
     oss_release_stream(&params);
     params32->result = params.result;
@@ -2135,14 +2113,14 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
 {
     oss_process_attach,
     oss_not_implemented,
-    oss_wow64_main_loop,
+    oss_not_implemented,
+    oss_not_implemented,
     oss_wow64_get_endpoint_ids,
     oss_wow64_create_stream,
     oss_wow64_release_stream,
     oss_start,
     oss_stop,
     oss_reset,
-    oss_timer_loop,
     oss_wow64_get_render_buffer,
     oss_release_render_buffer,
     oss_wow64_get_capture_buffer,
