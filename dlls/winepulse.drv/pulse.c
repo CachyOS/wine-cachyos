@@ -2883,6 +2883,7 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
     pulse_not_implemented,
     pulse_not_implemented,
     pulse_not_implemented,
+    pulse_not_implemented,
 };
 
 C_ASSERT(ARRAYSIZE(__wine_unix_call_funcs) == funcs_count);
@@ -3360,6 +3361,7 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
     pulse_is_started,
     pulse_wow64_get_prop_value,
     pulse_midi_get_driver,
+    pulse_not_implemented,
     pulse_not_implemented,
     pulse_not_implemented,
     pulse_not_implemented,
