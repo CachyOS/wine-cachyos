@@ -1799,12 +1799,95 @@ static void probe_teardown(struct probe *p)
     }
 }
 
+/* FALSE when no probe connection could be made; p then holds nothing to free. */
+static BOOL run_probe(struct probe *p)
+{
+    memset(p, 0, sizeof(*p));
+    list_init(&p->nodes);
+    list_init(&p->devices);
+
+    if (!(p->loop = pw_thread_loop_new("winepipewire-probe", NULL)))
+    {
+        ERR("Failed to create PipeWire probe loop; SPA plugins may be missing "
+            "(set SPA_PLUGIN_DIR to the directory containing spa-0.2).\n");
+        return FALSE;
+    }
+    if (!(p->context = pw_context_new(pw_thread_loop_get_loop(p->loop), NULL, 0)))
+    {
+        ERR("Failed to create PipeWire probe context\n");
+        pw_thread_loop_destroy(p->loop);
+        return FALSE;
+    }
+
+    if (pw_thread_loop_start(p->loop) < 0)
+    {
+        ERR("Failed to start PipeWire probe loop\n");
+        pw_context_destroy(p->context);
+        pw_thread_loop_destroy(p->loop);
+        return FALSE;
+    }
+    pw_thread_loop_lock(p->loop);
+
+    if (!(p->core = pw_context_connect(p->context, NULL, 0)))
+    {
+        WARN("pw_context_connect failed during probe.\n");
+        pw_thread_loop_unlock(p->loop);
+        pw_thread_loop_stop(p->loop);
+        pw_context_destroy(p->context);
+        pw_thread_loop_destroy(p->loop);
+        return FALSE;
+    }
+
+    pw_core_add_listener(p->core, &p->core_listener, &probe_core_events, p);
+    p->registry = pw_core_get_registry(p->core, PW_VERSION_REGISTRY, 0);
+    if (p->registry)
+        pw_registry_add_listener(p->registry, &p->registry_listener, &probe_registry_events, p);
+
+    /* First round-trip: globals emitted, nodes/metadata bound, enum_params
+     * issued.  Second: the param events and metadata properties land. */
+    probe_roundtrip(p);
+    probe_roundtrip(p);
+
+    probe_teardown(p);
+    pw_thread_loop_unlock(p->loop);
+    pw_thread_loop_stop(p->loop);
+    pw_context_destroy(p->context);
+    pw_thread_loop_destroy(p->loop);
+
+    /* The cap is enforced on the probe thread, which cannot log. */
+    if (p->truncated)
+        WARN("More than %u audio globals in the graph; the rest were ignored.\n",
+             PROBE_MAX_GLOBALS);
+    if (p->timed_out)
+        WARN("PipeWire probe timed out; the device list may be incomplete.\n");
+    return TRUE;
+}
+
+static void free_probe(struct probe *p)
+{
+    struct probe_node *pn, *next;
+    struct probe_device *pd, *pdnext;
+
+    LIST_FOR_EACH_ENTRY_SAFE(pn, next, &p->nodes, struct probe_node, entry)
+    {
+        list_remove(&pn->entry);
+        free(pn->node_name);
+        free(pn->display);
+        free(pn->nick);
+        free(pn);
+    }
+    LIST_FOR_EACH_ENTRY_SAFE(pd, pdnext, &p->devices, struct probe_device, entry)
+    {
+        list_remove(&pd->entry);
+        free(pd->sysfs_path);
+        free(pd);
+    }
+}
+
 static NTSTATUS pipewire_test_connect(void *args)
 {
     struct test_connect_params *params = args;
     struct probe p;
-    struct probe_node *pn, *next;
-    struct probe_device *pd, *pdnext;
     BOOL failed;
 
     pthread_mutex_lock(&device_lists_mutex);
@@ -1816,64 +1899,8 @@ static NTSTATUS pipewire_test_connect(void *args)
 
     params->priority = Priority_Unavailable;
 
-    memset(&p, 0, sizeof(p));
-    list_init(&p.nodes);
-    list_init(&p.devices);
-
-    if (!(p.loop = pw_thread_loop_new("winepipewire-probe", NULL)))
-    {
-        ERR("Failed to create PipeWire probe loop; SPA plugins may be missing "
-            "(set SPA_PLUGIN_DIR to the directory containing spa-0.2).\n");
+    if (!run_probe(&p))
         return STATUS_SUCCESS;
-    }
-    if (!(p.context = pw_context_new(pw_thread_loop_get_loop(p.loop), NULL, 0)))
-    {
-        ERR("Failed to create PipeWire probe context\n");
-        pw_thread_loop_destroy(p.loop);
-        return STATUS_SUCCESS;
-    }
-
-    if (pw_thread_loop_start(p.loop) < 0)
-    {
-        ERR("Failed to start PipeWire probe loop\n");
-        pw_context_destroy(p.context);
-        pw_thread_loop_destroy(p.loop);
-        return STATUS_SUCCESS;
-    }
-    pw_thread_loop_lock(p.loop);
-
-    if (!(p.core = pw_context_connect(p.context, NULL, 0)))
-    {
-        WARN("pw_context_connect failed during probe.\n");
-        pw_thread_loop_unlock(p.loop);
-        pw_thread_loop_stop(p.loop);
-        pw_context_destroy(p.context);
-        pw_thread_loop_destroy(p.loop);
-        return STATUS_SUCCESS;
-    }
-
-    pw_core_add_listener(p.core, &p.core_listener, &probe_core_events, &p);
-    p.registry = pw_core_get_registry(p.core, PW_VERSION_REGISTRY, 0);
-    if (p.registry)
-        pw_registry_add_listener(p.registry, &p.registry_listener, &probe_registry_events, &p);
-
-    /* First round-trip: globals emitted, nodes/metadata bound, enum_params
-     * issued.  Second: the param events and metadata properties land. */
-    probe_roundtrip(&p);
-    probe_roundtrip(&p);
-
-    probe_teardown(&p);
-    pw_thread_loop_unlock(p.loop);
-    pw_thread_loop_stop(p.loop);
-    pw_context_destroy(p.context);
-    pw_thread_loop_destroy(p.loop);
-
-    /* The cap is enforced on the probe thread, which cannot log. */
-    if (p.truncated)
-        WARN("More than %u audio globals in the graph; the rest were ignored.\n",
-             PROBE_MAX_GLOBALS);
-    if (p.timed_out)
-        WARN("PipeWire probe timed out; the device list may be incomplete.\n");
 
     failed = p.core_error && list_empty(&p.nodes);
     if (failed)
@@ -1889,20 +1916,7 @@ static NTSTATUS pipewire_test_connect(void *args)
         pthread_mutex_unlock(&device_lists_mutex);
     }
 
-    LIST_FOR_EACH_ENTRY_SAFE(pn, next, &p.nodes, struct probe_node, entry)
-    {
-        list_remove(&pn->entry);
-        free(pn->node_name);
-        free(pn->display);
-        free(pn->nick);
-        free(pn);
-    }
-    LIST_FOR_EACH_ENTRY_SAFE(pd, pdnext, &p.devices, struct probe_device, entry)
-    {
-        list_remove(&pd->entry);
-        free(pd->sysfs_path);
-        free(pd);
-    }
+    free_probe(&p);
 
     if (failed)
         return STATUS_SUCCESS;
