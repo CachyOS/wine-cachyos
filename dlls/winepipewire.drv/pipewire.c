@@ -258,6 +258,7 @@ struct pw_phys_device
     UINT16 vendor_id, product_id;
     UINT index;
     GUID container_id;
+    UINT16 usb_vid, usb_pid;
     char pw_name[];
 };
 
@@ -1557,7 +1558,8 @@ static void create_usb_dev_container_id(uint64_t usec_init, uint16_t vid, uint16
     memcpy(out->Data4, &usec_init, sizeof(out->Data4));
 }
 
-static GUID get_container_id(const char *sysfs_path)
+/* Must match get_container_id_for_usb_udev_device in winebus.sys bus_udev.c. */
+static GUID get_container_id(const char *sysfs_path, UINT16 *usb_vid, UINT16 *usb_pid)
 {
     struct udev_device *audio_dev, *usb_dev;
     struct udev *udev = udev_new();
@@ -1598,6 +1600,8 @@ static GUID get_container_id(const char *sysfs_path)
     if ((tmp = udev_device_get_property_value(usb_dev, "DEVNUM")))
         dev_num = strtol(tmp, NULL, 10);
 
+    *usb_vid = vid;
+    *usb_pid = pid;
     create_usb_dev_container_id(init_time, vid, pid, bus_num, dev_num, &tmp_guid);
 
 exit:
@@ -1610,7 +1614,7 @@ exit:
     return tmp_guid;
 }
 #else
-static GUID get_container_id(const char *sysfs_path)
+static GUID get_container_id(const char *sysfs_path, UINT16 *usb_vid, UINT16 *usb_pid)
 {
     FIXME("No udev, can't get device data.\n");
     return GUID_NULL;
@@ -1659,11 +1663,12 @@ static void fill_device_path_info(struct pw_phys_device *dev, struct probe *p,
     dev->product_id = pd ? pd->product_id : 0;
     dev->index = index;
     dev->container_id = make_container_id(dev->bus, dev->vendor_id, dev->product_id, pn->node_name);
+    dev->usb_vid = dev->usb_pid = 0;
     /* winebus.sys derives the same udev id, which correlates the endpoint with
      * its HID sibling.  GUID_NULL means no usb_device parent: keep the hash. */
     if (dev->bus == PW_BUS_USB && pd && pd->sysfs_path)
     {
-        GUID id = get_container_id(pd->sysfs_path);
+        GUID id = get_container_id(pd->sysfs_path, &dev->usb_vid, &dev->usb_pid);
 
         if (!IsEqualGUID(&id, &GUID_NULL))
             dev->container_id = id;
@@ -2097,6 +2102,25 @@ static NTSTATUS pipewire_get_prop_value(void *args)
             params->value->vt = VT_CLSID;
             params->value->puuid = params->buffer;
             *params->value->puuid = dev->container_id;
+            params->result = S_OK;
+        }
+        goto done;
+    }
+    if (IsEqualPropertyKey(*params->prop, DEVPKEY_Device_InstanceId) && dev->usb_vid)
+    {
+        char id[32];
+        int len = sprintf(id, "{1}.USB\\VID_%04X&PID_%04X", dev->usb_vid, dev->usb_pid) + 1;
+
+        if (*params->buffer_size < len * sizeof(WCHAR))
+        {
+            params->result = E_NOT_SUFFICIENT_BUFFER;
+            *params->buffer_size = len * sizeof(WCHAR);
+        }
+        else
+        {
+            params->value->vt = VT_LPWSTR;
+            params->value->pwszVal = params->buffer;
+            ntdll_umbstowcs(id, len, params->value->pwszVal, len);
             params->result = S_OK;
         }
         goto done;
