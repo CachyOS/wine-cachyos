@@ -1669,12 +1669,28 @@ static BOOL add_endpoint_change(struct endpoint_change **changes, unsigned int *
 
 static void report_endpoint_changes(const struct endpoint_change *changes, unsigned int count)
 {
+    struct NotificationClientWrapper *wrapper;
     unsigned int i;
+    WCHAR *id;
 
     for (i = 0; i < count; i++)
+    {
         TRACE("%s %s state %#lx%s\n", changes[i].dev->flow == eRender ? "render" : "capture",
               debugstr_guid(&changes[i].dev->devguid), changes[i].state,
               changes[i].added ? " (added)" : "");
+        if (FAILED(MMDevice_GetId(&changes[i].dev->IMMDevice_iface, &id)))
+            continue;
+        EnterCriticalSection(&g_notif_lock);
+        LIST_FOR_EACH_ENTRY(wrapper, &g_notif_clients, struct NotificationClientWrapper, entry)
+        {
+            if (changes[i].added)
+                IMMNotificationClient_OnDeviceAdded(wrapper->client, id);
+            else
+                IMMNotificationClient_OnDeviceStateChanged(wrapper->client, id, changes[i].state);
+        }
+        LeaveCriticalSection(&g_notif_lock);
+        CoTaskMemFree(id);
+    }
 }
 
 static HRESULT get_driver_endpoints(struct get_endpoint_ids_params *params, EDataFlow flow)
