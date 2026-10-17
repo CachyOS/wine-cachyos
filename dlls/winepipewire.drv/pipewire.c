@@ -4453,6 +4453,7 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
     pipewire_not_implemented,
     pipewire_not_implemented,
     pipewire_not_implemented,
+    pipewire_not_implemented,
 };
 
 C_ASSERT(ARRAYSIZE(__wine_unix_call_funcs) == funcs_count);
@@ -4940,6 +4941,7 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
     pipewire_is_started,
     pipewire_wow64_get_prop_value,
     pipewire_midi_get_driver,
+    pipewire_not_implemented,
     pipewire_not_implemented,
     pipewire_not_implemented,
     pipewire_not_implemented,
