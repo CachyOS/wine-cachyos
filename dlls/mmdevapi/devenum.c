@@ -79,6 +79,15 @@ static const IMMEndpointVtbl MMEndpointVtbl;
 static MMDevEnumImpl enumerator;
 static struct list device_list = LIST_INIT(device_list);
 
+static CRITICAL_SECTION device_list_cs;
+static CRITICAL_SECTION_DEBUG device_list_cs_debug =
+{
+    0, 0, &device_list_cs,
+    { &device_list_cs_debug.ProcessLocksList, &device_list_cs_debug.ProcessLocksList },
+      0, 0, { (DWORD_PTR)(__FILE__ ": device_list_cs") }
+};
+static CRITICAL_SECTION device_list_cs = { &device_list_cs_debug, -1, 0, 0, 0, 0 };
+
 typedef struct MMDevColImpl
 {
     IMMDeviceCollection IMMDeviceCollection_iface;
@@ -150,6 +159,15 @@ struct device
 
 static struct list devices_cache = LIST_INIT( devices_cache );
 
+static CRITICAL_SECTION devices_cache_cs;
+static CRITICAL_SECTION_DEBUG devices_cache_cs_debug =
+{
+    0, 0, &devices_cache_cs,
+    { &devices_cache_cs_debug.ProcessLocksList, &devices_cache_cs_debug.ProcessLocksList },
+      0, 0, { (DWORD_PTR)(__FILE__ ": devices_cache_cs") }
+};
+static CRITICAL_SECTION devices_cache_cs = { &devices_cache_cs_debug, -1, 0, 0, 0, 0 };
+
 static void add_device_to_cache( const GUID *guid, const char *name, EDataFlow flow )
 {
     struct device *dev;
@@ -158,16 +176,21 @@ static void add_device_to_cache( const GUID *guid, const char *name, EDataFlow f
     dev->guid = *guid;
     dev->flow = flow;
     strcpy( dev->name, name );
+    EnterCriticalSection( &devices_cache_cs );
     list_add_tail( &devices_cache, &dev->entry );
+    LeaveCriticalSection( &devices_cache_cs );
 }
 
+/* Entries are freed only in MMDevEnum_Free, so the result stays valid. */
 static struct device *find_device_in_cache( const GUID *guid )
 {
-    struct device *dev;
+    struct device *dev, *ret = NULL;
 
+    EnterCriticalSection( &devices_cache_cs );
     LIST_FOR_EACH_ENTRY( dev, &devices_cache, struct device, entry )
-        if (IsEqualGUID( guid, &dev->guid )) return dev;
-    return NULL;
+        if (IsEqualGUID( guid, &dev->guid )) { ret = dev; break; }
+    LeaveCriticalSection( &devices_cache_cs );
+    return ret;
 }
 
 BOOL get_device_name_from_guid( const GUID *guid, char **name, EDataFlow *flow )
@@ -1149,6 +1172,7 @@ static HRESULT MMDevCol_Create(IMMDeviceCollection **ppv, EDataFlow flow, DWORD 
     This->devices_count = 0;
     *ppv = &This->IMMDeviceCollection_iface;
 
+    EnterCriticalSection(&device_list_cs);
     LIST_FOR_EACH_ENTRY(cur, &device_list, MMDevice, entry)
     {
         if ((cur->flow == flow || flow == eAll) && (cur->state & state))
@@ -1159,7 +1183,10 @@ static HRESULT MMDevCol_Create(IMMDeviceCollection **ppv, EDataFlow flow, DWORD 
     {
         This->devices = malloc(This->devices_count * sizeof(IMMDevice *));
         if (!This->devices_count)
+        {
+            LeaveCriticalSection(&device_list_cs);
             return E_OUTOFMEMORY;
+        }
 
         LIST_FOR_EACH_ENTRY(cur, &device_list, MMDevice, entry)
         {
@@ -1171,6 +1198,7 @@ static HRESULT MMDevCol_Create(IMMDeviceCollection **ppv, EDataFlow flow, DWORD 
             }
         }
     }
+    LeaveCriticalSection(&device_list_cs);
 
     return S_OK;
 }
@@ -1422,6 +1450,7 @@ static HRESULT WINAPI MMDevEnum_GetDevice(IMMDeviceEnumerator *iface, const WCHA
     if(!name || !device)
         return E_POINTER;
 
+    EnterCriticalSection(&device_list_cs);
     LIST_FOR_EACH_ENTRY(impl, &device_list, MMDevice, entry)
     {
         HRESULT hr;
@@ -1439,10 +1468,12 @@ static HRESULT WINAPI MMDevEnum_GetDevice(IMMDeviceEnumerator *iface, const WCHA
             CoTaskMemFree(str);
             IMMDevice_AddRef(dev);
             *device = dev;
+            LeaveCriticalSection(&device_list_cs);
             return S_OK;
         }
         CoTaskMemFree(str);
     }
+    LeaveCriticalSection(&device_list_cs);
     TRACE("Could not find device %s\n", debugstr_w(name));
     return E_INVALIDARG;
 }
