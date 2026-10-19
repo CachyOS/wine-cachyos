@@ -3160,9 +3160,17 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
     pw_properties_setf(props, PW_KEY_NODE_LATENCY, "%u/%u",
                        (UINT32)period_frames, stream->info.rate);
     /* The synthetic default endpoint has an empty name; leaving target.object
-     * unset there lets PIPEWIRE_NODE route it, as libpipewire does itself. */
+     * unset there lets PIPEWIRE_NODE route it, as libpipewire does itself.
+     * A named endpoint's stream must fail when that node is missing, as it does
+     * on Windows, instead of being linked to another sink by the session
+     * manager: dont-reconnect covers removal while linked, dont-fallback a
+     * target absent at connect. The resulting stream error invalidates it. */
     if (device && device[0])
+    {
         pw_properties_set(props, PW_KEY_TARGET_OBJECT, device);
+        pw_properties_set(props, PW_KEY_NODE_DONT_RECONNECT, "true");
+        pw_properties_set(props, "node.dont-fallback", "true");
+    }
     if (stream->dataflow == eCapture &&
         ((stream->flags & AUDCLNT_STREAMFLAGS_LOOPBACK) || capture_sink))
         pw_properties_set(props, PW_KEY_STREAM_CAPTURE_SINK, "true");
