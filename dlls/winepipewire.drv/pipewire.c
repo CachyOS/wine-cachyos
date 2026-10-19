@@ -281,9 +281,12 @@ static struct pw_core *pw_core_global;
 static struct spa_hook core_listener;
 static BOOL core_listener_added;
 static BOOL core_dead;
+static BOOL core_error;
 static int core_last_res;
 static char core_last_message[128];
 static BOOL core_error_logged;
+static int core_sync_seq;
+static BOOL core_synced;
 
 static struct list g_streams = LIST_INIT(g_streams); /* loop-lock protected */
 
@@ -902,7 +905,10 @@ static void on_core_error(void *data, uint32_t id, int seq, int res, const char 
     /* Runs on the PipeWire loop thread: pw API only, no ntdll/Wine calls. */
     if (id == PW_ID_CORE)
     {
-        core_dead = TRUE;
+        if (res == -EPIPE)
+            core_dead = TRUE;
+        else
+            core_error = TRUE;
         core_last_res = res;
         copy_cstr(core_last_message, sizeof(core_last_message), message);
         core_error_logged = FALSE;
@@ -911,10 +917,40 @@ static void on_core_error(void *data, uint32_t id, int seq, int res, const char 
     }
 }
 
+static void on_core_done(void *data, uint32_t id, int seq)
+{
+    if (id == PW_ID_CORE && seq == core_sync_seq)
+    {
+        core_synced = TRUE;
+        pw_thread_loop_signal(pw_loop_global, false);
+    }
+}
+
 static const struct pw_core_events core_events = {
     PW_VERSION_CORE_EVENTS,
+    .done = on_core_done,
     .error = on_core_error,
 };
+
+/* Called with the loop lock held.  The server also reports errors on the core
+ * for single messages over a live connection, such as "unknown resource" when
+ * a stream is released after the session manager destroyed its node.  Only a
+ * connection that stops answering is dead. */
+static BOOL core_answers(void)
+{
+    int seq = pw_core_sync(pw_core_global, PW_ID_CORE, core_sync_seq);
+
+    if (seq < 0)
+        return FALSE;
+    core_sync_seq = seq;
+    core_synced = FALSE;
+    while (!core_synced && !core_dead)
+    {
+        if (pw_thread_loop_timed_wait(pw_loop_global, 2))
+            return FALSE;
+    }
+    return core_synced;
+}
 
 /* Called with the loop lock held. */
 static HRESULT pipewire_connect(const WCHAR *appname)
@@ -922,6 +958,19 @@ static HRESULT pipewire_connect(const WCHAR *appname)
     struct pw_properties *props = NULL;
     char *app;
 
+    if (pw_core_global && core_error && !core_dead)
+    {
+        if (core_answers())
+        {
+            WARN("core error (res %d: %s), connection still up.\n",
+                 core_last_res, debugstr_a(core_last_message[0] ? core_last_message : NULL));
+            core_error = FALSE;
+            core_last_res = 0;
+            core_last_message[0] = '\0';
+        }
+        else
+            core_dead = TRUE;
+    }
     if (pw_core_global && !core_dead)
         return S_OK;
 
@@ -971,6 +1020,7 @@ static HRESULT pipewire_connect(const WCHAR *appname)
         pw_core_global = NULL;
     }
     core_dead = FALSE;
+    core_error = FALSE;
     core_last_res = 0;
     core_last_message[0] = '\0';
     core_error_logged = FALSE;
