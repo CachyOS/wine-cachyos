@@ -141,7 +141,6 @@ static void wayland_win_data_get_config(struct wayland_win_data *data,
     DWORD style, exstyle;
 
     conf->rect = data->rects.visible;
-    conf->window_rect = data->rects.window;
     conf->client_rect = data->rects.client;
     style = NtUserGetWindowLongW(data->hwnd, GWL_STYLE);
     exstyle = NtUserGetWindowLongW(data->hwnd, GWL_EXSTYLE);
@@ -180,6 +179,30 @@ static void reapply_cursor_clipping(void)
     NtUserSetThreadDpiAwarenessContext(context);
 }
 
+static void wayland_surface_reparent_popups(struct wayland_surface *surface)
+{
+    HWND hwnd = surface->hwnd;
+    struct wayland_win_data *entry;
+    struct wayland_surface *entry_surface;
+
+    if (!hwnd) return;
+
+    /* a popup could be the root element in its owned window subtree (composed of actual owners and owner_hints)
+     * This means that all children of this subtree need to have their role cleared before the root can destroy itself
+     * As soon as the root is finished destroying itself,
+     * the win_data lock is released and the other windows will reparent */
+    RB_FOR_EACH_ENTRY(entry, &win_data_rb, struct wayland_win_data, entry)
+    {
+        if (entry->hwnd == hwnd) continue;
+        if (!(entry_surface = entry->wayland_surface)) continue;
+        if (entry_surface->owner_hwnd != hwnd) continue;
+        if (!wayland_surface_is_popup(entry_surface)) continue;
+
+        wayland_surface_clear_role(entry_surface);
+        NtUserPostMessage(entry_surface->hwnd, WM_WINE_UPDATEWINDOWSTATE, 0, 0);
+    }
+}
+
 static BOOL wayland_win_data_create_wayland_surface(struct wayland_win_data *data, struct wayland_surface *owner_surface)
 {
     struct wayland_surface *surface;
@@ -211,6 +234,7 @@ static BOOL wayland_win_data_create_wayland_surface(struct wayland_win_data *dat
          */
         data->wayland_surface = NULL;
         update_client_surfaces(data->hwnd);
+        wayland_surface_reparent_popups(surface);
         wayland_surface_destroy(surface);
     }
 
@@ -314,8 +338,7 @@ static void wayland_surface_update_state_toplevel(struct wayland_surface *surfac
                     xdg_toplevel_unset_fullscreen(surface->xdg_toplevel);
                     wl_display_flush(process_wayland.wl_display);
                 }
-                else
-                    goto skip_fullscreen;
+                else goto skip_fullscreen;
             }
 
             xdg_toplevel_set_fullscreen(surface->xdg_toplevel, wl_output);
@@ -461,6 +484,7 @@ void WAYLAND_DestroyWindow(HWND hwnd)
     TRACE("%p\n", hwnd);
 
     if (!(data = wayland_win_data_get(hwnd))) return;
+    if (data->wayland_surface) wayland_surface_reparent_popups(data->wayland_surface);
     wayland_win_data_destroy(data);
 }
 
@@ -512,6 +536,7 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UIN
 
     if (!surface && data->wayland_surface)
     {
+        wayland_surface_reparent_popups(data->wayland_surface);
         wayland_surface_destroy(data->wayland_surface);
         data->wayland_surface = NULL;
     }
@@ -910,7 +935,6 @@ BOOL WAYLAND_GetWindowStyleMasks(HWND hwnd, UINT style, UINT ex_style,
     *style_mask = *ex_style_mask = 0;
 
     if (!process_wayland.zxdg_decoration_manager_v1) return FALSE;
-
     if (!(data = wayland_win_data_get(hwnd))) return FALSE;
 
     if ((surface = data->wayland_surface) && wayland_surface_is_toplevel(surface))
