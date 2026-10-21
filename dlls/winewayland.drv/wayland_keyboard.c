@@ -933,20 +933,6 @@ static void keyboard_handle_enter(void *private, struct wl_keyboard *wl_keyboard
     wayland_refresh_activation_token(hwnd);
 }
 
-static BOOL wayland_disable_focus_loss(void)
-{
-    static int disabled = -1;
-
-    if (disabled == -1)
-    {
-        const char *env = getenv("WAYLANDDRV_FOCUS_LOSS");
-        if ((disabled = env && !atoi(env)))
-            FIXME("Focus loss explicitly disabled!\n");
-    }
-
-    return disabled;
-}
-
 static void keyboard_handle_leave(void *private, struct wl_keyboard *wl_keyboard,
                                   uint32_t serial, struct wl_surface *wl_surface)
 {
@@ -978,8 +964,7 @@ static void keyboard_handle_leave(void *private, struct wl_keyboard *wl_keyboard
 
         if (hwnd != NtUserGetForegroundWindow()) return;
 
-        if (!wayland_disable_focus_loss())
-            NtUserPostMessage(hwnd, WM_WINE_WINDOW_STATE_CHANGED, 0, 0);
+        NtUserPostMessage(hwnd, WM_WINE_WINDOW_STATE_CHANGED, 0, 0);
     }
 }
 
