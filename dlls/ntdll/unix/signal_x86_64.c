@@ -175,6 +175,16 @@ __ASM_GLOBAL_FUNC( modify_ldt,
 #define PR_SYS_DISPATCH_ON           1
 #endif
 
+/* Syscall User Dispatch direct-upcall extension (CachyOS kernels).  The
+ * option number is a magic value and the mode carries bit 31, so kernels
+ * without the extension return EINVAL and we stay on the SIGSYS path. */
+#ifndef PR_SYS_DISPATCH_UPCALL_EXCLUSIVE_ON
+#define PR_SYS_DISPATCH_UPCALL_EXCLUSIVE_ON (0x80000000U | 3)
+#endif
+#ifndef PR_SET_SYSCALL_USER_DISPATCH_HANDLER
+#define PR_SET_SYSCALL_USER_DISPATCH_HANDLER 0x53554448  /* "SUDH" */
+#endif
+
 #ifndef FP_XSTATE_MAGIC1
 #define FP_XSTATE_MAGIC1 0x46505853
 #endif
@@ -538,7 +548,10 @@ static inline struct amd64_thread_data *amd64_thread_data(void)
 static unsigned int frame_size;
 static unsigned int xstate_size = sizeof(XSAVE_AREA_HEADER);
 static UINT64 xstate_extended_features;
-static LONG syscall_dispatch_enabled = TRUE;
+LONG syscall_dispatch_enabled = TRUE;  /* not static: read by __wine_syscall_dispatcher_upcall */
+static LONG syscall_dispatch_upcall = FALSE;  /* kernel supports PR_SYS_DISPATCH_UPCALL */
+
+extern void __wine_syscall_dispatcher_upcall(void);
 
 #if defined(__linux__) || defined(__APPLE__)
 static inline TEB *get_current_teb(void)
@@ -3095,6 +3108,22 @@ void signal_init_process(void)
             syscall_dispatch_enabled = FALSE;
         }
     }
+
+    /*
+     * Kernels with the SUD direct-upcall extension can resume a blocked
+     * syscall at a user handler instead of delivering SIGSYS
+     * (PR_SET_SYSCALL_USER_DISPATCH_HANDLER registers the handler, mode
+     * PR_SYS_DISPATCH_UPCALL_EXCLUSIVE_ON arms it; both per thread, see
+     * init_syscall_frame).  Probe once here; other kernels return EINVAL
+     * and we stay on the SIGSYS path.
+     */
+    if (syscall_dispatch_enabled &&
+        prctl( PR_SET_SYSCALL_USER_DISPATCH_HANDLER,
+               (unsigned long)__wine_syscall_dispatcher_upcall, 0, 0, 0 ) == 0)
+    {
+        syscall_dispatch_upcall = TRUE;
+        TRACE_(seh)( "SUD direct-upcall mode available\n" );
+    }
 #endif
 
     emulate_cpuid();
@@ -3131,9 +3160,22 @@ __attribute__((used)) void init_syscall_frame( LPTHREAD_START_ROUTINE entry, voi
         arch_prctl( ARCH_GET_FS, &thread_data->pthread_teb );
         alloc_fs_sel( fs32_sel >> 3, get_wow_teb( teb ));
     }
-    if (syscall_dispatch_enabled && prctl( PR_SET_SYSCALL_USER_DISPATCH, PR_SYS_DISPATCH_ON,
-                                           libc_addr, libc_size, &thread_data->syscall_dispatch ) < 0)
-        WARN_(seh)( "could not enable syscall user dispatch\n" );
+    if (syscall_dispatch_enabled)
+    {
+        int err = -1;
+        /* the upcall handler is per-thread kernel state: register it for
+         * every thread before arming; not compatible with the native
+         * syscall hack, which relies on sigsys_handler() */
+        if (syscall_dispatch_upcall && !hack_native_syscalls &&
+            !prctl( PR_SET_SYSCALL_USER_DISPATCH_HANDLER,
+                    (unsigned long)__wine_syscall_dispatcher_upcall, 0, 0, 0 ))
+            err = prctl( PR_SET_SYSCALL_USER_DISPATCH, PR_SYS_DISPATCH_UPCALL_EXCLUSIVE_ON,
+                         libc_addr, libc_size, &thread_data->syscall_dispatch );
+        if (err < 0)
+            err = prctl( PR_SET_SYSCALL_USER_DISPATCH, PR_SYS_DISPATCH_ON,
+                         libc_addr, libc_size, &thread_data->syscall_dispatch );
+        if (err < 0) WARN_(seh)( "could not enable syscall user dispatch\n" );
+    }
 #elif defined (__FreeBSD__) || defined (__FreeBSD_kernel__)
     amd64_set_gsbase( teb );
 #elif defined(__NetBSD__)
@@ -3581,6 +3623,82 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher_instrumentation,
                    __ASM_CFI(".cfi_adjust_cfa_offset -8\n\t")
                    "movl $0x10000,0xb4(%rcx)\n\t"    /* frame->restore_flags <- RESTORE_FLAGS_INSTRUMENTATION */
                    "jmp " __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_prolog_end") )
+
+/***********************************************************************
+ *           __wine_syscall_dispatcher_upcall
+ *
+ * Entry point registered via PR_SET_SYSCALL_USER_DISPATCH_HANDLER.
+ * Kernel contract on entry (same as the SYSCALL instruction):
+ *   %rcx = address of the instruction after `syscall`
+ *   %r11 = RFLAGS at the syscall
+ *   %rax = syscall number
+ *   all other registers = user state at the syscall site
+ *   no signal frame, no FPU save, signal mask unchanged.
+ * The kernel keeps delivering SIGSYS for ia32 syscalls and when TF is
+ * set, so sigsys_handler() still covers those cases.
+ *
+ * %rax holds the syscall id that prolog_end stores, so %rcx/%r11 are
+ * shuffled through a 16-byte stack scratch.  Only PE code traps while
+ * dispatch is enabled, and the Win64 ABI has no red zone.
+ *
+ * Once signal_disable_syscall_dispatch() has run (a Unix .so builtin was
+ * loaded), traps may come from native code: do what sigsys_handler()
+ * does, i.e. turn dispatch off for this thread and re-execute the
+ * syscall natively.  That path skips the SysV red zone, opens the
+ * selector so its own prctl() is not dispatched, and preserves every
+ * register the retried syscall can observe.
+ */
+__ASM_GLOBAL_FUNC( __wine_syscall_dispatcher_upcall,
+                   "cmpl $0," __ASM_NAME("syscall_dispatch_enabled") "(%rip)\n\t"
+                   "je 2f\n\t"
+                   "subq $16,%rsp\n\t"
+                   "movq %rcx,0(%rsp)\n\t"             /* address after the syscall */
+                   "movq %r11,8(%rsp)\n\t"             /* rflags */
+                   "movq %gs:0x378,%rcx\n\t"           /* thread_data->syscall_frame */
+                   "movq 0(%rsp),%r11\n\t"
+                   "movq %r11,0x10(%rcx)\n\t"          /* frame->rcx */
+                   "addq $0xb,%r11\n\t"
+                   "movq %r11,0x70(%rcx)\n\t"          /* frame->rip, prolog_end subtracts 0xb */
+                   "movq 8(%rsp),%r11\n\t"
+                   "movq %r11,0x80(%rcx)\n\t"          /* frame->eflags */
+                   "movl $0,0xb4(%rcx)\n\t"            /* frame->restore_flags */
+                   "movq %gs:0x330,%r11\n\t"           /* thread_data->instrumentation_callback */
+                   "cmpq $0,(%r11)\n\t"
+                   "je 1f\n\t"
+                   "movl $0x10000,0xb4(%rcx)\n"        /* RESTORE_FLAGS_INSTRUMENTATION */
+                   "1:\tmovq 8(%rsp),%r11\n\t"
+                   "addq $16,%rsp\n\t"
+                   "jmp " __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_prolog_end") "\n"
+                   /* dispatch was disabled: prctl(OFF) for this thread and retry natively */
+                   "2:\tleaq -128(%rsp),%rsp\n\t"      /* skip the SysV red zone */
+                   "pushq %r11\n\t"
+                   "pushq %rcx\n\t"
+                   "pushq %rax\n\t"
+                   "pushq %rdi\n\t"
+                   "pushq %rsi\n\t"
+                   "pushq %rdx\n\t"
+                   "pushq %r10\n\t"
+                   "pushq %r8\n\t"
+                   "movb $0,%gs:0x340\n\t"             /* thread_data->syscall_dispatch = ALLOW */
+                   "movl $157,%eax\n\t"                /* __NR_prctl */
+                   "movl $59,%edi\n\t"                 /* PR_SET_SYSCALL_USER_DISPATCH */
+                   "xorl %esi,%esi\n\t"                /* PR_SYS_DISPATCH_OFF */
+                   "xorl %edx,%edx\n\t"
+                   "xorl %r10d,%r10d\n\t"
+                   "xorl %r8d,%r8d\n\t"
+                   "syscall\n\t"
+                   "movb $1,%gs:0x340\n\t"             /* thread_data->syscall_dispatch = BLOCK */
+                   "popq %r8\n\t"
+                   "popq %r10\n\t"
+                   "popq %rdx\n\t"
+                   "popq %rsi\n\t"
+                   "popq %rdi\n\t"
+                   "popq %rax\n\t"
+                   "popq %rcx\n\t"
+                   "subq $2,%rcx\n\t"                  /* back to the syscall instruction */
+                   "popfq\n\t"
+                   "leaq 128(%rsp),%rsp\n\t"
+                   "jmp *%rcx" )
 
 
 /***********************************************************************
