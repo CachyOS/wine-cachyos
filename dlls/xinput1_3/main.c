@@ -98,6 +98,9 @@ static HANDLE start_event;
 static HANDLE update_event;
 static HANDLE steam_overlay_event;
 
+static HKEY deviface_key;
+static HANDLE key_changed_event;
+
 static SRWLOCK state_lock = SRWLOCK_INIT;
 static XINPUT_STATE current_state[XUSER_MAX_COUNT];
 
@@ -535,6 +538,36 @@ static void update_controller_list(void)
 
     EnterCriticalSection(&xinput_cs);
 
+    if (deviface_key)
+    {
+        if (WaitForSingleObject(key_changed_event, 0) == WAIT_TIMEOUT)
+        {
+            LeaveCriticalSection(&xinput_cs);
+            return;
+        }
+        TRACE("key changed.\n");
+    }
+    else
+    {
+        WCHAR keystr[256];
+
+        swprintf(keystr, ARRAY_SIZE(keystr), L"System\\CurrentControlSet\\Control\\DeviceClasses\\{%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}",
+                 guid.Data1,
+                 guid.Data2, guid.Data3, guid.Data4[0], guid.Data4[1], guid.Data4[2], guid.Data4[3],
+                 guid.Data4[4], guid.Data4[5], guid.Data4[6], guid.Data4[7]);
+
+        if (RegOpenKeyW(HKEY_LOCAL_MACHINE, keystr, &deviface_key))
+        {
+            TRACE("Failed to open key %s.\n", debugstr_w(keystr));
+            LeaveCriticalSection(&xinput_cs);
+            return;
+        }
+        key_changed_event = CreateEventW(NULL, FALSE, FALSE, NULL);
+        TRACE("opened key %p, event %p.\n", deviface_key, key_changed_event);
+    }
+    if (RegNotifyChangeKeyValue(deviface_key, TRUE, REG_NOTIFY_CHANGE_NAME | REG_NOTIFY_CHANGE_LAST_SET, key_changed_event, TRUE))
+        ERR("RegNotifyChangeKeyValue failed.\n");
+
     set = SetupDiGetClassDevsW(&guid, NULL, NULL, DIGCF_DEVICEINTERFACE | DIGCF_PRESENT);
     detail->cbSize = sizeof(*detail);
 
@@ -850,7 +883,6 @@ DWORD WINAPI DECLSPEC_HOTPATCH XInputSetState(DWORD index, XINPUT_VIBRATION *vib
 static DWORD xinput_get_state(DWORD index, XINPUT_STATE *state)
 {
     DWORD ret;
-    const char *sgi;
 
     if (!state) return ERROR_BAD_ARGUMENTS;
 
@@ -860,8 +892,6 @@ static DWORD xinput_get_state(DWORD index, XINPUT_STATE *state)
 
     ret = get_current_state(index, state) ? ERROR_SUCCESS : ERROR_DEVICE_NOT_CONNECTED;
     if (ret == ERROR_SUCCESS) goto done;
-    sgi = getenv("SteamGameId");
-    if (sgi && (!strcmp(sgi, "298110") || !strcmp(sgi, "292030"))) goto done;
 
     EnterCriticalSection(&xinput_cs);
     update_controller_list();
