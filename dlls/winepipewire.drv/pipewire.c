@@ -258,6 +258,7 @@ struct pw_phys_device
     UINT16 vendor_id, product_id;
     UINT index;
     GUID container_id;
+    UINT16 usb_vid, usb_pid;
     char pw_name[];
 };
 
@@ -280,9 +281,12 @@ static struct pw_core *pw_core_global;
 static struct spa_hook core_listener;
 static BOOL core_listener_added;
 static BOOL core_dead;
+static BOOL core_error;
 static int core_last_res;
 static char core_last_message[128];
 static BOOL core_error_logged;
+static int core_sync_seq;
+static BOOL core_synced;
 
 static struct list g_streams = LIST_INIT(g_streams); /* loop-lock protected */
 
@@ -901,7 +905,10 @@ static void on_core_error(void *data, uint32_t id, int seq, int res, const char 
     /* Runs on the PipeWire loop thread: pw API only, no ntdll/Wine calls. */
     if (id == PW_ID_CORE)
     {
-        core_dead = TRUE;
+        if (res == -EPIPE)
+            core_dead = TRUE;
+        else
+            core_error = TRUE;
         core_last_res = res;
         copy_cstr(core_last_message, sizeof(core_last_message), message);
         core_error_logged = FALSE;
@@ -910,10 +917,40 @@ static void on_core_error(void *data, uint32_t id, int seq, int res, const char 
     }
 }
 
+static void on_core_done(void *data, uint32_t id, int seq)
+{
+    if (id == PW_ID_CORE && seq == core_sync_seq)
+    {
+        core_synced = TRUE;
+        pw_thread_loop_signal(pw_loop_global, false);
+    }
+}
+
 static const struct pw_core_events core_events = {
     PW_VERSION_CORE_EVENTS,
+    .done = on_core_done,
     .error = on_core_error,
 };
+
+/* Called with the loop lock held.  The server also reports errors on the core
+ * for single messages over a live connection, such as "unknown resource" when
+ * a stream is released after the session manager destroyed its node.  Only a
+ * connection that stops answering is dead. */
+static BOOL core_answers(void)
+{
+    int seq = pw_core_sync(pw_core_global, PW_ID_CORE, core_sync_seq);
+
+    if (seq < 0)
+        return FALSE;
+    core_sync_seq = seq;
+    core_synced = FALSE;
+    while (!core_synced && !core_dead)
+    {
+        if (pw_thread_loop_timed_wait(pw_loop_global, 2))
+            return FALSE;
+    }
+    return core_synced;
+}
 
 /* Called with the loop lock held. */
 static HRESULT pipewire_connect(const WCHAR *appname)
@@ -921,6 +958,19 @@ static HRESULT pipewire_connect(const WCHAR *appname)
     struct pw_properties *props = NULL;
     char *app;
 
+    if (pw_core_global && core_error && !core_dead)
+    {
+        if (core_answers())
+        {
+            WARN("core error (res %d: %s), connection still up.\n",
+                 core_last_res, debugstr_a(core_last_message[0] ? core_last_message : NULL));
+            core_error = FALSE;
+            core_last_res = 0;
+            core_last_message[0] = '\0';
+        }
+        else
+            core_dead = TRUE;
+    }
     if (pw_core_global && !core_dead)
         return S_OK;
 
@@ -970,6 +1020,7 @@ static HRESULT pipewire_connect(const WCHAR *appname)
         pw_core_global = NULL;
     }
     core_dead = FALSE;
+    core_error = FALSE;
     core_last_res = 0;
     core_last_message[0] = '\0';
     core_error_logged = FALSE;
@@ -1022,12 +1073,152 @@ out:
     return STATUS_SUCCESS;
 }
 
+/* Endpoint watcher.  The callbacks run on the pw_loop_global thread with the
+ * loop lock held: libc, spa and pw only, never ntdll/Wine (no TRACE), and no
+ * mutex, so a suspended waiter can never stall the loop that streams share.
+ * They publish through atomics and a broadcast.  A wakeup lost between the
+ * waiter's check and its wait costs one WATCH_SLICE_NS slice. */
+#define WATCH_MAX_NODES 256
+#define WATCH_QUIET_NS  (100 * 1000000ull)
+#define WATCH_CAP_NS    (2000 * 1000000ull)
+#define WATCH_SLICE_NS  (1000 * 1000000ull)
+
+static pthread_mutex_t watch_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t watch_cond;
+static pthread_once_t watch_cond_once = PTHREAD_ONCE_INIT;
+static UINT64 watch_generation;     /* atomic */
+static UINT64 watch_last_event_ns;  /* atomic */
+static int watch_quit;              /* atomic */
+static int watch_dead;              /* atomic */
+
+/* Loop lock protected. */
+static struct pw_core *watch_core;
+static struct pw_registry *watch_registry;
+static struct spa_hook watch_core_listener, watch_registry_listener;
+static uint32_t watch_node_ids[WATCH_MAX_NODES];
+static unsigned int watch_node_count;
+static BOOL watch_overflow, watch_ready;
+static int watch_sync_seq;
+
+static UINT64 monotonic_ns(void)
+{
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (UINT64)ts.tv_sec * 1000000000 + ts.tv_nsec;
+}
+
+static void watch_bump(void)
+{
+    __atomic_store_n(&watch_last_event_ns, monotonic_ns(), __ATOMIC_RELEASE);
+    __atomic_add_fetch(&watch_generation, 1, __ATOMIC_RELEASE);
+    pthread_cond_broadcast(&watch_cond);
+}
+
+static void on_watch_global(void *data, uint32_t id, uint32_t permissions, const char *type,
+                            uint32_t version, const struct spa_dict *props)
+{
+    const char *media_class;
+
+    if (!type || !props || strcmp(type, PW_TYPE_INTERFACE_Node))
+        return;
+    if (!(media_class = spa_dict_lookup(props, PW_KEY_MEDIA_CLASS)))
+        return;
+    if (strcmp(media_class, "Audio/Sink") && strcmp(media_class, "Audio/Source"))
+        return;
+    if (watch_node_count < WATCH_MAX_NODES)
+        watch_node_ids[watch_node_count++] = id;
+    else
+        watch_overflow = TRUE;
+    if (watch_ready)
+        watch_bump();
+}
+
+static void on_watch_global_remove(void *data, uint32_t id)
+{
+    unsigned int i;
+
+    for (i = 0; i < watch_node_count; i++)
+        if (watch_node_ids[i] == id)
+            break;
+    if (i < watch_node_count)
+        watch_node_ids[i] = watch_node_ids[--watch_node_count];
+    else if (!watch_overflow)
+        return;
+    if (watch_ready)
+        watch_bump();
+}
+
+static const struct pw_registry_events watch_registry_events = {
+    PW_VERSION_REGISTRY_EVENTS,
+    .global = on_watch_global,
+    .global_remove = on_watch_global_remove,
+};
+
+/* The first done ends the initial burst.  It also counts as a change, so the
+ * first wait after a (re)start refreshes a cache that may predate it. */
+static void on_watch_core_done(void *data, uint32_t id, int seq)
+{
+    if (id != PW_ID_CORE || seq != watch_sync_seq || watch_ready)
+        return;
+    watch_ready = TRUE;
+    watch_bump();
+}
+
+static void on_watch_core_error(void *data, uint32_t id, int seq, int res, const char *message)
+{
+    if (id != PW_ID_CORE)
+        return;
+    __atomic_store_n(&watch_dead, TRUE, __ATOMIC_RELEASE);
+    pthread_cond_broadcast(&watch_cond);
+}
+
+static const struct pw_core_events watch_core_events = {
+    PW_VERSION_CORE_EVENTS,
+    .done = on_watch_core_done,
+    .error = on_watch_core_error,
+};
+
+/* Called with the loop lock held. */
+static void watch_teardown(void)
+{
+    if (watch_registry)
+    {
+        spa_hook_remove(&watch_registry_listener);
+        pw_proxy_destroy((struct pw_proxy *)watch_registry);
+        watch_registry = NULL;
+    }
+    if (watch_core)
+    {
+        spa_hook_remove(&watch_core_listener);
+        pw_core_disconnect(watch_core);
+        watch_core = NULL;
+    }
+    watch_node_count = 0;
+    watch_overflow = watch_ready = FALSE;
+    __atomic_store_n(&watch_dead, FALSE, __ATOMIC_RELEASE);
+}
+
+static void watch_cond_init(void)
+{
+    pthread_condattr_t attr;
+
+    pthread_condattr_init(&attr);
+    pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+    pthread_cond_init(&watch_cond, &attr);
+    pthread_condattr_destroy(&attr);
+}
+
 static NTSTATUS pipewire_main_loop_stop(void *args)
 {
     pthread_mutex_lock(&pw_init_mutex);
     if (pw_loop_global)
     {
         pw_thread_loop_lock(pw_loop_global);
+        watch_teardown();
+        __atomic_store_n(&watch_quit, TRUE, __ATOMIC_RELEASE);
+        pthread_once(&watch_cond_once, watch_cond_init);
+        pthread_cond_broadcast(&watch_cond);
         if (pw_core_global)
         {
             if (core_listener_added)
@@ -1557,7 +1748,8 @@ static void create_usb_dev_container_id(uint64_t usec_init, uint16_t vid, uint16
     memcpy(out->Data4, &usec_init, sizeof(out->Data4));
 }
 
-static GUID get_container_id(const char *sysfs_path)
+/* Must match get_container_id_for_usb_udev_device in winebus.sys bus_udev.c. */
+static GUID get_container_id(const char *sysfs_path, UINT16 *usb_vid, UINT16 *usb_pid)
 {
     struct udev_device *audio_dev, *usb_dev;
     struct udev *udev = udev_new();
@@ -1598,6 +1790,8 @@ static GUID get_container_id(const char *sysfs_path)
     if ((tmp = udev_device_get_property_value(usb_dev, "DEVNUM")))
         dev_num = strtol(tmp, NULL, 10);
 
+    *usb_vid = vid;
+    *usb_pid = pid;
     create_usb_dev_container_id(init_time, vid, pid, bus_num, dev_num, &tmp_guid);
 
 exit:
@@ -1610,7 +1804,7 @@ exit:
     return tmp_guid;
 }
 #else
-static GUID get_container_id(const char *sysfs_path)
+static GUID get_container_id(const char *sysfs_path, UINT16 *usb_vid, UINT16 *usb_pid)
 {
     FIXME("No udev, can't get device data.\n");
     return GUID_NULL;
@@ -1659,11 +1853,12 @@ static void fill_device_path_info(struct pw_phys_device *dev, struct probe *p,
     dev->product_id = pd ? pd->product_id : 0;
     dev->index = index;
     dev->container_id = make_container_id(dev->bus, dev->vendor_id, dev->product_id, pn->node_name);
+    dev->usb_vid = dev->usb_pid = 0;
     /* winebus.sys derives the same udev id, which correlates the endpoint with
      * its HID sibling.  GUID_NULL means no usb_device parent: keep the hash. */
     if (dev->bus == PW_BUS_USB && pd && pd->sysfs_path)
     {
-        GUID id = get_container_id(pd->sysfs_path);
+        GUID id = get_container_id(pd->sysfs_path, &dev->usb_vid, &dev->usb_pid);
 
         if (!IsEqualGUID(&id, &GUID_NULL))
             dev->container_id = id;
@@ -1794,12 +1989,95 @@ static void probe_teardown(struct probe *p)
     }
 }
 
+/* FALSE when no probe connection could be made; p then holds nothing to free. */
+static BOOL run_probe(struct probe *p)
+{
+    memset(p, 0, sizeof(*p));
+    list_init(&p->nodes);
+    list_init(&p->devices);
+
+    if (!(p->loop = pw_thread_loop_new("winepipewire-probe", NULL)))
+    {
+        ERR("Failed to create PipeWire probe loop; SPA plugins may be missing "
+            "(set SPA_PLUGIN_DIR to the directory containing spa-0.2).\n");
+        return FALSE;
+    }
+    if (!(p->context = pw_context_new(pw_thread_loop_get_loop(p->loop), NULL, 0)))
+    {
+        ERR("Failed to create PipeWire probe context\n");
+        pw_thread_loop_destroy(p->loop);
+        return FALSE;
+    }
+
+    if (pw_thread_loop_start(p->loop) < 0)
+    {
+        ERR("Failed to start PipeWire probe loop\n");
+        pw_context_destroy(p->context);
+        pw_thread_loop_destroy(p->loop);
+        return FALSE;
+    }
+    pw_thread_loop_lock(p->loop);
+
+    if (!(p->core = pw_context_connect(p->context, NULL, 0)))
+    {
+        WARN("pw_context_connect failed during probe.\n");
+        pw_thread_loop_unlock(p->loop);
+        pw_thread_loop_stop(p->loop);
+        pw_context_destroy(p->context);
+        pw_thread_loop_destroy(p->loop);
+        return FALSE;
+    }
+
+    pw_core_add_listener(p->core, &p->core_listener, &probe_core_events, p);
+    p->registry = pw_core_get_registry(p->core, PW_VERSION_REGISTRY, 0);
+    if (p->registry)
+        pw_registry_add_listener(p->registry, &p->registry_listener, &probe_registry_events, p);
+
+    /* First round-trip: globals emitted, nodes/metadata bound, enum_params
+     * issued.  Second: the param events and metadata properties land. */
+    probe_roundtrip(p);
+    probe_roundtrip(p);
+
+    probe_teardown(p);
+    pw_thread_loop_unlock(p->loop);
+    pw_thread_loop_stop(p->loop);
+    pw_context_destroy(p->context);
+    pw_thread_loop_destroy(p->loop);
+
+    /* The cap is enforced on the probe thread, which cannot log. */
+    if (p->truncated)
+        WARN("More than %u audio globals in the graph; the rest were ignored.\n",
+             PROBE_MAX_GLOBALS);
+    if (p->timed_out)
+        WARN("PipeWire probe timed out; the device list may be incomplete.\n");
+    return TRUE;
+}
+
+static void free_probe(struct probe *p)
+{
+    struct probe_node *pn, *next;
+    struct probe_device *pd, *pdnext;
+
+    LIST_FOR_EACH_ENTRY_SAFE(pn, next, &p->nodes, struct probe_node, entry)
+    {
+        list_remove(&pn->entry);
+        free(pn->node_name);
+        free(pn->display);
+        free(pn->nick);
+        free(pn);
+    }
+    LIST_FOR_EACH_ENTRY_SAFE(pd, pdnext, &p->devices, struct probe_device, entry)
+    {
+        list_remove(&pd->entry);
+        free(pd->sysfs_path);
+        free(pd);
+    }
+}
+
 static NTSTATUS pipewire_test_connect(void *args)
 {
     struct test_connect_params *params = args;
     struct probe p;
-    struct probe_node *pn, *next;
-    struct probe_device *pd, *pdnext;
     BOOL failed;
 
     pthread_mutex_lock(&device_lists_mutex);
@@ -1811,64 +2089,8 @@ static NTSTATUS pipewire_test_connect(void *args)
 
     params->priority = Priority_Unavailable;
 
-    memset(&p, 0, sizeof(p));
-    list_init(&p.nodes);
-    list_init(&p.devices);
-
-    if (!(p.loop = pw_thread_loop_new("winepipewire-probe", NULL)))
-    {
-        ERR("Failed to create PipeWire probe loop; SPA plugins may be missing "
-            "(set SPA_PLUGIN_DIR to the directory containing spa-0.2).\n");
+    if (!run_probe(&p))
         return STATUS_SUCCESS;
-    }
-    if (!(p.context = pw_context_new(pw_thread_loop_get_loop(p.loop), NULL, 0)))
-    {
-        ERR("Failed to create PipeWire probe context\n");
-        pw_thread_loop_destroy(p.loop);
-        return STATUS_SUCCESS;
-    }
-
-    if (pw_thread_loop_start(p.loop) < 0)
-    {
-        ERR("Failed to start PipeWire probe loop\n");
-        pw_context_destroy(p.context);
-        pw_thread_loop_destroy(p.loop);
-        return STATUS_SUCCESS;
-    }
-    pw_thread_loop_lock(p.loop);
-
-    if (!(p.core = pw_context_connect(p.context, NULL, 0)))
-    {
-        WARN("pw_context_connect failed during probe.\n");
-        pw_thread_loop_unlock(p.loop);
-        pw_thread_loop_stop(p.loop);
-        pw_context_destroy(p.context);
-        pw_thread_loop_destroy(p.loop);
-        return STATUS_SUCCESS;
-    }
-
-    pw_core_add_listener(p.core, &p.core_listener, &probe_core_events, &p);
-    p.registry = pw_core_get_registry(p.core, PW_VERSION_REGISTRY, 0);
-    if (p.registry)
-        pw_registry_add_listener(p.registry, &p.registry_listener, &probe_registry_events, &p);
-
-    /* First round-trip: globals emitted, nodes/metadata bound, enum_params
-     * issued.  Second: the param events and metadata properties land. */
-    probe_roundtrip(&p);
-    probe_roundtrip(&p);
-
-    probe_teardown(&p);
-    pw_thread_loop_unlock(p.loop);
-    pw_thread_loop_stop(p.loop);
-    pw_context_destroy(p.context);
-    pw_thread_loop_destroy(p.loop);
-
-    /* The cap is enforced on the probe thread, which cannot log. */
-    if (p.truncated)
-        WARN("More than %u audio globals in the graph; the rest were ignored.\n",
-             PROBE_MAX_GLOBALS);
-    if (p.timed_out)
-        WARN("PipeWire probe timed out; the device list may be incomplete.\n");
 
     failed = p.core_error && list_empty(&p.nodes);
     if (failed)
@@ -1884,25 +2106,161 @@ static NTSTATUS pipewire_test_connect(void *args)
         pthread_mutex_unlock(&device_lists_mutex);
     }
 
-    LIST_FOR_EACH_ENTRY_SAFE(pn, next, &p.nodes, struct probe_node, entry)
-    {
-        list_remove(&pn->entry);
-        free(pn->node_name);
-        free(pn->display);
-        free(pn->nick);
-        free(pn);
-    }
-    LIST_FOR_EACH_ENTRY_SAFE(pd, pdnext, &p.devices, struct probe_device, entry)
-    {
-        list_remove(&pd->entry);
-        free(pd->sysfs_path);
-        free(pd);
-    }
+    free_probe(&p);
 
     if (failed)
         return STATUS_SUCCESS;
 
     params->priority = Priority_Preferred;
+    return STATUS_SUCCESS;
+}
+
+static BOOL watch_start(void)
+{
+    BOOL ret = FALSE;
+
+    pthread_once(&watch_cond_once, watch_cond_init);
+    pipewire_main_loop_start(NULL);
+    pthread_mutex_lock(&pw_init_mutex);
+    if (!pw_loop_global)
+        goto out;
+    __atomic_store_n(&watch_quit, FALSE, __ATOMIC_RELEASE);
+    pw_thread_loop_lock(pw_loop_global);
+    if (__atomic_load_n(&watch_dead, __ATOMIC_ACQUIRE))
+    {
+        WARN("endpoint watcher lost its connection, restarting.\n");
+        watch_teardown();
+    }
+    if (!watch_core)
+    {
+        if (!(watch_core = pw_context_connect(pw_ctx, NULL, 0)))
+            WARN("pw_context_connect failed for the endpoint watcher.\n");
+        else
+        {
+            pw_core_add_listener(watch_core, &watch_core_listener, &watch_core_events, NULL);
+            watch_registry = pw_core_get_registry(watch_core, PW_VERSION_REGISTRY, 0);
+            if (watch_registry)
+                pw_registry_add_listener(watch_registry, &watch_registry_listener,
+                                         &watch_registry_events, NULL);
+            watch_sync_seq = pw_core_sync(watch_core, PW_ID_CORE, 0);
+        }
+    }
+    ret = watch_registry != NULL;
+    pw_thread_loop_unlock(pw_loop_global);
+out:
+    pthread_mutex_unlock(&pw_init_mutex);
+    return ret;
+}
+
+/* Called with watch_mutex held. */
+static void watch_wait_until(UINT64 ns)
+{
+    struct timespec ts;
+
+    ts.tv_sec = ns / 1000000000;
+    ts.tv_nsec = ns % 1000000000;
+    pthread_cond_timedwait(&watch_cond, &watch_mutex, &ts);
+}
+
+/* Probe first, swap after: readers never see an empty list. */
+static BOOL refresh_device_cache(void)
+{
+    struct probe p;
+
+    if (!run_probe(&p))
+        return FALSE;
+    if (p.core_error && list_empty(&p.nodes))
+    {
+        WARN("PipeWire core reported an error during the probe\n");
+        free_probe(&p);
+        return FALSE;
+    }
+    pthread_mutex_lock(&device_lists_mutex);
+    free_device_lists();
+    list_init(&g_render_devices);
+    list_init(&g_capture_devices);
+    g_default_sink[0] = g_default_source[0] = '\0';
+    build_device_cache(&p);
+    TRACE("refreshed: %u sinks default=%s, %u sources default=%s\n",
+          list_count(&g_render_devices), debugstr_a(g_default_sink),
+          list_count(&g_capture_devices), debugstr_a(g_default_source));
+    pthread_mutex_unlock(&device_lists_mutex);
+    free_probe(&p);
+    return TRUE;
+}
+
+static NTSTATUS pipewire_wait_endpoint_change(void *args)
+{
+    struct wait_endpoint_change_params *params = args;
+    UINT64 gen, now, first, last, deadline;
+
+    params->quit = FALSE;
+    if (!params->timeout_ms)
+    {
+        params->generation = __atomic_load_n(&watch_generation, __ATOMIC_ACQUIRE);
+        params->result = S_OK;
+        return STATUS_SUCCESS;
+    }
+    if (!watch_start())
+    {
+        params->result = AUDCLNT_E_SERVICE_NOT_RUNNING;
+        return STATUS_SUCCESS;
+    }
+
+    deadline = monotonic_ns() + (UINT64)params->timeout_ms * 1000000;
+    pthread_mutex_lock(&watch_mutex);
+    for (;;)
+    {
+        if (__atomic_load_n(&watch_quit, __ATOMIC_ACQUIRE))
+            goto quit;
+        if (__atomic_load_n(&watch_dead, __ATOMIC_ACQUIRE))
+            goto dead;
+        gen = __atomic_load_n(&watch_generation, __ATOMIC_ACQUIRE);
+        if (gen != params->generation)
+            break;
+        if ((now = monotonic_ns()) >= deadline)
+        {
+            pthread_mutex_unlock(&watch_mutex);
+            params->result = S_FALSE;
+            return STATUS_SUCCESS;
+        }
+        watch_wait_until(min(now + WATCH_SLICE_NS, deadline));
+    }
+
+    /* A device arrives as a burst of globals; refresh once it settles. */
+    first = monotonic_ns();
+    for (;;)
+    {
+        if (__atomic_load_n(&watch_quit, __ATOMIC_ACQUIRE))
+            goto quit;
+        last = __atomic_load_n(&watch_last_event_ns, __ATOMIC_ACQUIRE);
+        now = monotonic_ns();
+        if (now - last >= WATCH_QUIET_NS || now - first >= WATCH_CAP_NS)
+            break;
+        watch_wait_until(min(last + WATCH_QUIET_NS, first + WATCH_CAP_NS));
+    }
+    gen = __atomic_load_n(&watch_generation, __ATOMIC_ACQUIRE);
+    pthread_mutex_unlock(&watch_mutex);
+
+    TRACE("endpoint change, generation %s -> %s\n",
+          wine_dbgstr_longlong(params->generation), wine_dbgstr_longlong(gen));
+    if (!refresh_device_cache())
+    {
+        params->result = AUDCLNT_E_SERVICE_NOT_RUNNING;
+        return STATUS_SUCCESS;
+    }
+    params->generation = gen;
+    params->result = S_OK;
+    return STATUS_SUCCESS;
+
+quit:
+    pthread_mutex_unlock(&watch_mutex);
+    params->quit = TRUE;
+    params->result = S_OK;
+    return STATUS_SUCCESS;
+dead:
+    pthread_mutex_unlock(&watch_mutex);
+    params->result = AUDCLNT_E_SERVICE_NOT_RUNNING;
     return STATUS_SUCCESS;
 }
 
@@ -2097,6 +2455,25 @@ static NTSTATUS pipewire_get_prop_value(void *args)
             params->value->vt = VT_CLSID;
             params->value->puuid = params->buffer;
             *params->value->puuid = dev->container_id;
+            params->result = S_OK;
+        }
+        goto done;
+    }
+    if (IsEqualPropertyKey(*params->prop, DEVPKEY_Device_InstanceId) && dev->usb_vid)
+    {
+        char id[32];
+        int len = sprintf(id, "{1}.USB\\VID_%04X&PID_%04X", dev->usb_vid, dev->usb_pid) + 1;
+
+        if (*params->buffer_size < len * sizeof(WCHAR))
+        {
+            params->result = E_NOT_SUFFICIENT_BUFFER;
+            *params->buffer_size = len * sizeof(WCHAR);
+        }
+        else
+        {
+            params->value->vt = VT_LPWSTR;
+            params->value->pwszVal = params->buffer;
+            ntdll_umbstowcs(id, len, params->value->pwszVal, len);
             params->result = S_OK;
         }
         goto done;
@@ -2783,9 +3160,17 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
     pw_properties_setf(props, PW_KEY_NODE_LATENCY, "%u/%u",
                        (UINT32)period_frames, stream->info.rate);
     /* The synthetic default endpoint has an empty name; leaving target.object
-     * unset there lets PIPEWIRE_NODE route it, as libpipewire does itself. */
+     * unset there lets PIPEWIRE_NODE route it, as libpipewire does itself.
+     * A named endpoint's stream must fail when that node is missing, as it does
+     * on Windows, instead of being linked to another sink by the session
+     * manager: dont-reconnect covers removal while linked, dont-fallback a
+     * target absent at connect. The resulting stream error invalidates it. */
     if (device && device[0])
+    {
         pw_properties_set(props, PW_KEY_TARGET_OBJECT, device);
+        pw_properties_set(props, PW_KEY_NODE_DONT_RECONNECT, "true");
+        pw_properties_set(props, "node.dont-fallback", "true");
+    }
     if (stream->dataflow == eCapture &&
         ((stream->flags & AUDCLNT_STREAMFLAGS_LOOPBACK) || capture_sink))
         pw_properties_set(props, PW_KEY_STREAM_CAPTURE_SINK, "true");
@@ -4415,6 +4800,7 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
     pipewire_not_implemented,
     pipewire_not_implemented,
     pipewire_not_implemented,
+    pipewire_wait_endpoint_change,
 };
 
 C_ASSERT(ARRAYSIZE(__wine_unix_call_funcs) == funcs_count);
@@ -4908,6 +5294,7 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
     pipewire_not_implemented,
     pipewire_not_implemented,
     pipewire_not_implemented,
+    pipewire_wait_endpoint_change,
 };
 
 C_ASSERT(ARRAYSIZE(__wine_unix_call_wow64_funcs) == funcs_count);

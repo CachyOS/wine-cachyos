@@ -1542,6 +1542,7 @@ static NTSTATUS hid_get_device_string(DEVICE_OBJECT *device, DWORD index, WCHAR 
         else memcpy(buffer, ext->desc.product, len);
         return STATUS_SUCCESS;
     case HID_STRING_ID_ISERIALNUMBER:
+        if (!*ext->desc.serialnumber) return STATUS_INVALID_PARAMETER;
         len = (wcslen(ext->desc.serialnumber) + 1) * sizeof(WCHAR);
         if (len > buffer_len) return STATUS_BUFFER_TOO_SMALL;
         else memcpy(buffer, ext->desc.serialnumber, len);

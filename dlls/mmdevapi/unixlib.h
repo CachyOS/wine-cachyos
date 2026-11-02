@@ -319,6 +319,14 @@ struct aux_message_params
     UINT *err;
 };
 
+struct wait_endpoint_change_params
+{
+    UINT64 generation;
+    UINT32 timeout_ms;
+    BOOL quit;
+    HRESULT result;
+};
+
 enum unix_funcs
 {
     process_attach,
@@ -358,5 +366,6 @@ enum unix_funcs
     midi_in_message,
     midi_notify_wait,
     aux_message,
+    wait_endpoint_change,
     funcs_count
 };

@@ -76,9 +76,19 @@ static const IMMDeviceCollectionVtbl MMDevColVtbl;
 static const IMMDeviceVtbl MMDeviceVtbl;
 static const IPropertyStoreVtbl MMDevPropVtbl;
 static const IMMEndpointVtbl MMEndpointVtbl;
+static void start_device_update_thread(void);
 
 static MMDevEnumImpl enumerator;
 static struct list device_list = LIST_INIT(device_list);
+
+static CRITICAL_SECTION device_list_cs;
+static CRITICAL_SECTION_DEBUG device_list_cs_debug =
+{
+    0, 0, &device_list_cs,
+    { &device_list_cs_debug.ProcessLocksList, &device_list_cs_debug.ProcessLocksList },
+      0, 0, { (DWORD_PTR)(__FILE__ ": device_list_cs") }
+};
+static CRITICAL_SECTION device_list_cs = { &device_list_cs_debug, -1, 0, 0, 0, 0 };
 
 typedef struct MMDevColImpl
 {
@@ -151,6 +161,15 @@ struct device
 
 static struct list devices_cache = LIST_INIT( devices_cache );
 
+static CRITICAL_SECTION devices_cache_cs;
+static CRITICAL_SECTION_DEBUG devices_cache_cs_debug =
+{
+    0, 0, &devices_cache_cs,
+    { &devices_cache_cs_debug.ProcessLocksList, &devices_cache_cs_debug.ProcessLocksList },
+      0, 0, { (DWORD_PTR)(__FILE__ ": devices_cache_cs") }
+};
+static CRITICAL_SECTION devices_cache_cs = { &devices_cache_cs_debug, -1, 0, 0, 0, 0 };
+
 static void add_device_to_cache( const GUID *guid, const char *name, EDataFlow flow )
 {
     struct device *dev;
@@ -159,16 +178,21 @@ static void add_device_to_cache( const GUID *guid, const char *name, EDataFlow f
     dev->guid = *guid;
     dev->flow = flow;
     strcpy( dev->name, name );
+    EnterCriticalSection( &devices_cache_cs );
     list_add_tail( &devices_cache, &dev->entry );
+    LeaveCriticalSection( &devices_cache_cs );
 }
 
+/* Entries are freed only in MMDevEnum_Free, so the result stays valid. */
 static struct device *find_device_in_cache( const GUID *guid )
 {
-    struct device *dev;
+    struct device *dev, *ret = NULL;
 
+    EnterCriticalSection( &devices_cache_cs );
     LIST_FOR_EACH_ENTRY( dev, &devices_cache, struct device, entry )
-        if (IsEqualGUID( guid, &dev->guid )) return dev;
-    return NULL;
+        if (IsEqualGUID( guid, &dev->guid )) { ret = dev; break; }
+    LeaveCriticalSection( &devices_cache_cs );
+    return ret;
 }
 
 BOOL get_device_name_from_guid( const GUID *guid, char **name, EDataFlow *flow )
@@ -873,6 +897,8 @@ static MMDevice *MMDevice_Create(const WCHAR *name, GUID *id, EDataFlow flow, DW
         {
             PROPVARIANT pv;
 
+            set_driver_prop_value(id, flow, (const PROPERTYKEY*)&DEVPKEY_Device_InstanceId);
+
             if (SUCCEEDED(set_driver_prop_value(id, flow, &devicepath_key))) {
                 if (SUCCEEDED(MMDevice_GetPropValue(id, flow, &devicepath_key, &device_path)) && device_path.vt == VT_LPWSTR) {
                     const WCHAR *override;
@@ -1340,6 +1366,8 @@ static HRESULT MMDevCol_Create(IMMDeviceCollection **ppv, EDataFlow flow, DWORD 
     MMDevice *cur;
     UINT i = 0;
 
+    start_device_update_thread();
+
     This = malloc(sizeof(*This));
     *ppv = NULL;
     if (!This)
@@ -1350,6 +1378,7 @@ static HRESULT MMDevCol_Create(IMMDeviceCollection **ppv, EDataFlow flow, DWORD 
     This->devices_count = 0;
     *ppv = &This->IMMDeviceCollection_iface;
 
+    EnterCriticalSection(&device_list_cs);
     LIST_FOR_EACH_ENTRY(cur, &device_list, MMDevice, entry)
     {
         if ((cur->flow == flow || flow == eAll) && (cur->state & state))
@@ -1360,7 +1389,10 @@ static HRESULT MMDevCol_Create(IMMDeviceCollection **ppv, EDataFlow flow, DWORD 
     {
         This->devices = malloc(This->devices_count * sizeof(IMMDevice *));
         if (!This->devices_count)
+        {
+            LeaveCriticalSection(&device_list_cs);
             return E_OUTOFMEMORY;
+        }
 
         LIST_FOR_EACH_ENTRY(cur, &device_list, MMDevice, entry)
         {
@@ -1372,6 +1404,7 @@ static HRESULT MMDevCol_Create(IMMDeviceCollection **ppv, EDataFlow flow, DWORD 
             }
         }
     }
+    LeaveCriticalSection(&device_list_cs);
 
     return S_OK;
 }
@@ -1623,6 +1656,9 @@ static HRESULT WINAPI MMDevEnum_GetDevice(IMMDeviceEnumerator *iface, const WCHA
     if(!name || !device)
         return E_POINTER;
 
+    start_device_update_thread();
+
+    EnterCriticalSection(&device_list_cs);
     LIST_FOR_EACH_ENTRY(impl, &device_list, MMDevice, entry)
     {
         HRESULT hr;
@@ -1640,10 +1676,12 @@ static HRESULT WINAPI MMDevEnum_GetDevice(IMMDeviceEnumerator *iface, const WCHA
             CoTaskMemFree(str);
             IMMDevice_AddRef(dev);
             *device = dev;
+            LeaveCriticalSection(&device_list_cs);
             return S_OK;
         }
         CoTaskMemFree(str);
     }
+    LeaveCriticalSection(&device_list_cs);
     TRACE("Could not find device %s\n", debugstr_w(name));
     return E_INVALIDARG;
 }
@@ -1804,6 +1842,275 @@ static DWORD WINAPI notif_thread_proc(void *user)
     return 0;
 }
 
+struct endpoint_change
+{
+    MMDevice *dev;
+    DWORD state;
+    BOOL added;
+};
+
+static BOOL add_endpoint_change(struct endpoint_change **changes, unsigned int *count,
+                                unsigned int *capacity, MMDevice *dev, DWORD state, BOOL added)
+{
+    struct endpoint_change *new_changes;
+
+    if (*count == *capacity)
+    {
+        unsigned int new_capacity = max(*capacity * 2, 8);
+
+        if (!(new_changes = realloc(*changes, new_capacity * sizeof(**changes))))
+            return FALSE;
+        *changes = new_changes;
+        *capacity = new_capacity;
+    }
+    (*changes)[*count].dev = dev;
+    (*changes)[*count].state = state;
+    (*changes)[*count].added = added;
+    (*count)++;
+    return TRUE;
+}
+
+static void report_endpoint_changes(const struct endpoint_change *changes, unsigned int count)
+{
+    struct NotificationClientWrapper *wrapper;
+    unsigned int i;
+    WCHAR *id;
+
+    for (i = 0; i < count; i++)
+    {
+        TRACE("%s %s state %#lx%s\n", changes[i].dev->flow == eRender ? "render" : "capture",
+              debugstr_guid(&changes[i].dev->devguid), changes[i].state,
+              changes[i].added ? " (added)" : "");
+        if (FAILED(MMDevice_GetId(&changes[i].dev->IMMDevice_iface, &id)))
+            continue;
+        EnterCriticalSection(&g_notif_lock);
+        LIST_FOR_EACH_ENTRY(wrapper, &g_notif_clients, struct NotificationClientWrapper, entry)
+        {
+            if (changes[i].added)
+                IMMNotificationClient_OnDeviceAdded(wrapper->client, id);
+            else
+                IMMNotificationClient_OnDeviceStateChanged(wrapper->client, id, changes[i].state);
+        }
+        LeaveCriticalSection(&g_notif_lock);
+        CoTaskMemFree(id);
+    }
+}
+
+static HRESULT get_driver_endpoints(struct get_endpoint_ids_params *params, EDataFlow flow)
+{
+    params->flow = flow;
+    params->size = 1024;
+    params->endpoints = NULL;
+    do {
+        free(params->endpoints);
+        if (!(params->endpoints = malloc(params->size)))
+            return E_OUTOFMEMORY;
+        __wine_unix_call(drvs.module_unixlib, get_endpoint_ids, params);
+    } while (params->result == HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER));
+    return params->result;
+}
+
+static BOOL driver_container_id_changed(GUID *id, EDataFlow flow)
+{
+    struct get_prop_value_params params;
+    PROPVARIANT pv, stored;
+    unsigned int size = sizeof(GUID);
+    BOOL changed = FALSE;
+    char *dev_name;
+    GUID buffer;
+
+    if (!get_device_name_from_guid(id, &dev_name, &params.flow))
+        return FALSE;
+    params.device = dev_name;
+    params.guid = id;
+    params.prop = (const PROPERTYKEY *)&DEVPKEY_Device_ContainerId;
+    params.value = &pv;
+    params.buffer = &buffer;
+    params.buffer_size = &size;
+    __wine_unix_call(drvs.module_unixlib, get_prop_value, &params);
+    free(dev_name);
+    if (FAILED(params.result) || pv.vt != VT_CLSID)
+        return FALSE;
+
+    PropVariantInit(&stored);
+    if (SUCCEEDED(MMDevice_GetPropValue(id, flow, (const PROPERTYKEY *)&DEVPKEY_Device_ContainerId,
+                                        &stored)))
+        changed = stored.vt != VT_CLSID || !IsEqualGUID(stored.puuid, pv.puuid);
+    PropVariantClear(&stored);
+    return changed;
+}
+
+static void set_device_state_value(MMDevice *dev)
+{
+    WCHAR guidstr[39];
+    HKEY key;
+
+    StringFromGUID2(&dev->devguid, guidstr, ARRAY_SIZE(guidstr));
+    if (RegOpenKeyExW(dev->flow == eRender ? key_render : key_capture, guidstr, 0,
+                      KEY_WRITE | KEY_WOW64_64KEY, &key))
+        return;
+    RegSetValueExW(key, L"DeviceState", 0, REG_DWORD, (const BYTE *)&dev->state, sizeof(DWORD));
+    RegCloseKey(key);
+}
+
+static MMDevice *find_device(EDataFlow flow, const GUID *guid)
+{
+    MMDevice *dev;
+
+    LIST_FOR_EACH_ENTRY(dev, &device_list, MMDevice, entry)
+        if (dev->flow == flow && IsEqualGUID(&dev->devguid, guid))
+            return dev;
+    return NULL;
+}
+
+static void refresh_flow_devices(struct get_endpoint_ids_params *params, const GUID *guids,
+                                 struct endpoint_change **changes, unsigned int *count,
+                                 unsigned int *capacity)
+{
+    MMDevice *dev;
+    UINT i;
+
+    LIST_FOR_EACH_ENTRY(dev, &device_list, MMDevice, entry)
+    {
+        if (dev->flow != params->flow || dev->state != DEVICE_STATE_ACTIVE)
+            continue;
+        for (i = 0; i < params->num; i++)
+            if (IsEqualGUID(&dev->devguid, &guids[i]))
+                break;
+        if (i < params->num)
+            continue;
+        dev->state = DEVICE_STATE_NOTPRESENT;
+        set_device_state_value(dev);
+        add_endpoint_change(changes, count, capacity, dev, DEVICE_STATE_NOTPRESENT, FALSE);
+    }
+
+    for (i = 0; i < params->num; i++)
+    {
+        const WCHAR *name = (WCHAR *)((char *)params->endpoints + params->endpoints[i].name);
+        GUID guid = guids[i];
+        BOOL added = FALSE;
+
+        if (!(dev = find_device(params->flow, &guid)))
+            added = TRUE;
+        else if (dev->state == DEVICE_STATE_ACTIVE)
+        {
+            if (!driver_container_id_changed(&guid, params->flow))
+                continue;
+            add_endpoint_change(changes, count, capacity, dev, DEVICE_STATE_NOTPRESENT, FALSE);
+        }
+        if (!(dev = MMDevice_Create(name, &guid, params->flow, DEVICE_STATE_ACTIVE, FALSE)))
+            continue;
+        add_endpoint_change(changes, count, capacity, dev, DEVICE_STATE_ACTIVE, added);
+    }
+}
+
+static void refresh_driver_devices(void)
+{
+    struct get_endpoint_ids_params params[2] = {{0}};
+    struct endpoint_change *changes = NULL;
+    unsigned int count = 0, capacity = 0, f, i;
+    GUID *guids[2] = {NULL};
+
+    for (f = 0; f < 2; f++)
+    {
+        if (FAILED(get_driver_endpoints(&params[f], f ? eCapture : eRender)))
+            goto done;
+        if (!(guids[f] = malloc(max(params[f].num, 1) * sizeof(GUID))))
+            goto done;
+        for (i = 0; i < params[f].num; i++)
+            get_device_guid(params[f].flow,
+                            (char *)params[f].endpoints + params[f].endpoints[i].device,
+                            &guids[f][i]);
+    }
+
+    EnterCriticalSection(&device_list_cs);
+    for (f = 0; f < 2; f++)
+        refresh_flow_devices(&params[f], guids[f], &changes, &count, &capacity);
+    LeaveCriticalSection(&device_list_cs);
+
+    for (i = 0; i < count; i++)
+        if (changes[i].state == DEVICE_STATE_ACTIVE)
+            set_format(changes[i].dev);
+    report_endpoint_changes(changes, count);
+
+done:
+    for (f = 0; f < 2; f++)
+    {
+        free(params[f].endpoints);
+        free(guids[f]);
+    }
+    free(changes);
+}
+
+static UINT64 update_generation;
+
+static DWORD WINAPI device_update_proc(void *module)
+{
+    struct wait_endpoint_change_params params;
+
+    SetThreadDescription(GetCurrentThread(), L"wine_mmdevapi_hotplug");
+
+    for (;;)
+    {
+        memset(&params, 0, sizeof(params));
+        params.generation = update_generation;
+        params.timeout_ms = INFINITE;
+        params.result = E_NOTIMPL;
+        if (__wine_unix_call(drvs.module_unixlib, wait_endpoint_change, &params) || params.quit)
+            break;
+        if (params.result == AUDCLNT_E_SERVICE_NOT_RUNNING)
+        {
+            Sleep(1000);
+            continue;
+        }
+        if (FAILED(params.result))
+            break;
+        if (params.result == S_OK && params.generation != update_generation)
+        {
+            update_generation = params.generation;
+            refresh_driver_devices();
+        }
+    }
+
+    TRACE("device update thread exiting\n");
+    FreeLibraryAndExitThread(module, 0);
+}
+
+static BOOL WINAPI start_device_update_once(INIT_ONCE *once, void *param, void **context)
+{
+    struct wait_endpoint_change_params params = {0};
+    HMODULE module;
+    HANDLE thread;
+
+    if (!drvs.module_unixlib)
+        return TRUE;
+    params.result = E_NOTIMPL;
+    if (__wine_unix_call(drvs.module_unixlib, wait_endpoint_change, &params) || params.result != S_OK)
+        return TRUE;
+    update_generation = params.generation;
+
+    /* The pin keeps the FreeLibrary detach path away while the thread runs. */
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                            (const WCHAR *)start_device_update_once, &module))
+        return TRUE;
+    if (!(thread = CreateThread(NULL, 0, device_update_proc, module, 0, NULL)))
+    {
+        ERR("CreateThread failed: %lu\n", GetLastError());
+        FreeLibrary(module);
+        return TRUE;
+    }
+    TRACE("started device update thread\n");
+    CloseHandle(thread);
+    return TRUE;
+}
+
+static void start_device_update_thread(void)
+{
+    static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
+
+    InitOnceExecuteOnce(&once, start_device_update_once, NULL, NULL);
+}
+
 static HRESULT WINAPI MMDevEnum_RegisterEndpointNotificationCallback(IMMDeviceEnumerator *iface, IMMNotificationClient *client)
 {
     MMDevEnumImpl *This = impl_from_IMMDeviceEnumerator(iface);
@@ -1813,6 +2120,8 @@ static HRESULT WINAPI MMDevEnum_RegisterEndpointNotificationCallback(IMMDeviceEn
 
     if(!client)
         return E_POINTER;
+
+    start_device_update_thread();
 
     wrapper = malloc(sizeof(*wrapper));
     if(!wrapper)
