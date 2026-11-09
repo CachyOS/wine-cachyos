@@ -40,6 +40,7 @@
 #include "audiopolicy.h"
 #include "devpkey.h"
 #include "winreg.h"
+#include "winsvc.h"
 #include "spatialaudioclient.h"
 #include "mmddk.h"
 
@@ -345,6 +346,42 @@ HRESULT WINAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, LPVOID *ppv)
     WARN("(%s, %s, %p): no class found.\n", debugstr_guid(rclsid),
          debugstr_guid(riid), ppv);
     return CLASS_E_CLASSNOTAVAILABLE;
+}
+
+static SERVICE_STATUS_HANDLE service_handle;
+static HANDLE service_stop_event;
+
+static DWORD WINAPI service_handler( DWORD ctrl, DWORD event_type, void *event_data, void *context )
+{
+    SERVICE_STATUS status = { SERVICE_WIN32_SHARE_PROCESS, SERVICE_STOP_PENDING };
+
+    if (ctrl != SERVICE_CONTROL_STOP && ctrl != SERVICE_CONTROL_SHUTDOWN)
+        return ERROR_CALL_NOT_IMPLEMENTED;
+
+    SetServiceStatus( service_handle, &status );
+    SetEvent( service_stop_event );
+    return NO_ERROR;
+}
+
+void WINAPI ServiceMain( DWORD argc, WCHAR **argv )
+{
+    SERVICE_STATUS status = { SERVICE_WIN32_SHARE_PROCESS, SERVICE_RUNNING,
+                              SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN };
+
+    if (!(service_stop_event = CreateEventW( NULL, TRUE, FALSE, NULL ))) return;
+    if (!(service_handle = RegisterServiceCtrlHandlerExW( L"AudioEndpointBuilder",
+                                                          service_handler, NULL )))
+        return;
+
+    /* The first process of a session waits for this status, so register the endpoints first. */
+    InitOnceExecuteOnce( &init_once, init_driver, NULL, NULL );
+    SetServiceStatus( service_handle, &status );
+
+    WaitForSingleObject( service_stop_event, INFINITE );
+
+    status.dwCurrentState = SERVICE_STOPPED;
+    status.dwControlsAccepted = 0;
+    SetServiceStatus( service_handle, &status );
 }
 
 static void notify_client(struct notify_context *notify)
