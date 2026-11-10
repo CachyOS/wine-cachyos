@@ -885,8 +885,8 @@ static BOOL wayland_pointer_set_cursor_shape(HCURSOR hcursor)
     enum wp_cursor_shape_device_v1_shape shape = 0;
     uint32_t proto_version;
 
-    if (!process_wayland.wp_cursor_shape_manager_v1) return FALSE;
     if (!hcursor) return FALSE;
+    if (!process_wayland.wp_cursor_shape_manager_v1) return FALSE;
     if (!get_icon_info(hcursor, &info)) return FALSE;
     proto_version = wp_cursor_shape_manager_v1_get_version(
         process_wayland.wp_cursor_shape_manager_v1);
@@ -927,8 +927,15 @@ static void wayland_set_cursor(HWND hwnd, HCURSOR hcursor, BOOL use_hcursor)
     struct wayland_pointer *pointer = &process_wayland.pointer;
     struct wayland_surface *surface;
     struct wayland_win_data *data;
+    ICONINFOEXW info = {0};
     double scale;
     BOOL reapply_clip = FALSE;
+
+    if (use_hcursor && hcursor && !get_icon_info(hcursor, &info))
+    {
+        ERR("Failed to get icon info for cursor=%p\n", hcursor);
+        use_hcursor = FALSE;
+    }
 
     if ((data = wayland_win_data_get(hwnd)))
     {
@@ -939,6 +946,7 @@ static void wayland_set_cursor(HWND hwnd, HCURSOR hcursor, BOOL use_hcursor)
         }
         scale = surface->window.scale;
         if (use_hcursor) surface->hcursor = hcursor;
+        /* this hcursor must always be valid due to above */
         else hcursor = surface->hcursor;
         use_hcursor = TRUE;
         wayland_win_data_release(data);
@@ -952,7 +960,7 @@ static void wayland_set_cursor(HWND hwnd, HCURSOR hcursor, BOOL use_hcursor)
     if (pointer->focused_hwnd == hwnd)
     {
         if ((!use_hcursor && pointer->wp_cursor_shape_device_v1) ||
-            (use_hcursor && hcursor && wayland_pointer_set_cursor_shape(hcursor)))
+            (use_hcursor && wayland_pointer_set_cursor_shape(hcursor)))
         {
             wayland_pointer_clear_cursor_surface();
         }
