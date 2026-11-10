@@ -187,6 +187,8 @@ static void wayland_surface_reparent_popups(struct wayland_surface *surface)
 
     if (!hwnd) return;
 
+    TRACE("surface=%p\n", surface);
+
     /* a popup could be the root element in its owned window subtree (composed of actual owners and owner_hints)
      * This means that all children of this subtree need to have their role cleared before the root can destroy itself
      * As soon as the root is finished destroying itself,
@@ -526,8 +528,14 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UIN
     if (!(data = wayland_win_data_get(hwnd))) return;
     owner_data = owner && owner != hwnd ? wayland_win_data_get(owner) : NULL;
     owner_surface = owner_data ? owner_data->wayland_surface : NULL;
-    /* for it to be a popup, we need a valid xdg surface. */
-    if (owner_surface && !owner_surface->xdg_surface) owner_surface = NULL;
+    /* for it to be a popup, we need a valid xdg surface, and there cannot be a circular relation of owners
+     * Note that this only checks the immediate owner for this, a traveral would be required for a proper check
+     * xdg-popup doesn't seem to ban this explicitly either, so it should be fine (hopefully) */
+    if (owner_surface)
+    {
+        if (!owner_surface->xdg_surface) owner_surface = NULL;
+        else if (owner_surface->owner_hwnd == hwnd) owner_surface = NULL;
+    }
 
     data->rects = *new_rects;
     data->is_fullscreen = fullscreen;
