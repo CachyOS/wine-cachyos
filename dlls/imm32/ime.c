@@ -635,10 +635,11 @@ DWORD WINAPI ImeConversionList( HIMC himc, const WCHAR *source, CANDIDATELIST *d
 BOOL WINAPI ImeSetCompositionString( HIMC himc, DWORD index, const void *comp, DWORD comp_len,
                                      const void *read, DWORD read_len )
 {
+    static int once;
     INPUTCONTEXT *ctx;
 
-    FIXME( "himc %p, index %lu, comp %p, comp_len %lu, read %p, read_len %lu semi-stub!\n",
-            himc, index, comp, comp_len, read, read_len );
+    if (!once++) FIXME( "himc %p, index %lu, comp %p, comp_len %lu, read %p, read_len %lu semi-stub!\n",
+                         himc, index, comp, comp_len, read, read_len );
     if (read && read_len) FIXME( "Read string unimplemented\n" );
     if (index != SCS_SETSTR && index != SCS_CHANGECLAUSE && index != SCS_CHANGEATTR) return FALSE;
 
@@ -669,7 +670,7 @@ BOOL WINAPI NotifyIME( HIMC himc, DWORD action, DWORD index, DWORD value )
     INPUTCONTEXT *ctx;
     UINT msg;
 
-    TRACE( "himc %p, action %#lx, index %#lx, value %#lx stub!\n", himc, action, index, value );
+    TRACE( "himc %p, action %#lx, index %#lx, value %#lx\n", himc, action, index, value );
 
     if (!(ctx = ImmLockIMC( himc ))) return FALSE;
 

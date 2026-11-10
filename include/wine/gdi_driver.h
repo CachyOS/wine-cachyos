@@ -263,6 +263,7 @@ struct client_surface
     const struct client_surface_funcs *funcs;
     struct list                        entry;          /* entry in win32u managed list */
     LONG                               ref;            /* reference count */
+    LONG                               busy_ref;       /* count of drawables/swapchains referencing this surface */
     HWND                               hwnd;           /* window the surface was created for */
     LONG                               updated;        /* has been moved / resized / reparented */
     LONG                               offscreen;      /* client window is offscreen */
@@ -273,6 +274,7 @@ W32KAPI void client_surface_add_ref( struct client_surface *surface );
 W32KAPI void client_surface_release( struct client_surface *surface );
 W32KAPI void client_surface_present( struct client_surface *surface );
 W32KAPI void client_surface_update( struct client_surface *surface );
+W32KAPI void update_client_surfaces( HWND hwnd );
 W32KAPI void detach_client_surfaces( HWND hwnd );
 
 static inline const char *debugstr_client_surface( struct client_surface *surface )
@@ -325,7 +327,6 @@ W32KAPI void window_surface_set_layered( struct window_surface *surface, COLORRE
 W32KAPI void window_surface_flush( struct window_surface *surface );
 W32KAPI void window_surface_set_clip( struct window_surface *surface, HRGN clip_region );
 W32KAPI void window_surface_set_shape( struct window_surface *surface, HRGN shape_region );
-W32KAPI void window_surface_set_layered( struct window_surface *surface, COLORREF color_key, UINT alpha_bits, UINT alpha_mask );
 W32KAPI struct window_surface *window_surface_get( HWND hwnd );
 
 /* display manager interface, used to initialize display device registry data */
@@ -338,12 +339,46 @@ struct pci_id
     UINT16 revision;
 };
 
+#define MONITOR_INFO_HAS_MONITOR_ID          0x00000001
+#define MONITOR_INFO_HAS_MONITOR_NAME        0x00000002
+#define MONITOR_INFO_HAS_PREFERRED_MODE      0x00000004
+#define MONITOR_INFO_HAS_PHYSICAL_DIMENSIONS 0x00000008
+#define MONITOR_INFO_HAS_SERIAL_NUMBER       0x00000010
+#define MONITOR_INFO_HAS_PRIMARIES           0x00000020
+#define MONITOR_INFO_HAS_CTA861_EXT          0x00000040
+
+struct edid_monitor_info
+{
+    unsigned int flags;
+    /* MONITOR_INFO_HAS_MONITOR_ID */
+    unsigned short manufacturer, product_code;
+    char monitor_id_string[8];
+    /* MONITOR_INFO_HAS_MONITOR_NAME */
+    WCHAR monitor_name[14];
+    /* MONITOR_INFO_HAS_PREFERRED_MODE */
+    unsigned int preferred_width, preferred_height;
+    double preferred_refresh;
+    /* MONITOR_INFO_HAS_SERIAL_NUMBER */
+    unsigned int serial_number;
+    /* MONITOR_INFO_HAS_PHYSICAL_DIMENSIONS */
+    unsigned int width_mm, height_mm;
+    /* MONITOR_INFO_HAS_PRIMARIES */
+    BOOL srgb;
+    unsigned int r_x, r_y;
+    unsigned int g_x, g_y;
+    unsigned int b_x, b_y;
+    unsigned int w_x, w_y;
+    /* MONITOR_INFO_HAS_CTA861_EXT */
+    float max_cll, max_fall;
+};
+
 struct gdi_monitor
 {
     RECT rc_monitor;      /* RcMonitor in MONITORINFO struct */
     RECT rc_work;         /* RcWork in MONITORINFO struct */
     unsigned char *edid;  /* Extended Device Identification Data */
     UINT edid_len;
+    struct edid_monitor_info edid_info; /* EDID info to generate an EDID */
     BOOL hdr_enabled;
 };
 
@@ -382,6 +417,7 @@ struct user_driver_funcs
     UINT    (*pImeProcessKey)(HIMC,UINT,UINT,const BYTE*);
     void    (*pNotifyIMEStatus)(HWND,UINT);
     BOOL    (*pSetIMECompositionRect)(HWND,RECT);
+    void    (*pEnableIMEContext)(HWND, BOOL);
     /* cursor/icon functions */
     void    (*pDestroyCursorIcon)(HCURSOR);
     void    (*pSetCursor)(HWND,HCURSOR);

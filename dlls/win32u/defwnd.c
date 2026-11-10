@@ -322,7 +322,7 @@ static BOOL set_window_text( HWND hwnd, const void *text, BOOL ansi )
     }
     else str = NULL;
 
-    TRACE( "%s\n", debugstr_w(str) );
+    TRACE( "%p, %s\n", hwnd, debugstr_w(str) );
 
     if (!(win = get_win_ptr( hwnd )))
     {
@@ -3015,6 +3015,14 @@ LRESULT default_window_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, 
             HWND *win_array = list_window_children( hwnd );
             int count = 0;
             info->kbd_layout = (HKL)lparam;
+
+            SERVER_START_REQ(set_thread_layout)
+            {
+                req->tid = GetCurrentThreadId();
+                req->layout = wine_server_client_ptr( info->kbd_layout );
+                wine_server_call(req);
+            }
+            SERVER_END_REQ;
 
             if (!win_array)
                 break;

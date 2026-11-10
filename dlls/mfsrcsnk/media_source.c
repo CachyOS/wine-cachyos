@@ -20,6 +20,9 @@
 #define WIN32_NO_STATUS
 #include "mfsrcsnk_private.h"
 
+#include <stdlib.h>
+#include <string.h>
+
 #include "wine/list.h"
 #include "wine/debug.h"
 #include "wine/winedmo.h"
@@ -1766,7 +1769,9 @@ static NTSTATUS CDECL media_source_seek_cb( struct winedmo_stream *stream, UINT6
     struct media_source *source = CONTAINING_RECORD(stream, struct media_source, winedmo_stream);
     TRACE("stream %p, pos %p\n", stream, pos);
 
-    if (FAILED(IMFByteStream_Seek(source->stream, msoBegin, *pos, 0, pos)))
+    if (FAILED(IMFByteStream_SetCurrentPosition(source->stream, *pos)))
+        return STATUS_UNSUCCESSFUL;
+    if (FAILED(IMFByteStream_GetCurrentPosition(source->stream, pos)))
         return STATUS_UNSUCCESSFUL;
 
     source->position = *pos;
@@ -1871,7 +1876,7 @@ static WCHAR *get_byte_stream_url(IMFByteStream *stream, const WCHAR *url)
         if (FAILED(hr = IMFAttributes_GetString(attributes, &MF_BYTESTREAM_ORIGIN_NAME,
                 buffer, ARRAY_SIZE(buffer), &size)))
             WARN("Failed to get MF_BYTESTREAM_ORIGIN_NAME got size %#x, hr %#lx\n", size, hr);
-        else
+        else if (*buffer) /* an empty origin name does not override the url */
             url = buffer;
         IMFAttributes_Release(attributes);
     }
@@ -2075,6 +2080,14 @@ static BOOL use_gst_byte_stream_handler(void)
 {
     BOOL result;
     DWORD size = sizeof(result);
+    const char *orientation = getenv("PROTON_GST_VIDEO_ORIENTATION");
+    const char *media_use_gst = getenv("PROTON_MEDIA_FORCE_GST");
+
+    /* Proton override: if PROTON_VIDEO_ORIENTATION is set then manually set orientation based on value */
+    if (orientation || (media_use_gst && !strcmp(media_use_gst, "1")))
+    {
+        return TRUE;
+    }
 
     /* @@ Wine registry key: HKCU\Software\Wine\MediaFoundation */
     if (!RegGetValueW( HKEY_CURRENT_USER, L"Software\\Wine\\MediaFoundation", L"DisableGstByteStreamHandler",

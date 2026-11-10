@@ -473,6 +473,19 @@ static const char *get_base_name( const char *name )
     return base;
 }
 
+/*******************************************************************
+ *         replace_char
+ */
+char* replace_char(char* str, char find, char replace)
+{
+    char *current_pos;
+    current_pos = strchr(str, find);
+    while (current_pos) {
+        *current_pos = replace;
+        current_pos = strchr(current_pos + 1, find);
+    };
+    return str;
+}
 
 /*******************************************************************
  *         replace_filename
@@ -3358,6 +3371,7 @@ static void output_source_one_arch( struct makefile *make, struct incl_file *sou
 {
     const int is_cxx = strendswith( source->name, ".cpp" );
     const char *obj_name, *var_cc, *var_cxx, *var_cflags, *var_cxxflags;
+    char obj2[256] = {0};
     struct compile_command *cmd;
     struct strarray cflags = empty_strarray;
 
@@ -3442,6 +3456,11 @@ static void output_source_one_arch( struct makefile *make, struct incl_file *sou
     output_filenames( defines );
     output_filenames( cflags );
     output_filename( is_cxx ? var_cxxflags : var_cflags );
+    strncpy( obj2, obj, sizeof( obj2 ) );
+    obj2[ sizeof( obj2 ) - 1] = '\0';
+    replace_char( obj2, '-', '_' );
+    replace_char( obj2, '.', '_' );
+    output_filename( arch_make_variable( strmake( "%s_CFLAGS", basename( obj2 ) ), arch ));
     output( "\n" );
 
     if (make->testdll && strendswith( source->name, ".c" ) &&
@@ -3885,6 +3904,7 @@ static void output_test_module( struct makefile *make, unsigned int arch )
 static void output_programs( struct makefile *make )
 {
     unsigned int arch = 0;  /* programs are always native */
+    char program2[256] = {0};
 
     STRARRAY_FOR_EACH( name, &make->programs )
     {
@@ -3910,6 +3930,10 @@ static void output_programs( struct makefile *make )
         output_filenames_obj_dir( make, objs );
         output_filenames( all_libs );
         output_filenames( ldflags );
+        strncpy( program2, program, sizeof( program2 ) );
+        program2[ sizeof( program2 ) - 1] = '\0';
+        replace_char( program2, '-', '_' );
+        output_filename( arch_make_variable( strmake( "%s_LDFLAGS", basename( program2 ) ), arch ));
         output( "\n" );
         strarray_add( &make->all_targets[arch], program );
 
@@ -4120,7 +4144,6 @@ static void output_sources( struct makefile *make )
             if (make->importlib && (is_multiarch( arch ) || (!arch && !is_native_arch_disabled( make ))))
                 output_import_lib( make, arch );
         }
-        if (make->unixlib) output_unix_lib( make );
         if (make->is_exe && !make->is_win16 && unix_lib_supported && strendswith( make->module, ".exe" ))
         {
             char *binary = replace_extension( make->module, ".exe", "" );
@@ -4133,6 +4156,8 @@ static void output_sources( struct makefile *make )
             if (is_multiarch( arch )) output_test_module( make, arch );
     }
     else if (make->programs.count) output_programs( make );
+
+    if (make->unixlib) output_unix_lib( make );
 
     STRARRAY_FOR_EACH( script, &make->scripts ) install_script( make, script );
 
@@ -4608,22 +4633,19 @@ static void load_sources( struct makefile *make )
     make->is_exe     = strarray_exists( make->extradllflags, "-mconsole" ) ||
                        strarray_exists( make->extradllflags, "-mwindows" );
 
-    if (make->module)
+    /* add default install rules if nothing was specified */
+    for (i = 0; i < NB_INSTALL_RULES; i++) if (make->install[i].count) break;
+    if (i == NB_INSTALL_RULES && !make->extlib)
     {
-        /* add default install rules if nothing was specified */
-        for (i = 0; i < NB_INSTALL_RULES; i++) if (make->install[i].count) break;
-        if (i == NB_INSTALL_RULES && !make->extlib)
+        if (make->unixlib) strarray_add( &make->install[INSTALL_UNIXLIB], make->unixlib );
+        if (make->importlib) strarray_add( &make->install[INSTALL_DEV], make->importlib );
+        if (make->staticlib) strarray_add( &make->install[INSTALL_DEV], make->staticlib );
+        else if (make->module) strarray_add( &make->install[INSTALL_LIB], make->module );
+        for (arch = 1; arch < archs.count; arch++)
         {
-            if (make->unixlib) strarray_add( &make->install[INSTALL_UNIXLIB], make->unixlib );
-            if (make->importlib) strarray_add( &make->install[INSTALL_DEV], make->importlib );
-            if (make->staticlib) strarray_add( &make->install[INSTALL_DEV], make->staticlib );
-            else strarray_add( &make->install[INSTALL_LIB], make->module );
-            for (arch = 1; arch < archs.count; arch++)
-            {
-                char *module;
-                if (!(module = get_expanded_arch_var( make, "MODULE", arch ))) continue;
-                strarray_add( &make->install[INSTALL_LIB], module );
-            }
+            char *module;
+            if (!(module = get_expanded_arch_var( make, "MODULE", arch ))) continue;
+            strarray_add( &make->install[INSTALL_LIB], module );
         }
     }
 

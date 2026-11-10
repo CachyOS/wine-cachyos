@@ -130,21 +130,6 @@ struct source
     DEVMODEW *modes;
 };
 
-#define MONITOR_INFO_HAS_MONITOR_ID 0x00000001
-#define MONITOR_INFO_HAS_MONITOR_NAME 0x00000002
-#define MONITOR_INFO_HAS_PREFERRED_MODE 0x00000004
-struct edid_monitor_info
-{
-    unsigned int flags;
-    /* MONITOR_INFO_HAS_MONITOR_ID */
-    unsigned short manufacturer, product_code;
-    char monitor_id_string[8];
-    /* MONITOR_INFO_HAS_MONITOR_NAME */
-    WCHAR monitor_name[14];
-    /* MONITOR_INFO_HAS_PREFERRED_MODE */
-    unsigned int preferred_width, preferred_height;
-};
-
 struct monitor
 {
     LONG refcount;
@@ -474,11 +459,11 @@ static void get_monitor_info_from_edid( struct edid_monitor_info *info, const un
     for (i = 0; i < 3; ++i)
     {
         d = w & 0x1f;
-        if (!d || d - 1 > 'Z' - 'A') return;
+        if (!d || d - 1 > 'Z' - 'A') goto skip_id;
         info->monitor_id_string[2 - i] = 'A' + d - 1;
         w >>= 5;
     }
-    if (w) return;
+    if (w) goto skip_id;
     w = edid[10] | (edid[11] << 8); /* Product code, little endian. */
     info->manufacturer = *(unsigned short *)(edid + 8);
     info->product_code = w;
@@ -486,6 +471,7 @@ static void get_monitor_info_from_edid( struct edid_monitor_info *info, const un
     info->flags = MONITOR_INFO_HAS_MONITOR_ID;
     TRACE( "Monitor id %s.\n", info->monitor_id_string );
 
+skip_id:
     for (i = 0; i < 4; ++i)
     {
         if (edid[54 + i * 18] || edid[54 + i * 18 + 1])
@@ -1819,7 +1805,7 @@ static void add_gpu( const char *name, const struct pci_id *pci_id, const GUID *
     KEY_VALUE_PARTIAL_INFORMATION *value = (void *)buffer;
     struct gpu_info *vulkan_gpu = NULL, *opengl_gpu = NULL;
     ULONGLONG memory = 0;
-    struct gpu *gpu;
+    struct gpu *gpu, *temp;
     unsigned int i;
     HKEY hkey, subkey;
     DWORD len;
@@ -1897,6 +1883,22 @@ static void add_gpu( const char *name, const struct pci_id *pci_id, const GUID *
     }
 
     NtClose( hkey );
+
+    /* fixup LUID conflicts, hard cap at 10 iterations */
+    for (i = 0; i < 10; i++)
+    {
+        LIST_FOR_EACH_ENTRY( temp, &gpus, struct gpu, entry )
+        {
+            if (temp->luid.HighPart == gpu->luid.HighPart &&
+                temp->luid.LowPart == gpu->luid.LowPart)
+            {
+                NtAllocateLocallyUniqueId( &gpu->luid );
+                ERR( "New LUID %08x%08x\n", gpu->luid.HighPart, gpu->luid.LowPart );
+                continue;
+            }
+        }
+        break;
+    }
 
     if (!memory && vulkan_gpu) memory = vulkan_gpu->memory;
     if (!memory && opengl_gpu) memory = opengl_gpu->memory;
@@ -2086,6 +2088,191 @@ static BOOL write_monitor_to_registry( struct monitor *monitor, const BYTE *edid
     return TRUE;
 }
 
+static BYTE edid_checksum( BYTE *data )
+{
+    UINT i;
+    BYTE ret = 0;
+
+    for (i = 0; i < 127; i++) ret += data[i];
+
+    return 0x100 - ret;
+}
+
+static BYTE edid_max_luminance(float nits)
+{
+    if (nits == 0.0f) return 0;
+    return ceilf((logf(nits / 50.0f) / logf(2.0f)) * 32.0f);
+}
+
+static void edid_detailed_timing_desc( const struct edid_monitor_info *info, BYTE *data )
+{
+    double refresh = info->preferred_refresh <= 0.0 ? 60.0 : info->preferred_refresh;
+    const unsigned h_front_porch = 8, h_sync_pulse = 32, h_back_porch = 40;
+    const unsigned v_front_porch = 6, v_sync_pulse = 8, v_back_porch = 40;
+    unsigned h_blanking, v_blanking, h_total, v_total, pixel_clock;
+
+    h_blanking = h_front_porch + h_sync_pulse + h_back_porch;
+    v_blanking = v_front_porch + v_sync_pulse + v_back_porch;
+    h_total = info->preferred_width + h_blanking;
+    v_total = info->preferred_height + v_blanking;
+    pixel_clock = round(h_total * v_total * refresh / 1e4);
+
+    data[0] = pixel_clock & 0xff;
+    data[1] = (pixel_clock >> 8) & 0xff;
+    data[2] = info->preferred_width;
+    data[3] = h_total - info->preferred_width;
+    data[4] = (((h_total - info->preferred_width) >> 8) & 0xf);
+    data[4] |= (((info->preferred_width >> 8) & 0xf) << 4);
+    data[5] = info->preferred_height;
+    data[6] = v_total - info->preferred_height;
+    data[7] = (((v_total - info->preferred_height) >> 8) & 0xf);
+    data[7] |= (((info->preferred_height >> 8) & 0xf) << 4);
+    data[8] = h_front_porch;
+    data[9] = h_sync_pulse;
+    data[10] = ((v_front_porch & 0xf) << 4) | (v_sync_pulse & 0xf);
+    data[11] = (((h_front_porch >> 8) & 3) << 6) | (((h_sync_pulse >> 8) & 3) << 4);
+    data[11] |= (((v_front_porch >> 4) & 3) << 2) | ((v_sync_pulse >> 4) & 3);
+    data[12] = info->width_mm;
+    data[13] = info->height_mm;
+    data[14] = (((info->width_mm >> 8) & 0xf) << 4) | ((info->height_mm >> 8) & 0xf);
+    data[17] = 0x1e;
+}
+
+static BOOL get_edid_from_monitor_info( const struct edid_monitor_info *info, BYTE **edid_out, UINT *edid_len )
+{
+    UINT extensions = 0, i;
+    BYTE *edid, *p;
+    char model[14] = {0};
+
+    if (!(info->flags & MONITOR_INFO_HAS_PREFERRED_MODE)) return FALSE;
+    if (!(info->flags & MONITOR_INFO_HAS_PRIMARIES)) return FALSE;
+    if (!(info->flags & MONITOR_INFO_HAS_PHYSICAL_DIMENSIONS)) return FALSE;
+
+    if (info->flags & MONITOR_INFO_HAS_CTA861_EXT) extensions++;
+
+    *edid_len = 128 + extensions * 128;
+    if (!(*edid_out = edid = calloc( *edid_len, sizeof(BYTE) )))
+    {
+        *edid_len = 0;
+        return FALSE;
+    }
+
+    *(ULONG64*)edid = 0x00ffffffffffff00;
+
+    if (info->flags & MONITOR_INFO_HAS_MONITOR_ID)
+    {
+        edid[8] = info->manufacturer & 0xff;
+        edid[9] = (info->manufacturer >> 8) & 0xff;
+        edid[10] = info->product_code & 0xff;
+        edid[11] = (info->product_code >> 8) & 0xff;
+    }
+
+    if (info->flags & MONITOR_INFO_HAS_SERIAL_NUMBER)
+        *(unsigned int*)(edid + 12) = info->serial_number;
+
+    edid[16] = 0xff;
+    edid[17] = 31; /* 2021 */
+    edid[18] = 1;
+    edid[19] = 4;
+    edid[20] = 0xf5; /* digital input, reserved bpc, display port */
+    edid[21] = round( info->width_mm / 10.0 );
+    edid[22] = round( info->height_mm / 10.0 );
+    edid[23] = 0x78; /* 2.2 gamma */
+    edid[24] = info->srgb ? 0x6 : 0x2;
+
+    if (info->srgb)
+    {
+        edid[25] = 0xee;
+        edid[26] = 0x91;
+        edid[27] = 0xa3;
+        edid[28] = 0x54;
+        edid[29] = 0x4c;
+        edid[30] = 0x99;
+        edid[31] = 0x26;
+        edid[32] = 0x0f;
+        edid[33] = 0x50;
+        edid[34] = 0x54;
+    }
+    else
+    {
+        edid[25] = ((info->r_x & 0x3) << 6) | ((info->r_y & 0x3) << 4) |
+                    ((info->g_x & 0x3) << 2) | (info->g_y & 0x3);
+        edid[26] = ((info->b_x & 0x3) << 6) | ((info->b_y & 0x3) << 4) |
+                    ((info->w_x & 0x3) << 2) | (info->w_y & 0x3);
+        edid[27] = (info->r_x & 0x3fc) >> 2;
+        edid[28] = (info->r_y & 0x3fc) >> 2;
+        edid[29] = (info->g_x & 0x3fc) >> 2;
+        edid[30] = (info->g_y & 0x3fc) >> 2;
+        edid[31] = (info->b_x & 0x3fc) >> 2;
+        edid[32] = (info->b_y & 0x3fc) >> 2;
+        edid[33] = (info->w_x & 0x3fc) >> 2;
+        edid[34] = (info->w_y & 0x3fc) >> 2;
+    }
+
+    for (i = 0; i < 16; i++) edid[38 + i] = 1;
+
+    p = edid + 54;
+    edid_detailed_timing_desc(info, p);
+
+    p += 18;
+    p[3] = 0xfc;
+
+    if (info->flags & MONITOR_INFO_HAS_MONITOR_NAME)
+        unicodez_to_ascii( model, info->monitor_name );
+    else
+        strcpy( model, "Wine Monitor" );
+
+    /* terminate the string with \n */
+    for (i = 0; i < sizeof(model)-1; i++)
+    {
+        if (!model[i])
+        {
+            model[i++] = '\n';
+            break;
+        }
+    }
+
+    /* then spaces after the \n */
+    for (; i < sizeof(model)-1; i++)
+        if (!model[i]) model[i] = ' ';
+
+    memcpy( (char *)p + 5, model, sizeof(model)-1 );
+
+    /* TODO: Add a way for drivers to use the remaining descriptors */
+    p += 18;
+    p[3] = 0x10;
+    p += 18;
+    p[3] = 0x10;
+
+    edid[126] = extensions;
+    edid[127] = edid_checksum( edid );
+
+    p = edid;
+
+    if (info->flags & MONITOR_INFO_HAS_CTA861_EXT)
+    {
+        p += 128;
+
+        p[0] = 2;
+        p[1] = 3;
+        p[2] = 0xb;
+
+        p[4] = (0x7 << 5) | 0x6;
+        p[5] = 6;
+
+        /* HDR static metadata block */
+        p[6] = 0x7; /* ST 2084 | SDR | HDR */
+        p[7] = 1;
+        p[8] = edid_max_luminance( info->max_cll );
+        p[9] = edid_max_luminance( info->max_fall );
+        p[10] = 0; /* many apps implement min luminance incorrectly */
+
+        p[127] = edid_checksum( p );
+    }
+
+    return TRUE;
+}
+
 static void add_monitor( const struct gdi_monitor *gdi_monitor, void *param )
 {
     struct device_manager_ctx *ctx = param;
@@ -2093,6 +2280,8 @@ static void add_monitor( const struct gdi_monitor *gdi_monitor, void *param )
     struct source *source;
     char buffer[MAX_PATH];
     char monitor_id_string[16];
+    BYTE *edid, generated_edid = 0;
+    UINT edid_len;
 
     assert( !list_empty( &sources ) );
     source = LIST_ENTRY( list_tail( &sources ), struct source, entry );
@@ -2107,7 +2296,16 @@ static void add_monitor( const struct gdi_monitor *gdi_monitor, void *param )
 
     TRACE( "%u %s %s\n", monitor->id, wine_dbgstr_rect(&gdi_monitor->rc_monitor), wine_dbgstr_rect(&gdi_monitor->rc_work) );
 
-    get_monitor_info_from_edid( &monitor->edid_info, gdi_monitor->edid, gdi_monitor->edid_len );
+    edid = gdi_monitor->edid;
+    edid_len = gdi_monitor->edid_len;
+
+    if (edid) get_monitor_info_from_edid( &monitor->edid_info, edid, edid_len );
+    else
+    {
+        generated_edid = get_edid_from_monitor_info( &gdi_monitor->edid_info, &edid, &edid_len );
+        monitor->edid_info = gdi_monitor->edid_info;
+    }
+
     if (monitor->edid_info.flags & MONITOR_INFO_HAS_MONITOR_ID)
         strcpy( monitor_id_string, monitor->edid_info.monitor_id_string );
     else
@@ -2117,18 +2315,138 @@ static void add_monitor( const struct gdi_monitor *gdi_monitor, void *param )
     snprintf( monitor->path, sizeof(monitor->path), "DISPLAY\\%s\\%04X&%04X", monitor_id_string, source->id, monitor->id );
     set_reg_ascii_value( source->key, buffer, monitor->path );
 
-    if (!write_monitor_to_registry( monitor, gdi_monitor->edid, gdi_monitor->edid_len ))
+    if (!write_monitor_to_registry( monitor, edid, edid_len ))
     {
         WARN( "Failed to write monitor %p to registry\n", monitor );
+        if (generated_edid) free( edid );
         monitor_release( monitor );
+        return;
+    }
+
+    if (generated_edid) free( edid );
+    list_add_tail( &monitors, &monitor->entry );
+    TRACE( "created monitor %p for source %p\n", monitor, source );
+    source->monitor_count++;
+    ctx->monitor_count++;
+}
+
+/* Return whether fsr should be used */
+BOOL fs_hack_is_fsr(BOOL *lite, float *sharpness)
+{
+    static int is_fsr = -1;
+    static int is_fsr_lite = 0;
+    static int strength = 2;
+    if (is_fsr < 0)
+    {
+        const char *e = getenv("WINE_FULLSCREEN_FSR");
+        const char *v = getenv("WINE_FULLSCREEN_FSR_STRENGTH");
+
+        is_fsr = e && strcmp(e, "0");
+        is_fsr_lite = e && !strcmp(e, "lite");
+        if (v) {
+            strength = atoi(v);
+        }
+    }
+    if (lite) {
+        *lite = is_fsr_lite;
+    }
+    if (sharpness) {
+        *sharpness = (float) strength / 10.0f;
+    }
+
+    TRACE("is_fsr: %s, is_lite = %s, sharpness: %2.4f\n",
+        is_fsr ? "TRUE" : "FALSE", *lite ? "TRUE" : "FALSE", sharpness ? *sharpness : 0.0f);
+    return is_fsr;
+}
+
+static BOOL get_fsr_single_mode( UINT *mode )
+{
+    static int cached = -1;
+    const char *e;
+    if ( cached != -1 )
+    {
+        *mode = cached;
+        return TRUE;
+    }
+
+    if ( (e = getenv("WINE_FULLSCREEN_FSR_MODE")) )
+    {
+        /* If empty or zero don't apply a mode */
+        if (*e == '\0' || *e == '0')
+            return FALSE;
+        /* The 'mode' values should be in sync with the order in 'fsr_ratios' */
+        if ( !strcmp(e, "Ultra") || !strcmp(e, "ultra") )                   cached = 3;
+        else if ( !strcmp(e, "Quality") || !strcmp(e, "quality") )          cached = 2;
+        else if ( !strcmp(e, "Balanced") || !strcmp(e, "balanced") )        cached = 1;
+        else if ( !strcmp(e, "Performance") || !strcmp(e, "performance") )  cached = 0;
+        /* If the user mistyped the mode, return 'balanced' */
+        else cached = 1;
+        *mode = cached;
+        TRACE("found single mode: %d\n", cached);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static BOOL get_fsr_custom_mode( SIZE *size )
+{
+    static LONG width = 0, height = 0;
+    const char *e;
+    if ( width && height )
+    {
+        size->cx = width;
+        size->cy = height;
+        return TRUE;
+    }
+    if ( (e = getenv("WINE_FULLSCREEN_FSR_CUSTOM_MODE")) )
+    {
+        const int n = sscanf(e, "%ux%u", &width, &height);
+        if ( n == 2 )
+        {
+            size->cx = width;
+            size->cy = height;
+            TRACE("found custom size: %dx%d\n", size->cx, size->cy);
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+static float get_fsr_h_ratio(SIZE devmode)
+{
+    float h_ratio = 0.0f;
+    if (devmode.cx / 16.0f == devmode.cy / 9.0f)        h_ratio = 9.0f;                     /* 16:9 resolutions */
+    else if ((DWORD)(devmode.cx / 210.0f) == (DWORD)(devmode.cy / 90.0f)) h_ratio = 9.0f;   /* 21:9 ultra-wide resolutions */
+    else if (devmode.cx / 32.0f == devmode.cy / 9.0f)   h_ratio = 9.0f;                     /* 32:9 "duper-ultra-wide" resolutions */
+    else if (devmode.cx / 8.0f == devmode.cy / 5.0f)    h_ratio = 10.0f;                    /* 16:10 resolutions */
+    else if (devmode.cx / 12.0f == devmode.cy / 5.0f)   h_ratio = 10.0f;                    /* 24:10 resolutions */
+    else h_ratio = 1.0f;    /* In case of unknown ratio, naively create FSR resolutions */
+    return h_ratio;
+}
+
+static SIZE get_fsr_size(SIZE devmode, float factor)
+{
+    float h_ratio, real_w_ratio;
+    SIZE fsr_size;
+
+    h_ratio = get_fsr_h_ratio(devmode);
+    real_w_ratio = devmode.cx / (devmode.cy / h_ratio);
+    if (h_ratio == 1.0f)
+    {
+        /* Naive generation (matches AMD mode documentation but not sample code) */
+        /* AMD's sample rounds down, which doesn't match their published list of resolutions */
+        fsr_size.cy = (LONG)(devmode.cy / factor + 0.5f);
+        fsr_size.cx = (LONG)(fsr_size.cy * ((float)devmode.cx / (float)devmode.cy) + 0.5f);
     }
     else
     {
-        list_add_tail( &monitors, &monitor->entry );
-        TRACE( "created monitor %p for source %p\n", monitor, source );
-        source->monitor_count++;
-        ctx->monitor_count++;
+        /* Round to nearest integer (our way) */
+        float h_factor = (LONG) ((devmode.cy / h_ratio) / factor + 0.5f);
+        fsr_size.cx = (LONG)(real_w_ratio * h_factor + 0.5f);
+        fsr_size.cy = (LONG)(h_ratio * h_factor + 0.5f);
     }
+    TRACE("calculated size: %ux%u, ratio: %1.1f\n", fsr_size.cx, fsr_size.cy, factor);
+    return fsr_size;
 }
 
 static UINT add_screen_size( SIZE *sizes, UINT count, SIZE size )
@@ -2179,6 +2497,7 @@ static SIZE *get_screen_sizes( const DEVMODEW *maximum, const DEVMODEW *modes, U
         {2880, 1620},
         {3200, 1800},
         /* 16:10 */
+        {1280,  800},
         {1440,  900},
         {1680, 1050},
         {1920, 1200},
@@ -2201,14 +2520,40 @@ static SIZE *get_screen_sizes( const DEVMODEW *maximum, const DEVMODEW *modes, U
     UINT i, count;
 
     const char *env;
+    BOOL lite;
+    float sharpness;
+
+    static SIZE fsr_sizes[4] = {0};
+    SIZE fsr_custom_size = {0, 0};
+    UINT fsr_single_mode = 1;
+    const BOOL is_fsr = fs_hack_is_fsr(&lite, &sharpness);
+    const BOOL is_custom_mode = get_fsr_custom_mode( &fsr_custom_size );
+    const BOOL is_single_mode = get_fsr_single_mode( &fsr_single_mode );
 
     count = 1 + ARRAY_SIZE(default_sizes) + ARRAY_SIZE(lowres_sizes) + modes_count;
+    count += ARRAY_SIZE(fsr_sizes);
     if (!(sizes = malloc( count * sizeof(*sizes) ))) return NULL;
 
     count = add_screen_size( sizes, 0, max_size );
+
+    if ( is_fsr )
+    {
+        if ( !fsr_sizes[0].cx || !fsr_sizes[0].cy )
+        {
+            fsr_sizes[0] = get_fsr_size(max_size, 2.0f);   /* FSR Performance */
+            fsr_sizes[1] = get_fsr_size(max_size, 1.7f);   /* FSR Balanced */
+            fsr_sizes[2] = get_fsr_size(max_size, 1.5f);   /* FSR Quality */
+            fsr_sizes[3] = get_fsr_size(max_size, 1.3f);   /* FSR Ultra Quality */
+        }
+        if ( !is_custom_mode && is_single_mode ) fsr_custom_size = fsr_sizes[fsr_single_mode];
+    }
+
     for (i = 0; i < ARRAY_SIZE(default_sizes); i++)
     {
         if (default_sizes[i].cx > max_size.cx || default_sizes[i].cy > max_size.cy) continue;
+        /* Don't report modes larger than the requested FSR single mode or custom size */
+        if (fsr_custom_size.cx && default_sizes[i].cx > fsr_custom_size.cx) continue;
+        if (fsr_custom_size.cy && default_sizes[i].cy > fsr_custom_size.cy) continue;
         count += add_screen_size( sizes, count, default_sizes[i] );
     }
 
@@ -2219,12 +2564,33 @@ static SIZE *get_screen_sizes( const DEVMODEW *maximum, const DEVMODEW *modes, U
         count += ARRAY_SIZE(lowres_sizes);
     }
 
+    if ( is_fsr )
+    {
+        if ( is_custom_mode || is_single_mode )
+        {
+            if ( enable_lowres || (fsr_custom_size.cx > 800 && fsr_custom_size.cy > 600) )
+                count += add_screen_size( sizes, count, fsr_custom_size );
+        }
+        else
+        {
+            for (i = 0; i < ARRAY_SIZE(fsr_sizes); i++)
+            {
+                if ( fsr_sizes[i].cx < 800 && !enable_lowres ) continue;;
+                if ( fsr_sizes[i].cy < 600 && !enable_lowres ) continue;;
+                count += add_screen_size( sizes, count, fsr_sizes[i] );
+            }
+        }
+    }
+
     for (mode = modes; mode && modes_count; mode = NEXT_DEVMODEW(mode), modes_count--)
     {
         UINT width = devmode_get( mode, DM_PELSWIDTH ), height = devmode_get( mode, DM_PELSHEIGHT );
         SIZE size = {.cx = max( width, height ), .cy = min( width, height )};
         if (!size.cx || (size.cx < 800 && !enable_lowres) || size.cx > max_size.cx) continue;
         if (!size.cy || (size.cy < 600 && !enable_lowres) || size.cy > max_size.cy) continue;
+        /* Don't report modes larger than the requested FSR single mode or custom size */
+        if (fsr_custom_size.cx && default_sizes[i].cx > fsr_custom_size.cx) continue;
+        if (fsr_custom_size.cy && default_sizes[i].cy > fsr_custom_size.cy) continue;
         count += add_screen_size( sizes, count, size );
     }
 
@@ -6214,6 +6580,13 @@ void sysparams_init(void)
         emulate_modeset = IS_OPTION_TRUE( buffer[0] );
 
     {
+        const char *decorate = NULL;
+
+        decorate = getenv( "WINE_NO_WM_DECORATION" );
+        if (decorate && decorate[0] == '1') decorated_mode = FALSE;
+    }
+
+    {
         const char *s;
 
         if ((s = getenv( "PROTON_LIMIT_RESOLUTIONS" )))
@@ -8078,10 +8451,11 @@ NTSTATUS WINAPI NtUserDisplayConfigGetDeviceInfo( DISPLAYCONFIG_DEVICE_INFO_HEAD
     }
     case DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO:
     {
+        static int once;
         DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO *color_info = (DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO *)packet;
         struct monitor *monitor;
 
-        FIXME( "DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO semi-stub.\n" );
+        if (!once++) FIXME( "DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO semi-stub.\n" );
 
         if (packet->size < sizeof(*color_info))
             return STATUS_INVALID_PARAMETER;
@@ -8336,4 +8710,37 @@ BOOL get_gpu_info_from_uuid( const GUID *uuid, LUID *luid, UINT32 *node_mask, ch
 
     unlock_display_devices();
     return found;
+}
+
+BOOL get_font_smoothing_aa( UINT *font_aa, UINT *subpixel_orientation_aa )
+{
+    DWORD type, orientation;
+    UINT smoothing;
+
+    if (!volatile_base_key
+            || !get_entry( &entry_FONTSMOOTHING, 0, &smoothing )
+            || !get_entry( &entry_FONTSMOOTHINGTYPE, 0, &type )
+            || !get_entry( &entry_FONTSMOOTHINGORIENTATION, 0, &orientation ))
+        return FALSE;
+
+    switch (orientation)
+    {
+    case FE_FONTSMOOTHINGORIENTATIONBGR:
+        *subpixel_orientation_aa = WINE_GGO_HBGR_BITMAP;
+        break;
+    case FE_FONTSMOOTHINGORIENTATIONRGB:
+        *subpixel_orientation_aa = WINE_GGO_HRGB_BITMAP;
+        break;
+    default:
+        return FALSE;
+    }
+
+    if (!smoothing)
+        *font_aa = GGO_BITMAP;
+    else if (type == FE_FONTSMOOTHINGCLEARTYPE)
+        *font_aa = *subpixel_orientation_aa;
+    else
+        *font_aa = GGO_GRAY4_BITMAP;
+
+    return TRUE;
 }

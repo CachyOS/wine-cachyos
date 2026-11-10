@@ -820,14 +820,16 @@ static HFONT xrenderdrv_SelectFont( PHYSDEV dev, HFONT hfont, UINT *aa_flags )
     LFANDSIZE lfsz;
     struct xrender_physdev *physdev = get_xrender_dev( dev );
     PHYSDEV next = GET_NEXT_PHYSDEV( dev, pSelectFont );
+    UINT xft_aa_flags;
     DWORD mode;
     HFONT ret;
 
     NtGdiExtGetObjectW( hfont, sizeof(lfsz.lf), &lfsz.lf );
-    if (!*aa_flags) *aa_flags = get_xft_aa_flags( &lfsz.lf );
 
     ret = next->funcs->pSelectFont( next, hfont, aa_flags );
     if (!ret) return 0;
+    xft_aa_flags = get_xft_aa_flags( &lfsz.lf );
+    if (xft_aa_flags && *aa_flags != GGO_BITMAP) *aa_flags = xft_aa_flags;
 
     switch (*aa_flags)
     {

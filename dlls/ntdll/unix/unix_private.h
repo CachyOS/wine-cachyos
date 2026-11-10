@@ -116,6 +116,7 @@ struct ntdll_thread_data
     PRTL_THREAD_START_ROUTINE start;         /* thread entry point */
     void                     *param;         /* thread entry point parameter */
     void                     *jmp_buf;       /* setjmp buffer for exception handling */
+    BOOL                      system_thread; /* thread runs only on the Unix side */
     int                      *fsync_apc_futex;
 };
 
@@ -209,6 +210,7 @@ extern pthread_mutex_t fd_cache_mutex;
 extern struct _KUSER_SHARED_DATA *user_shared_data;
 extern ULONG process_cookie;
 
+extern BOOL disable_sfn;
 extern BOOL process_termination_delay;
 extern BOOL fsync_help_simulated_pulse;
 extern BOOL localsystem_sid;

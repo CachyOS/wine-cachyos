@@ -1204,6 +1204,87 @@ PVOID WINAPI IoAllocateErrorLogEntry( PVOID IoObject, UCHAR EntrySize )
 }
 
 
+/* dirty way to postpone drivers from unmapping sections while a locked MDL still uses it */
+struct mapped_view
+{
+    struct list entry;
+    MDL *mdl;
+    void *pending_unmap;
+};
+
+/* i dont really know other ways to do this.. */
+static struct list mapped_views = LIST_INIT( mapped_views );
+DECLARE_CRITICAL_SECTION(mapped_views_cs);
+static struct mapped_view *find_mapped_view( const void *addr )
+{
+    struct mapped_view *view;
+
+    LIST_FOR_EACH_ENTRY( view, &mapped_views, struct mapped_view, entry )
+        if ((const char *)addr >= (char *)view->mdl->MappedSystemVa &&
+            (const char *)addr < (char *)view->mdl->MappedSystemVa + view->mdl->ByteCount)
+            return view;
+    return NULL;
+}
+
+static void add_mapped_view( MDL *mdl )
+{
+    struct mapped_view *view;
+
+    if (!(mdl->MdlFlags & MDL_PAGES_LOCKED) || !(view = malloc( sizeof(*view) ))) return;
+    view->mdl = mdl;
+    view->pending_unmap = NULL;
+
+    EnterCriticalSection( &mapped_views_cs );
+    list_add_tail( &mapped_views, &view->entry );
+    LeaveCriticalSection( &mapped_views_cs );
+}
+
+static void remove_mapped_view( MDL *mdl )
+{
+    struct mapped_view *view, *other;
+    void *unmap = NULL;
+
+    EnterCriticalSection( &mapped_views_cs );
+    LIST_FOR_EACH_ENTRY( view, &mapped_views, struct mapped_view, entry )
+    {
+        if (view->mdl != mdl) continue;
+        unmap = view->pending_unmap;
+        list_remove( &view->entry );
+        free( view );
+        /* another MDL may still map the same view */
+        if (unmap && (other = find_mapped_view( unmap )))
+        {
+            other->pending_unmap = unmap;
+            unmap = NULL;
+        }
+        break;
+    }
+    LeaveCriticalSection( &mapped_views_cs );
+
+    if (unmap) NtUnmapViewOfSection( GetCurrentProcess(), unmap );
+}
+
+/***********************************************************************
+ *           ZwUnmapViewOfSection  (NTOSKRNL.EXE.@)
+ */
+NTSTATUS WINAPI ZwUnmapViewOfSection( HANDLE process, void *addr )
+{
+    /* surely upstreamable........... */
+    struct mapped_view *view = NULL;
+
+    TRACE( "process %p, addr %p\n", process, addr );
+
+    if (process == GetCurrentProcess())
+    {
+        EnterCriticalSection( &mapped_views_cs );
+        if ((view = find_mapped_view( addr ))) view->pending_unmap = addr;
+        LeaveCriticalSection( &mapped_views_cs );
+    }
+    if (view) return STATUS_SUCCESS;
+
+    return NtUnmapViewOfSection( process, addr );
+}
+
 /***********************************************************************
  *           IoAllocateMdl  (NTOSKRNL.EXE.@)
  */
@@ -1247,6 +1328,7 @@ PMDL WINAPI IoAllocateMdl( PVOID va, ULONG length, BOOLEAN secondary, BOOLEAN ch
 void WINAPI IoFreeMdl(PMDL mdl)
 {
     TRACE("%p\n", mdl);
+    remove_mapped_view( mdl );
     HeapFree(GetProcessHeap(), 0, mdl);
 }
 
@@ -1516,6 +1598,7 @@ static void free_driver_object( void *obj )
     struct wine_driver *driver = obj;
     RtlFreeUnicodeString( &driver->driver_obj.DriverName );
     RtlFreeUnicodeString( &driver->driver_obj.DriverExtension->ServiceKeyName );
+    RtlFreeUnicodeString( &driver->registry_path );
     free_kernel_object( driver );
 }
 
@@ -1537,6 +1620,7 @@ POBJECT_TYPE IoDriverObjectType = &driver_type;
 NTSTATUS WINAPI IoCreateDriver( UNICODE_STRING *name, PDRIVER_INITIALIZE init )
 {
     struct wine_driver *driver;
+    const WCHAR *key_name;
     NTSTATUS status;
     unsigned int i;
 
@@ -1555,7 +1639,10 @@ NTSTATUS WINAPI IoCreateDriver( UNICODE_STRING *name, PDRIVER_INITIALIZE init )
     driver->driver_obj.DriverInit      = init;
     driver->driver_obj.DriverExtension = &driver->driver_extension;
     driver->driver_extension.DriverObject   = &driver->driver_obj;
-    build_driver_keypath( driver->driver_obj.DriverName.Buffer, &driver->driver_extension.ServiceKeyName );
+    build_driver_keypath( driver->driver_obj.DriverName.Buffer, &driver->registry_path );
+    if ((key_name = wcsrchr( driver->registry_path.Buffer, '\\' ))) key_name++;
+    else key_name = driver->registry_path.Buffer;
+    RtlCreateUnicodeString( &driver->driver_extension.ServiceKeyName, key_name );
     for (i = 0; i <= IRP_MJ_MAXIMUM_FUNCTION; i++)
         driver->driver_obj.MajorFunction[i] = unhandled_irp;
     list_init( &driver->root_pnp_devices );
@@ -1565,7 +1652,7 @@ NTSTATUS WINAPI IoCreateDriver( UNICODE_STRING *name, PDRIVER_INITIALIZE init )
         ERR( "failed to insert driver %s in tree\n", debugstr_us(name) );
     LeaveCriticalSection( &drivers_cs );
 
-    status = driver->driver_obj.DriverInit( &driver->driver_obj, &driver->driver_extension.ServiceKeyName );
+    status = driver->driver_obj.DriverInit( &driver->driver_obj, &driver->registry_path );
     if (status)
     {
         IoDeleteDriver( &driver->driver_obj );
@@ -2505,6 +2592,7 @@ static void get_process_image_file_name( HANDLE handle, PEPROCESS process )
 
 static void *create_process_object( HANDLE handle )
 {
+    NTSTATUS status;
     PEPROCESS process;
 
     if (!(process = alloc_kernel_object( PsProcessType, handle, sizeof(*process), 0 ))) return NULL;
@@ -2515,7 +2603,12 @@ static void *create_process_object( HANDLE handle )
     NtQueryInformationProcess( handle, ProcessSessionInformation, &process->session_id, sizeof(process->session_id), NULL );
     NtQueryInformationProcess( handle, ProcessTimes, &process->times, sizeof(process->times), NULL );
     get_process_image_file_name( handle, process );
-    IsWow64Process( handle, &process->wow64 );
+
+    status = NtQueryInformationProcess( handle, ProcessWow64Information, &process->peb32, sizeof(process->peb32), NULL );
+    if (status) process->peb32 = NULL;
+
+    NtQueryInformationProcess( handle, ProcessDebugPort, &process->debug_port, sizeof(process->debug_port), NULL );
+    if (status) process->debug_port = 0;
 
     return process;
 }
@@ -2591,7 +2684,7 @@ HANDLE WINAPI PsGetProcessInheritedFromUniqueProcessId( PEPROCESS process )
  */
 ULONG WINAPI PsGetProcessSessionId( PEPROCESS process )
 {
-    TRACE("%p -> %lu", process, process->session_id);
+    TRACE("%p -> %lu\n", process, process->session_id);
     return process->session_id;
 }
 
@@ -2613,6 +2706,40 @@ const char *WINAPI PsGetProcessImageFileName( PEPROCESS process )
     return process->image_name;
 }
 
+/*********************************************************************
+ *           PsGetProcessDebugPort    (NTOSKRNL.@)
+ */
+DWORD_PTR WINAPI PsGetProcessDebugPort( PEPROCESS process )
+{
+    TRACE("%p\n", process);
+    return process->debug_port;
+}
+
+/*********************************************************************
+ *           PsGetProcessExitStatus    (NTOSKRNL.@)
+ */
+NTSTATUS WINAPI PsGetProcessExitStatus( PEPROCESS process )
+{
+    NTSTATUS status;
+    HANDLE h;
+    PROCESS_BASIC_INFORMATION info;
+
+    TRACE("%p\n", process);
+
+    if ((status = ObOpenObjectByPointer(process, 0, NULL, PROCESS_ALL_ACCESS, NULL, KernelMode, &h)))
+    {
+        WARN("Error opening process object, status %#lx.\n", status);
+        return STATUS_NOT_FOUND;
+    }
+
+    status = NtQueryInformationProcess(h, ProcessBasicInformation, &info, sizeof(info), NULL);
+    NtClose(h);
+
+    if (status) return STATUS_NOT_FOUND;
+
+    return info.ExitStatus;
+}
+
 static void *create_thread_object( HANDLE handle )
 {
     THREAD_BASIC_INFORMATION info;
@@ -2628,6 +2755,7 @@ static void *create_thread_object( HANDLE handle )
     if (!NtQueryInformationThread( handle, ThreadBasicInformation, &info, sizeof(info), NULL ))
     {
         thread->id = info.ClientId;
+        thread->teb = info.TebBaseAddress;
         if ((process = OpenProcess( PROCESS_QUERY_INFORMATION, FALSE, HandleToUlong(thread->id.UniqueProcess) )))
         {
             kernel_object_from_handle( process, PsProcessType, (void**)&thread->process );
@@ -2716,10 +2844,7 @@ HANDLE WINAPI PsGetThreadProcessId( PETHREAD thread )
     return thread->kthread.id.UniqueProcess;
 }
 
-/*********************************************************************
- *           PsGetContextThread    (NTOSKRNL.@)
- */
-NTSTATUS WINAPI PsGetContextThread(PETHREAD thread, CONTEXT *context, KPROCESSOR_MODE mode)
+NTSTATUS WINAPI get_context_thread( PETHREAD thread, CONTEXT *context, KPROCESSOR_MODE mode )
 {
     NTSTATUS status;
     HANDLE h;
@@ -2740,6 +2865,26 @@ NTSTATUS WINAPI PsGetContextThread(PETHREAD thread, CONTEXT *context, KPROCESSOR
 
     return status;
 }
+
+/*********************************************************************
+ *           PsGetContextThread    (NTOSKRNL.@)
+ */
+#if defined(__x86_64__) && !defined(__arm64ec__)
+__ASM_GLOBAL_FUNC( PsGetContextThread,
+                   "subq $0x28,%rsp\n\t"
+                   __ASM_SEH(".seh_stackalloc 0x28\n\t")
+                   __ASM_SEH(".seh_endprologue\n\t")
+                   __ASM_CFI(".cfi_adjust_cfa_offset 0x28\n\t")
+                   "call " __ASM_NAME("get_context_thread") "\n\t"
+                   "addq $0x28,%rsp\n\t"
+                   __ASM_CFI(".cfi_adjust_cfa_offset -0x28\n\t")
+                   "ret" )
+#else
+NTSTATUS WINAPI PsGetContextThread( PETHREAD thread, CONTEXT *context, KPROCESSOR_MODE mode )
+{
+    return get_context_thread( thread, context, mode );
+}
+#endif
 
 /***********************************************************************
  *           KeInsertQueue   (NTOSKRNL.EXE.@)
@@ -3145,8 +3290,11 @@ PVOID WINAPI MmMapLockedPages( MDL *mdl, KPROCESSOR_MODE mode )
 {
     TRACE( "%p %u\n", mdl, mode );
 
+    if (mdl->MdlFlags & MDL_MAPPED_TO_SYSTEM_VA) return mdl->MappedSystemVa;
+
     mdl->MdlFlags |= MDL_MAPPED_TO_SYSTEM_VA;
     mdl->MappedSystemVa = (char *)mdl->StartVa + mdl->ByteOffset;
+    add_mapped_view( mdl );
     return mdl->MappedSystemVa;
 }
 
@@ -3171,6 +3319,7 @@ void WINAPI MmUnmapLockedPages( void *base, MDL *mdl )
 {
     TRACE( "%p %p\n", base, mdl );
 
+    remove_mapped_view( mdl );
     mdl->MdlFlags &= ~MDL_MAPPED_TO_SYSTEM_VA;
 }
 
@@ -3421,6 +3570,29 @@ HANDLE WINAPI PsGetCurrentThreadId(void)
     return KeGetCurrentThread()->id.UniqueThread;
 }
 
+/***********************************************************************
+ *           PsGetCurrentThreadTeb   (NTOSKRNL.EXE.@)
+ */
+TEB *WINAPI PsGetCurrentThreadTeb(void)
+{
+    return KeGetCurrentThread()->teb;
+}
+
+/***********************************************************************
+ *           PsGetCurrentThreadProcess   (NTOSKRNL.EXE.@)
+ */
+PEPROCESS WINAPI PsGetCurrentThreadProcess(void)
+{
+    return KeGetCurrentThread()->process;
+}
+
+/***********************************************************************
+ *           PsGetCurrentThreadProcess   (NTOSKRNL.EXE.@)
+ */
+HANDLE WINAPI PsGetCurrentThreadProcessId(void)
+{
+    return PsGetProcessId(PsGetCurrentThreadProcess());
+}
 
 /***********************************************************************
  *           PsIsSystemThread   (NTOSKRNL.EXE.@)
@@ -3962,7 +4134,17 @@ void WINAPI KeBugCheckEx(ULONG code, ULONG_PTR param1, ULONG_PTR param2, ULONG_P
  */
 void WINAPI ProbeForRead(void *address, SIZE_T length, ULONG alignment)
 {
-    FIXME("(%p %Iu %lu) stub\n", address, length, alignment);
+    TRACE("(%p %Iu %lu)\n", address, length, alignment);
+
+    if (length == 0) return;
+
+    if ((ULONG_PTR)address & (alignment-1))
+        RtlRaiseStatus(STATUS_DATATYPE_MISALIGNMENT);
+
+    if ((ULONG_PTR)address + length < (ULONG_PTR)address)
+        RtlRaiseStatus(STATUS_ACCESS_VIOLATION);
+
+    /* TODO: Check if within address space */
 }
 
 /***********************************************************************
@@ -3970,7 +4152,14 @@ void WINAPI ProbeForRead(void *address, SIZE_T length, ULONG alignment)
  */
 void WINAPI ProbeForWrite(void *address, SIZE_T length, ULONG alignment)
 {
-    FIXME("(%p %Iu %lu) stub\n", address, length, alignment);
+    TRACE("(%p %Iu %lu)\n", address, length, alignment);
+
+    if (length == 0) return;
+
+    ProbeForRead(address, length, alignment);
+
+    for (volatile char *p = address; p < (char *)address + length; p++)
+        *p |= 0;
 }
 
 /***********************************************************************
@@ -4337,6 +4526,15 @@ static HMODULE load_driver( const WCHAR *driver_name, const UNICODE_STRING *keyn
     return module;
 }
 
+#if defined(__x86_64__) && !defined(__arm64ec__)
+static NTSTATUS __attribute__((naked)) call_driver_init( struct _DRIVER_OBJECT *driver, PUNICODE_STRING keyname, void *init )
+{
+    asm( "movq $0xFFFF800000000000,%r9\n\t"
+         "orq %r9,(%rsp)\n\t" 
+         "jmpq *%r8\n\t" );
+}
+#endif
+
 /* call the driver init entry point */
 static NTSTATUS WINAPI init_driver( DRIVER_OBJECT *driver_object, UNICODE_STRING *keyname )
 {
@@ -4365,7 +4563,11 @@ static NTSTATUS WINAPI init_driver( DRIVER_OBJECT *driver_object, UNICODE_STRING
     TRACE_(relay)( "\1Call driver init %p (obj=%p,str=%s)\n",
                    driver_object->DriverInit, driver_object, wine_dbgstr_w(keyname->Buffer) );
 
+#if defined(__x86_64__) && !defined(__arm64ec__)
+    status = call_driver_init( driver_object, keyname, driver_object->DriverInit );
+#else
     status = driver_object->DriverInit( driver_object, keyname );
+#endif
 
     TRACE_(relay)( "\1Ret  driver init %p (obj=%p,str=%s) retval=%08lx\n",
                    driver_object->DriverInit, driver_object, wine_dbgstr_w(keyname->Buffer), status );
@@ -4657,10 +4859,22 @@ NTSTATUS WINAPI DbgQueryDebugFilterState(ULONG component, ULONG level)
 /*********************************************************************
  *           PsGetProcessWow64Process    (NTOSKRNL.@)
  */
-PVOID WINAPI PsGetProcessWow64Process(PEPROCESS process)
+PEB32 * WINAPI PsGetProcessWow64Process(PEPROCESS process)
 {
-    FIXME("stub: %p\n", process);
-    return NULL;
+    TRACE("%p\n", process);
+    return process->peb32;
+}
+
+/*********************************************************************
+ *           MmCopyMemory    (NTOSKRNL.@)
+ */
+NTSTATUS WINAPI MmCopyMemory(void *target, MM_COPY_ADDRESS source, SIZE_T size, ULONG flags, SIZE_T *copied)
+{
+    FIXME("target %p, source %s, size %Iu, flags %#lx, copied %p stub.\n",
+            target, wine_dbgstr_longlong(source.PhysicalAddress.QuadPart), size, flags, copied);
+
+    *copied = 0;
+    return STATUS_NOT_IMPLEMENTED;
 }
 
 /*********************************************************************
@@ -4768,7 +4982,7 @@ ULONG WINAPI IoGetRequestorProcessId(IRP *irp)
 BOOLEAN WINAPI IoIs32bitProcess(IRP *irp)
 {
     TRACE("irp %p.\n", irp);
-    return irp->Tail.Overlay.Thread->kthread.process->wow64;
+    return !!irp->Tail.Overlay.Thread->kthread.process->peb32;
 }
 #endif
 
@@ -5042,6 +5256,12 @@ NTSTATUS WINAPI EtwUnregister(REGHANDLE handle)
 {
     FIXME("handle %I64x\n", handle);
     return STATUS_SUCCESS;
+}
+
+BOOL WINAPI VslGetSecurePciEnabled(void)
+{
+    FIXME("stub!\n");
+    return TRUE;
 }
 
 /***********************************************************************

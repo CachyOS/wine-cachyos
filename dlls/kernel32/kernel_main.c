@@ -223,3 +223,14 @@ HANDLE WINAPI CreateBoundaryDescriptorA(LPCSTR name, ULONG flags)
     FIXME("%s, %#lx - stub\n", debugstr_a(name), flags);
     return NULL;
 }
+
+/******************************************************************************
+ *          IsNativeVhdBoot    (KERNEL32.@)
+ */
+BOOL WINAPI IsNativeVhdBoot(BOOL *native)
+{
+    FIXME("%p stub!\n", native);
+
+    if (native) *native = FALSE;
+    return FALSE;
+}

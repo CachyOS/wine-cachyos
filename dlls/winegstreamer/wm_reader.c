@@ -1201,11 +1201,34 @@ static HRESULT WINAPI header_info_GetAttributeCountEx(IWMHeaderInfo3 *iface, WOR
     return E_NOTIMPL;
 }
 
+/* made up index, just be consistent. needs a test */
+#define WMV_ATTRIBUTE_DURATION 1
+
 static HRESULT WINAPI header_info_GetAttributeIndices(IWMHeaderInfo3 *iface, WORD stream_number,
         const WCHAR *name, WORD *lang_index, WORD *indices, WORD *count)
 {
-    FIXME("iface %p, stream_number %u, name %s, lang_index %p, indices %p, count %p, stub!\n",
+    FIXME("iface %p, stream_number %u, name %s, lang_index %p, indices %p, count %p, semi-stub!\n",
             iface, stream_number, debugstr_w(name), lang_index, indices, count);
+
+    if (!count) return E_INVALIDARG;
+
+    if (lang_index) FIXME("lang_index not supported!\n");
+
+    if (stream_number)
+    {
+        WARN("Requesting %s for stream %u, returning ASF_E_NOTFOUND.\n", debugstr_w(name), stream_number);
+        return ASF_E_NOTFOUND;
+    }
+
+    if (!wcscmp(name, L"Duration"))
+    {
+        *count = 1;
+        if (indices) *indices = WMV_ATTRIBUTE_DURATION;
+        return S_OK;
+    }
+
+    FIXME("Unsupported attribute %s\n", debugstr_w(name));
+
     return E_NOTIMPL;
 }
 
@@ -1213,9 +1236,46 @@ static HRESULT WINAPI header_info_GetAttributeByIndexEx(IWMHeaderInfo3 *iface,
         WORD stream_number, WORD index, WCHAR *name, WORD *name_len,
         WMT_ATTR_DATATYPE *type, WORD *lang_index, BYTE *value, DWORD *size)
 {
+    WORD temp_size;
+    HRESULT hr;
+
     FIXME("iface %p, stream_number %u, index %u, name %p, name_len %p,"
-            " type %p, lang_index %p, value %p, size %p, stub!\n",
+            " type %p, lang_index %p, value %p, size %p, semi-stub!\n",
             iface, stream_number, index, name, name_len, type, lang_index, value, size);
+
+    if (!size || !name_len) return E_INVALIDARG;
+
+    if (lang_index) FIXME("lang_index not supported!\n");
+
+    if (stream_number)
+    {
+        WARN("Requesting index %u for stream %u, returning ASF_E_NOTFOUND.\n", index, stream_number);
+        return ASF_E_NOTFOUND;
+    }
+
+    temp_size = *size;
+
+    switch (index)
+    {
+        case WMV_ATTRIBUTE_DURATION:
+        {
+            const WCHAR *durationW = L"Duration";
+            const int durationLen = wcslen(durationW)+1;
+
+            if (name && *name_len >= durationLen) wcscpy(name, durationW);
+            else if (name) return ASF_E_BUFFERTOOSMALL;
+
+            *name_len = durationLen;
+
+            hr = header_info_GetAttributeByName(iface, &stream_number, durationW, type, value, &temp_size);
+            *size = temp_size;
+            return hr;
+        }
+        default:
+            FIXME("Unsupported attribute index %u\n", index);
+            return E_INVALIDARG;
+    }
+
     return E_NOTIMPL;
 }
 
@@ -1513,6 +1573,29 @@ static void free_stream_buffers(struct wm_reader *reader)
     }
 }
 
+static BOOL is_new_wow64(void)
+{
+    BOOL is_wow64 = FALSE, old_wow64 = FALSE;
+    static int wow64_cached = -1;
+    
+    if (wow64_cached < 0)
+    {
+        if (!IsWow64Process( GetCurrentProcess(), &is_wow64 )) is_wow64 = FALSE;
+        if (is_wow64)
+        {
+            TEB64 *teb64 = ULongToPtr( NtCurrentTeb()->GdiBatchCount );
+            if (teb64)
+            {
+                PEB64 *peb64 = ULongToPtr(teb64->Peb);
+                old_wow64 = !peb64->LdrData;
+            }
+        }
+        wow64_cached = is_wow64 && !old_wow64;
+        FIXME("Running on new-wow64 mode: %s\n", !!wow64_cached ? "True" : "False");
+    }
+    return !!wow64_cached;
+}
+
 static void release_stream_allocators(struct wm_reader *reader)
 {
     unsigned int i;
@@ -1537,6 +1620,7 @@ static HRESULT init_stream(struct wm_reader *reader)
     HRESULT hr;
     WORD i;
 
+    enable_opengl = enable_opengl && !is_new_wow64();
 {
     const char *sgi = getenv("SteamGameId");
     if (sgi && (0
@@ -1549,6 +1633,7 @@ static HRESULT init_stream(struct wm_reader *reader)
     ))
     enable_opengl = FALSE;
 }
+    FIXME("Enabling opengl parser context: %s\n", enable_opengl ? "True" : "False");
 
     /* 32-bit GStreamer ORC cannot efficiently convert I420 to RGBA, use OpenGL converter
      * in that case but keep the usual codepath otherwise.
@@ -1680,6 +1765,7 @@ static HRESULT reinit_stream(struct wm_reader *reader, bool read_compressed)
     HRESULT hr;
     WORD i;
 
+    enable_opengl = enable_opengl && !is_new_wow64();
 {
     const char *sgi = getenv("SteamGameId");
     if (sgi && (0
@@ -1692,6 +1778,7 @@ static HRESULT reinit_stream(struct wm_reader *reader, bool read_compressed)
     ))
     enable_opengl = FALSE;
 }
+    FIXME("Enabling opengl parser context: %s\n", enable_opengl ? "True" : "False");
 
     ReleaseSemaphore(reader->read_sem, 1, NULL);
 
@@ -1744,6 +1831,13 @@ static HRESULT reinit_stream(struct wm_reader *reader, bool read_compressed)
         stream->wg_stream = wg_parser_get_stream(reader->wg_parser, reader->stream_count - i - 1);
         stream->reader = reader;
         wg_parser_stream_get_current_format(stream->wg_stream, &format);
+        if ((stream->format.major_type == WG_MAJOR_TYPE_AUDIO && format.major_type >= WG_MAJOR_TYPE_VIDEO)
+                || (stream->format.major_type == WG_MAJOR_TYPE_VIDEO
+                        && format.major_type > WG_MAJOR_TYPE_UNKNOWN && format.major_type < WG_MAJOR_TYPE_VIDEO))
+        {
+            stream->wg_stream = wg_parser_get_stream(reader->wg_parser, i);
+            wg_parser_stream_get_current_format(stream->wg_stream, &format);
+        }
         if (stream->selection == WMT_ON)
             wg_parser_stream_enable(stream->wg_stream, read_compressed ? &format : &stream->format);
     }
@@ -1787,6 +1881,28 @@ static struct wm_stream *wm_reader_get_stream_by_stream_number(struct wm_reader 
     if (stream_number && stream_number <= reader->stream_count)
         return &reader->streams[stream_number - 1];
     WARN("Invalid stream number %u.\n", stream_number);
+    return NULL;
+}
+
+static struct wm_stream *wm_reader_get_stream_by_parser_index(struct wm_reader *reader, unsigned int stream_index)
+{
+    wg_parser_stream_t wg_stream;
+    unsigned int i;
+
+    if (stream_index >= reader->stream_count)
+    {
+        WARN("Invalid parser stream index %u.\n", stream_index);
+        return NULL;
+    }
+
+    wg_stream = wg_parser_get_stream(reader->wg_parser, stream_index);
+    for (i = 0; i < reader->stream_count; ++i)
+    {
+        if (reader->streams[i].wg_stream == wg_stream)
+            return &reader->streams[i];
+    }
+
+    WARN("Could not find WM stream for parser stream index %u.\n", stream_index);
     return NULL;
 }
 
@@ -1870,7 +1986,7 @@ static HRESULT wm_reader_read_stream_sample(struct wm_reader *reader, struct wg_
     HRESULT hr;
     BYTE *data;
 
-    if (!(stream = wm_reader_get_stream_by_stream_number(reader, buffer->stream + 1)))
+    if (!(stream = wm_reader_get_stream_by_parser_index(reader, buffer->stream)))
         return E_INVALIDARG;
 
     TRACE("Got buffer for '%s' stream %p.\n", get_major_type_string(stream->format.major_type), stream);
@@ -2174,7 +2290,12 @@ static HRESULT WINAPI reader_GetNextSample(IWMSyncReader2 *iface,
         }
 
         if (SUCCEEDED(hr) && SUCCEEDED(hr = wm_reader_read_stream_sample(reader, &wg_buffer, sample, pts, duration, flags)))
-            stream_number = wg_buffer.stream + 1;
+        {
+            struct wm_stream *sample_stream;
+
+            if ((sample_stream = wm_reader_get_stream_by_parser_index(reader, wg_buffer.stream)))
+                stream_number = sample_stream->index + 1;
+        }
     }
 
     if (stream && hr == NS_E_NO_MORE_SAMPLES)

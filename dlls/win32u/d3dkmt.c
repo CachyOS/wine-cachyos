@@ -680,6 +680,46 @@ NTSTATUS WINAPI NtGdiDdDDIDestroyDevice( const D3DKMT_DESTROYDEVICE *desc )
     return STATUS_SUCCESS;
 }
 
+typedef struct
+{
+    /* 0x960 size */
+    UINT32 reserved1[2]; /* 0 */
+    UINT32 numInfo; /* 8 */
+    USHORT vendorID; /* c */
+    BYTE reserved2[6]; /* 0xE */
+    USHORT deviceID; /* x14 */
+    BYTE reserved3[0x94a];
+    /* 0x3a00 size */
+    struct
+    {
+        BYTE reserved1[0x894]; /* 0x0 */
+        UINT32 pciInfo; /* U32 @ 0x894: bus number + function number + deviceNumber */
+        BYTE reserved2[0x16c]; /* 0x898 */
+        UINT32 adapterFamily;  /* U32 @ 0xa04: adapter family */
+        UINT32 adapterRevision; /* U32 @ 0xa08: which GPU/APU it is in that family */
+        BYTE reserved3[0x238]; /* 0xa0c */
+        UINT32 unkFeature; /* U32 @ 0xc44: LSB needs to be set to 1 for RDNA */
+        UINT32 unkROP1; /* U32 @ 0xc48: numROPs = unkROP1 * unkROP2 * 4 */
+        UINT32 unkROP2; /* U32 @ 0xc4c */
+        BYTE reserved4[0x2DB0]; /* If reporting GCN architecture, there is some fields in this reserved block */
+    } info[1];
+} AMDLargeDriverPrivate;
+
+typedef enum _KMTUMDVERSION {
+  KMTUMDVERSION_DX9,
+  KMTUMDVERSION_DX10,
+  KMTUMDVERSION_DX11,
+  KMTUMDVERSION_DX12,
+  KMTUMDVERSION_DX12_WSA32,
+  KMTUMDVERSION_DX12_WSA64,
+  NUM_KMTUMDVERSIONS
+} KMTUMDVERSION;
+
+typedef struct _D3DKMT_UMDFILENAMEINFO {
+    KMTUMDVERSION Version;
+    WCHAR         UmdFileName[MAX_PATH];
+} D3DKMT_UMDFILENAMEINFO;
+
 /******************************************************************************
  *           NtGdiDdDDIQueryAdapterInfo    (win32u.@)
  */
@@ -748,8 +788,123 @@ NTSTATUS WINAPI NtGdiDdDDIQueryAdapterInfo( D3DKMT_QUERYADAPTERINFO *desc )
             data->HwSchSupported = 1;
             data->HwSchEnabledByDefault = 1;
         }
+        /* on multi GPU systems nvidia streamline may not properly detect hardware scheduling support.
+         * However, enabling it by default for all configurations may be risky. */
+        else if ((e = getenv( "WINE_ENABLE_HARDWARE_SCHEDULING" )) && *e == '1')
+        {
+            data->HwSchEnabled = 1;
+            data->HwSchSupported = 1;
+            data->HwSchEnabledByDefault = 1;
+        }
 
         return STATUS_SUCCESS;
+    }
+    case KMTQAITYPE_UMDRIVERPRIVATE:
+    {
+        VkExtensionProperties *prop = NULL;
+        uint32_t prop_count = 0;
+        VkPhysicalDeviceProperties2KHR properties2 = {0};
+        BOOL fp8_support = FALSE, wmma = FALSE, rdna2 = FALSE;
+        struct vulkan_physical_device *physical_device;
+        struct vulkan_instance *instance;
+        const char *e;
+
+        TRACE("size %x\n", desc->PrivateDriverDataSize);
+
+        if (!(adapter = get_d3dkmt_object( desc->hAdapter, D3DKMT_ADAPTER ))) return STATUS_INVALID_PARAMETER;
+        if (!(physical_device = adapter->physical_device)) return STATUS_INVALID_PARAMETER;
+        instance = physical_device->instance;
+
+        properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2_KHR;
+        instance->p_vkGetPhysicalDeviceProperties2KHR( physical_device->host.physical_device, &properties2 );
+
+        instance->p_vkEnumerateDeviceExtensionProperties( physical_device->host.physical_device, NULL, &prop_count, NULL );
+
+        if (!(prop = malloc( prop_count * sizeof(*prop) ))) return STATUS_NO_MEMORY;
+
+        instance->p_vkEnumerateDeviceExtensionProperties( physical_device->host.physical_device, NULL, &prop_count, prop );
+
+        for (int i = 0; i < prop_count; i++)
+        {
+            if (!strcmp( prop[i].extensionName, "VK_EXT_shader_float8" )) fp8_support = TRUE;
+            if (!strcmp( prop[i].extensionName, "VK_NV_cooperative_matrix2" )) wmma = TRUE;
+            if (!strcmp( prop[i].extensionName, "VK_KHR_fragment_shading_rate" )) rdna2 = TRUE;
+        }
+
+        free( prop );
+
+        /* FSR4-I8 on iGPU will not work that well due to performance reasons.
+         * Disable out of the box, can be enabled with FSR4_UPGRADE=1 */
+        if (properties2.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU)
+            rdna2 = FALSE;
+
+        /* AGS has a bug where it reads uninitialized memory with the small private data */
+        if (properties2.properties.vendorID == 0x1002 && desc->PrivateDriverDataSize == 0x260)
+            return STATUS_BUFFER_TOO_SMALL;
+
+        if (properties2.properties.vendorID == 0x1002 && desc->PrivateDriverDataSize == 0x4360)
+        {
+            AMDLargeDriverPrivate *data = desc->pPrivateDriverData;
+
+            data->vendorID = properties2.properties.vendorID;
+            data->deviceID = properties2.properties.deviceID;
+            data->numInfo = 1;
+            /* we set this to 0 in ADL */
+            data->info[0].pciInfo = 0;
+            /* RDNA 1 */
+            data->info[0].adapterFamily = 0x8f;
+            data->info[0].adapterRevision = 0x2;
+            data->info[0].unkFeature = 1;
+            data->info[0].unkROP1 = 4;
+            data->info[0].unkROP2 = 4;
+
+            if (fp8_support && wmma)
+            {
+                /* Navi4x 9070xt */
+                data->info[0].adapterFamily = 0x98;
+                data->info[0].adapterRevision = 0x51;
+            }
+            else if (rdna2 || ((e = getenv("FSR4_UPGRADE")) && *e == '1'))
+            {
+                /* Navi31 */
+                data->info[0].adapterFamily = 0x91;
+                data->info[0].adapterRevision = 0x3;
+            }
+
+            return STATUS_SUCCESS;
+        }
+
+        FIXME("Unsupported KMTQAITYPE_UMDRIVERPRIVATE!\n");
+        return STATUS_NOT_IMPLEMENTED;
+    }
+    case KMTQAITYPE_UMDRIVERNAME:
+    {
+        VkPhysicalDeviceProperties2KHR properties2 = {0};
+        struct vulkan_physical_device *physical_device;
+        struct vulkan_instance *instance;
+        D3DKMT_UMDFILENAMEINFO *info = desc->pPrivateDriverData;
+
+        if (desc->PrivateDriverDataSize < sizeof(*info)) return STATUS_INVALID_PARAMETER;
+        if (info->Version >= NUM_KMTUMDVERSIONS) return STATUS_INVALID_PARAMETER;
+
+        TRACE("Version %u\n", info->Version);
+
+        if (!(adapter = get_d3dkmt_object( desc->hAdapter, D3DKMT_ADAPTER ))) return STATUS_INVALID_PARAMETER;
+        if (!(physical_device = adapter->physical_device)) return STATUS_INVALID_PARAMETER;
+        instance = physical_device->instance;
+
+        properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2_KHR;
+        instance->p_vkGetPhysicalDeviceProperties2KHR( physical_device->host.physical_device, &properties2 );
+
+        if (properties2.properties.vendorID == 0x1002 && info->Version >= KMTUMDVERSION_DX12)
+        {
+            asciiz_to_unicode(info->UmdFileName, "C:\\Windows\\System32\\amdxc64.dll");
+            return STATUS_SUCCESS;
+        }
+
+        FIXME("KMTQAITYPE_UMDRIVERNAME\n");
+
+        return STATUS_NOT_IMPLEMENTED;
     }
     default:
     {
@@ -764,7 +919,13 @@ NTSTATUS WINAPI NtGdiDdDDIQueryAdapterInfo( D3DKMT_QUERYADAPTERINFO *desc )
  */
 NTSTATUS WINAPI NtGdiDdDDIQueryStatistics( D3DKMT_QUERYSTATISTICS *stats )
 {
-    FIXME( "(%p): stub\n", stats );
+    static unsigned int once;
+
+    if (!once++)
+        FIXME( "(%p): stub\n", stats );
+    else
+        WARN( "(%p): stub\n", stats );
+
     return STATUS_SUCCESS;
 }
 

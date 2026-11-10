@@ -100,9 +100,9 @@ LSTATUS WINAPI RegCreateKeyTransactedW( HKEY hkey, LPCWSTR name, DWORD reserved,
                                         DWORD options, REGSAM access, SECURITY_ATTRIBUTES *sa,
                                         PHKEY retkey, LPDWORD dispos, HANDLE transaction, PVOID reserved2 )
 {
-    FIXME( "(%p,%s,%lu,%s,%lu,%lu,%p,%p,%p,%p,%p): stub\n", hkey, debugstr_w(name), reserved,
+    FIXME( "(%p,%s,%lu,%s,%lu,%lu,%p,%p,%p,%p,%p) semi-stub\n", hkey, debugstr_w(name), reserved,
            debugstr_w(class), options, access, sa, retkey, dispos, transaction, reserved2 );
-    return ERROR_CALL_NOT_IMPLEMENTED;
+    return RegCreateKeyExW( hkey, name, reserved, class, options, access, sa, retkey, dispos );
 }
 
 
@@ -113,9 +113,9 @@ LSTATUS WINAPI RegCreateKeyTransactedA( HKEY hkey, LPCSTR name, DWORD reserved, 
                                         DWORD options, REGSAM access, SECURITY_ATTRIBUTES *sa,
                                         PHKEY retkey, LPDWORD dispos, HANDLE transaction, PVOID reserved2 )
 {
-    FIXME( "(%p,%s,%lu,%s,%lu,%lu,%p,%p,%p,%p,%p): stub\n", hkey, debugstr_a(name), reserved,
+    FIXME( "(%p,%s,%lu,%s,%lu,%lu,%p,%p,%p,%p,%p): semi-stub\n", hkey, debugstr_a(name), reserved,
            debugstr_a(class), options, access, sa, retkey, dispos, transaction, reserved2 );
-    return ERROR_CALL_NOT_IMPLEMENTED;
+    return RegCreateKeyExA( hkey, name, reserved, class, options, access, sa, retkey, dispos );
 }
 
 

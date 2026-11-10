@@ -477,6 +477,26 @@ typedef struct _DEVICE_OBJECT {
 } DEVICE_OBJECT;
 typedef struct _DEVICE_OBJECT *PDEVICE_OBJECT;
 
+struct _DEVICE_OBJECT_POWER_EXTENSION;
+typedef struct _DEVOBJ_EXTENSION {
+  CSHORT Type;
+  USHORT Size;
+  PDEVICE_OBJECT DeviceObject;
+  ULONG PowerFlags;
+  struct _DEVICE_OBJECT_POWER_EXTENSION *Dope;
+  ULONG ExtensionFlags;
+  PVOID DeviceNode;
+  PDEVICE_OBJECT AttachedTo;
+  LONG StartIoCount;
+  LONG StartIoKey;
+  ULONG StartIoFlags;
+  PVPB Vpb;
+  PVOID DependencyNode;
+  PVOID InterruptContext;
+  LONG InterruptCount;
+  PVOID VerifierContext;
+} DEVOBJ_EXTENSION, *PDEVOBJ_EXTENSION;
+
 typedef struct _DEVICE_RELATIONS {
   ULONG Count;
   PDEVICE_OBJECT Objects[1];
@@ -802,6 +822,16 @@ typedef enum _INTERFACE_TYPE {
 
 typedef LARGE_INTEGER PHYSICAL_ADDRESS, *PPHYSICAL_ADDRESS;
 
+#define MM_COPY_MEMORY_PHYSICAL           0x1
+#define MM_COPY_MEMORY_VIRTUAL            0x2
+
+typedef struct _MM_COPY_ADDRESS {
+  union {
+    PVOID            VirtualAddress;
+    PHYSICAL_ADDRESS PhysicalAddress;
+  } DUMMYUNIONNAME;
+} MM_COPY_ADDRESS, *PMM_COPY_ADDRESS;
+
 #define IO_RESOURCE_PREFERRED             0x01
 #define IO_RESOURCE_DEFAULT               0x02
 #define IO_RESOURCE_ALTERNATIVE           0x08
@@ -909,7 +939,10 @@ typedef enum {
   DevicePropertyAddress,
   DevicePropertyUINumber,
   DevicePropertyInstallState,
-  DevicePropertyRemovalPolicy
+  DevicePropertyRemovalPolicy,
+  DevicePropertyResourceRequirements,
+  DevicePropertyAllocatedResources,
+  DevicePropertyContainerID,
 } DEVICE_REGISTRY_PROPERTY;
 
 typedef enum _DEVICE_TEXT_TYPE {
@@ -1873,6 +1906,7 @@ void      WINAPI MmFreeNonCachedMemory(PVOID,SIZE_T);
 PVOID     WINAPI MmAllocateNonCachedMemory(SIZE_T) __WINE_ALLOC_SIZE(1) __WINE_DEALLOC(MmFreeNonCachedMemory) __WINE_MALLOC;
 PMDL      WINAPI MmAllocatePagesForMdl(PHYSICAL_ADDRESS,PHYSICAL_ADDRESS,PHYSICAL_ADDRESS,SIZE_T);
 void      WINAPI MmBuildMdlForNonPagedPool(MDL*);
+NTSTATUS  WINAPI MmCopyMemory(void*,MM_COPY_ADDRESS,SIZE_T,ULONG,SIZE_T*);
 NTSTATUS  WINAPI MmCopyVirtualMemory(PEPROCESS,void*,PEPROCESS,void*,SIZE_T,KPROCESSOR_MODE,SIZE_T*);
 void *    WINAPI MmGetSystemRoutineAddress(UNICODE_STRING*);
 PVOID     WINAPI MmMapLockedPages(MDL*,KPROCESSOR_MODE);

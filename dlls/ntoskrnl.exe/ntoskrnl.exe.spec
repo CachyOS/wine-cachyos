@@ -717,6 +717,7 @@
 @ stdcall MmBuildMdlForNonPagedPool(ptr)
 @ stub MmCanFileBeTruncated
 @ stub MmCommitSessionMappedView
+@ stdcall MmCopyMemory(ptr int64 long long ptr)
 @ stdcall MmCopyVirtualMemory(ptr ptr ptr ptr long long ptr)
 @ stub MmCreateMdl
 @ stdcall MmCreateSection(ptr long ptr ptr long long long ptr)
@@ -917,16 +918,19 @@
 @ stdcall PsGetCurrentProcessSessionId()
 @ stdcall PsGetCurrentThread() KeGetCurrentThread
 @ stdcall PsGetCurrentThreadId()
+@ stdcall PsGetCurrentThreadTeb()
 @ stub PsGetCurrentThreadPreviousMode
+@ stdcall PsGetCurrentThreadProcess()
+@ stdcall PsGetCurrentThreadProcessId()
 @ stub PsGetCurrentThreadStackBase
 @ stub PsGetCurrentThreadStackLimit
 @ stub PsGetJobLock
 @ stub PsGetJobSessionId
 @ stub PsGetJobUIRestrictionsClass
 @ stdcall PsGetProcessCreateTimeQuadPart(ptr)
-@ stub PsGetProcessDebugPort
+@ stdcall PsGetProcessDebugPort(ptr)
 @ stub PsGetProcessExitProcessCalled
-@ stub PsGetProcessExitStatus
+@ stdcall PsGetProcessExitStatus(ptr)
 @ stub PsGetProcessExitTime
 @ stdcall PsGetProcessId(ptr)
 @ stdcall PsGetProcessImageFileName(ptr)
@@ -1393,6 +1397,7 @@
 @ stub VfFailDriver
 @ stub VfFailSystemBIOS
 @ stub VfIsVerificationEnabled
+@ stdcall VslGetSecurePciEnabled()
 @ stub WRITE_REGISTER_BUFFER_UCHAR
 @ stub WRITE_REGISTER_BUFFER_ULONG
 @ stub WRITE_REGISTER_BUFFER_USHORT
@@ -1551,7 +1556,7 @@
 @ stdcall -private ZwUnloadKey(ptr) NtUnloadKey
 @ stdcall -private ZwUnlockFile(long ptr ptr ptr ptr) NtUnlockFile
 @ stdcall -private ZwUnlockVirtualMemory(long ptr ptr long) NtUnlockVirtualMemory
-@ stdcall ZwUnmapViewOfSection(long ptr) NtUnmapViewOfSection
+@ stdcall ZwUnmapViewOfSection(long ptr)
 @ stdcall -private ZwWaitForMultipleObjects(long ptr long long ptr) NtWaitForMultipleObjects
 @ stdcall ZwWaitForSingleObject(long long ptr) NtWaitForSingleObject
 @ stdcall ZwWriteFile(long long ptr ptr ptr ptr long ptr ptr) NtWriteFile

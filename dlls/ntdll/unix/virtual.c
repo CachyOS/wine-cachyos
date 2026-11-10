@@ -975,7 +975,7 @@ static void load_steam_overlay(const char *unix_lib_path)
     unsigned int len;
     void *handle;
 
-    if (!strstr(unix_lib_path, "winex11.so")) return;
+    if (!strstr(unix_lib_path, "winex11.so") && !strstr(unix_lib_path, "winewayland.so")) return;
     if (getenv("LD_PRELOAD") || !(preload = getenv("WINE_LD_PRELOAD"))) return;
 
     p = preload;
@@ -5402,7 +5402,13 @@ void virtual_set_large_address_space(void)
                 free_reserved_memory( 0, (char *)0x7ffe0000 );
 #endif
         }
-        else user_space_wow_limit = (is_large_address_aware() ? limit_4g : limit_2g) - 1;
+        else if (is_large_address_aware())
+        {
+            user_space_wow_limit = limit_4g - 1;
+            /* reserve space for top-down allocations; some apps break if the entire high 2G is available */
+            reserve_area( (void *)0xfff00000, (void *)0xffff0000 );
+        }
+        else user_space_wow_limit = limit_2g - 1;
     }
     else
     {

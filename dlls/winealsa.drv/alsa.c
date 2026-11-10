@@ -42,8 +42,44 @@
 #include "wine/unixlib.h"
 
 #include "unixlib.h"
-
 WINE_DEFAULT_DEBUG_CHANNEL(alsa);
+static int get_max_channels_override(void)
+{
+    static int val = -1;
+
+    if (val == -1) {
+        const char *env = getenv("WINEALSA_CHANNELS");
+        if (env && *env) {
+            int tmp = atoi(env);
+            val = (tmp > 0) ? tmp : 0;
+        } else {
+            val = 0;
+        }
+    }
+    return val;
+}
+
+static int get_spatial_override(void)
+{
+    static int val = -1;
+
+    if (val == -1) {
+        const char *env = getenv("WINEALSA_SPATIAL");
+        if (env && *env == '1') {
+            val = 1;
+        } else {
+            val = 0;
+        }
+    }
+    return val;
+}
+
+struct mix_instruction {
+    int target1;
+    float vol1;
+    int target2;
+    float vol2;
+};
 
 struct alsa_stream
 {
@@ -59,6 +95,7 @@ struct alsa_stream
     AUDCLNT_SHAREMODE share;
     EDataFlow flow;
     HANDLE event;
+    HANDLE timer_thread;
 
     BOOL need_remapping;
     int alsa_channels;
@@ -80,6 +117,10 @@ struct alsa_stream
     float *vols;
 
     pthread_mutex_t lock;
+
+    struct mix_instruction mix_ops[64];
+    int mix_write_idx[32];
+    BOOL mix_active;
 };
 
 #define EXTRA_SAFE_RT 40000
@@ -492,13 +533,6 @@ static NTSTATUS alsa_process_attach(void *args)
     return STATUS_SUCCESS;
 }
 
-static NTSTATUS alsa_main_loop(void *args)
-{
-    struct main_loop_params *params = args;
-    NtSetEvent(params->event, NULL);
-    return STATUS_SUCCESS;
-}
-
 static NTSTATUS alsa_get_endpoint_ids(void *args)
 {
     static const WCHAR defaultW[] = {'d','e','f','a','u','l','t',0};
@@ -797,6 +831,149 @@ static void silence_buffer(struct alsa_stream *stream, BYTE *buffer, UINT32 fram
         memset(buffer, 0, frames * stream->fmt->nBlockAlign);
 }
 
+static void init_downmix_map(struct alsa_stream *stream)
+{
+    int limit, channels, i, c, bit, t1, t2;
+    float v1, v2;
+    int O_FL=0, O_FR=1, O_RL=-1, O_RR=-1, O_FC=-1, O_LFE=-1, O_SL=-1, O_SR=-1;
+    WAVEFORMATEXTENSIBLE *fmtex = (WAVEFORMATEXTENSIBLE*)stream->fmt;
+    uint32_t mask;
+
+    limit = get_max_channels_override();
+
+    channels = stream->fmt->nChannels;
+    mask = (stream->fmt->wFormatTag == WAVE_FORMAT_EXTENSIBLE) ? fmtex->dwChannelMask : 0;
+
+    stream->mix_active = FALSE;
+
+    if (limit == 0 || channels <= limit) return;
+
+    stream->mix_active = TRUE;
+
+    if (limit >= 4) { O_RL=2; O_RR=3; }
+    if (limit >= 6) { O_FC=4; O_LFE=5; }
+    if (limit >= 8) { O_SL=6; O_SR=7; }
+
+    memset(stream->mix_ops, 0, sizeof(stream->mix_ops));
+    for (i = 0; i < 32; i++) stream->mix_write_idx[i] = -1;
+
+    for (i = 0; i < channels; i++) {
+        int alsa_idx = stream->alsa_channel_map[i];
+        if (alsa_idx >= 0 && alsa_idx < 32) stream->mix_write_idx[alsa_idx] = i;
+    }
+
+    c = 0;
+    for (bit = 0; bit < 32 && c < channels; bit++) {
+        if (mask & (1 << bit)) {
+            t1 = -1; t2 = -1; v1 = 0.0f; v2 = 0.0f;
+
+switch (1 << bit) {
+                case SPEAKER_FRONT_LEFT:
+                    t1 = O_FL; v1 = 1.0f;
+                    break;
+                case SPEAKER_FRONT_RIGHT:
+                    t1 = O_FR; v1 = 1.0f;
+                    break;
+                case SPEAKER_FRONT_CENTER:
+                    if (O_FC != -1) { t1 = O_FC; v1 = 1.0f; }
+                    else { t1 = O_FL; v1 = 0.707106781f; t2 = O_FR; v2 = 0.707106781f; }
+                    break;
+                case SPEAKER_LOW_FREQUENCY:
+                    if (O_LFE != -1) { t1 = O_LFE; v1 = 1.0f; }
+                    else { t1 = O_FL; v1 = 0.3535533905f; t2 = O_FR; v2 = 0.3535533905f; }
+                    break;
+                case SPEAKER_BACK_LEFT:
+                    if (O_RL != -1) { t1 = O_RL; v1 = 1.0f; }
+                    else { t1 = O_FL; v1 = 0.707106781f; }
+                    break;
+                case SPEAKER_BACK_RIGHT:
+                    if (O_RR != -1) { t1 = O_RR; v1 = 1.0f; }
+                    else { t1 = O_FR; v1 = 0.707106781f; }
+                    break;
+                case SPEAKER_SIDE_LEFT:
+                    if (O_SL != -1) { t1 = O_SL; v1 = 1.0f; }
+                    else { t1 = (O_RL != -1) ? O_RL : O_FL; v1 = 0.707106781f; }
+                    break;
+                case SPEAKER_SIDE_RIGHT:
+                    if (O_SR != -1) { t1 = O_SR; v1 = 1.0f; }
+                    else { t1 = (O_RR != -1) ? O_RR : O_FR; v1 = 0.707106781f; }
+                    break;
+                case SPEAKER_BACK_CENTER:
+                    if (O_RL != -1 && O_RR != -1) { t1 = O_RL; v1 = 0.707106781f; t2 = O_RR; v2 = 0.707106781f; }
+                    else if (O_SL != -1 && O_SR != -1) { t1 = O_SL; v1 = 0.707106781f; t2 = O_SR; v2 = 0.707106781f; }
+                    else { t1 = O_FL; v1 = 0.707106781f; t2 = O_FR; v2 = 0.707106781f; }
+                    break;
+
+                 /* HEIGHT CHANNELS */
+
+                /* Left Heights */
+                case 0x00001000: /* SPEAKER_TOP_FRONT_LEFT */
+                    t1 = O_FL; v1 = 0.707106781f;
+                    break;
+
+                case 0x00008000: /* SPEAKER_TOP_BACK_LEFT */
+                    if (O_RL != -1) { t1 = O_RL; v1 = 0.707106781f; }
+                    else { t1 = O_FL; v1 = 0.707106781f; }
+                    break;
+
+                /* Right Heights */
+                case 0x00004000: /* SPEAKER_TOP_FRONT_RIGHT */
+                    t1 = O_FR; v1 = 0.707106781f;
+                    break;
+
+                case 0x00020000: /* SPEAKER_TOP_BACK_RIGHT */
+                    if (O_RR != -1) { t1 = O_RR; v1 = 0.707106781f; }
+                    else { t1 = O_FR; v1 = 0.707106781f; }
+                    break;
+
+                 /* Center Heights */ 
+                case 0x00000800: /* SPEAKER_TOP_CENTER */
+                case 0x00002000: /* SPEAKER_TOP_FRONT_CENTER */
+                    if (O_FC != -1) { 
+                        t1 = O_FC; v1 = 0.707106781f;
+                    } else { 
+                        t1 = O_FL; v1 = 0.707106781f; 
+                        t2 = O_FR; v2 = 0.707106781f; 
+                    }
+                    break;
+
+                case 0x00010000: /* SPEAKER_TOP_BACK_CENTER */
+                    if (O_RL != -1 && O_RR != -1) { 
+                        t1 = O_RL; v1 = 0.707106781f; 
+                        t2 = O_RR; v2 = 0.707106781f; 
+                    } else if (O_SL != -1 && O_SR != -1) {  
+                        t1 = O_SL; v1 = 0.707106781f; 
+                        t2 = O_SR; v2 = 0.707106781f; 
+                    } else { 
+                        t1 = O_FL; v1 = 0.707106781f; 
+                        t2 = O_FR; v2 = 0.707106781f; 
+                    }
+                    break;
+
+                default:  
+                    t1 = O_FL; v1 = 0; 
+                    t2 = O_FR; v2 = 0; 
+                    break;
+            }
+
+            stream->mix_ops[c].target1 = t1; stream->mix_ops[c].vol1 = v1;
+            stream->mix_ops[c].target2 = t2; stream->mix_ops[c].vol2 = v2;
+
+
+        TRACE("Starting Downmix: Full Mask 0x%08X, Input Channels: %d, Cap: %d\n",
+          (unsigned int)mask, channels, limit);
+
+             if (t2 != -1 || (t1 != -1 && v1 != 1.0f)) {
+                 TRACE("Map: Input Ch %d (0x%x) -> Target1: %d (%.2f), Target2: %d (%.2f)\n",
+                       c, (1<<bit), t1, v1, t2, v2);
+            }
+
+
+            c++;
+        }
+    }
+}
+
 static NTSTATUS alsa_create_stream(void *args)
 {
     struct create_stream_params *params = args;
@@ -807,7 +984,8 @@ static NTSTATUS alsa_create_stream(void *args)
     WAVEFORMATEXTENSIBLE *fmtex = (WAVEFORMATEXTENSIBLE *)params->fmt;
     int err;
     SIZE_T size;
-
+    int limit;
+    int spatial;
     params->result = S_OK;
 
     stream = calloc(1, sizeof(*stream));
@@ -861,6 +1039,15 @@ static NTSTATUS alsa_create_stream(void *args)
                 snd_strerror(err));
         params->result = AUDCLNT_E_UNSUPPORTED_FORMAT;
         goto exit;
+    }
+
+   limit = get_max_channels_override();
+   spatial = get_spatial_override();
+    if (limit > 0 && stream->alsa_channels > limit && spatial != 1) {
+            WARN("Application requested %d channels, but user capped at %d.\n",
+                 stream->alsa_channels, limit);
+            params->result = AUDCLNT_E_UNSUPPORTED_FORMAT;
+            goto exit;
     }
 
     if((err = snd_pcm_hw_params_set_channels(stream->pcm_handle, stream->hw_params,
@@ -1008,6 +1195,8 @@ static NTSTATUS alsa_create_stream(void *args)
 
     pthread_mutex_init(&stream->lock, NULL);
 
+    init_downmix_map(stream);
+
     TRACE("ALSA period: %lu frames\n", stream->alsa_period_frames);
     TRACE("ALSA buffer: %lu frames\n", stream->alsa_bufsize_frames);
     TRACE("MMDevice period: %u frames\n", stream->mmdev_period_frames);
@@ -1040,10 +1229,10 @@ static NTSTATUS alsa_release_stream(void *args)
     struct alsa_stream *stream = handle_get_stream(params->stream);
     SIZE_T size;
 
-    if(params->timer_thread){
+    if(stream->timer_thread){
         stream->please_quit = TRUE;
-        NtWaitForSingleObject(params->timer_thread, FALSE, NULL);
-        NtClose(params->timer_thread);
+        NtWaitForSingleObject(stream->timer_thread, FALSE, NULL);
+        NtClose(stream->timer_thread);
     }
 
     snd_pcm_drop(stream->pcm_handle);
@@ -1144,11 +1333,15 @@ static BYTE *remap_channels(struct alsa_stream *stream, BYTE *buf, snd_pcm_ufram
 static void adjust_buffer_volume(const struct alsa_stream *stream, BYTE *buf, snd_pcm_uframes_t frames)
 {
     BOOL adjust = FALSE;
-    UINT32 i, channels, mute = 0;
+    UINT32 i, k, channels, mute = 0;
     BYTE *end;
-
+    int limit;
+    float *p_float;
+    float val, sample;
     if (stream->vol_adjusted_frames >= frames)
         return;
+
+    limit = get_max_channels_override();
     channels = stream->fmt->nChannels;
 
     /* Adjust the buffer based on the volume for each channel */
@@ -1166,11 +1359,41 @@ static void adjust_buffer_volume(const struct alsa_stream *stream, BYTE *buf, sn
             WARN("Setting buffer to silence failed: %d (%s)\n", err, snd_strerror(err));
         return;
     }
-    if (!adjust) return;
+    if (!adjust && !stream->mix_active) return;
 
     /* Skip the frames we've already adjusted before */
     end = buf + frames * stream->fmt->nBlockAlign;
     buf += stream->vol_adjusted_frames * stream->fmt->nBlockAlign;
+
+      /* Downmixing */
+    if (stream->alsa_format == SND_PCM_FORMAT_FLOAT_LE && stream->mix_active) {
+        p_float = (float*)buf;
+
+        while ((BYTE*)p_float < end) {
+            float out_acc[8] = {0.0f};
+
+            for (k = 0; k < channels; k++) {
+                val = p_float[k] * stream->vols[k];
+
+                if (stream->mix_ops[k].target1 != -1)
+                    out_acc[stream->mix_ops[k].target1] += val * stream->mix_ops[k].vol1;
+                if (stream->mix_ops[k].target2 != -1)
+                    out_acc[stream->mix_ops[k].target2] += val * stream->mix_ops[k].vol2;
+            }
+
+            memset(p_float, 0, channels * sizeof(float));
+            for (k = 0; k < (UINT32)limit; k++) {
+                int src_idx = stream->mix_write_idx[k];
+                if (src_idx == -1) continue;
+
+                sample = out_acc[k];
+
+                p_float[src_idx] = sample;
+            }
+            p_float += channels;
+        }
+        return;
+    }
 
     switch (stream->alsa_format)
     {
@@ -1530,10 +1753,46 @@ static int alsa_rewind_best_effort(struct alsa_stream *stream)
     return len;
 }
 
+static void alsa_timer_loop(void *args)
+{
+    struct alsa_stream *stream = args;
+    LARGE_INTEGER delay, next;
+    int adjust;
+
+    alsa_lock(stream);
+
+    delay.QuadPart = -stream->mmdev_period_rt;
+    NtQueryPerformanceCounter(&stream->last_period_time, NULL);
+    next.QuadPart = stream->last_period_time.QuadPart + stream->mmdev_period_rt;
+
+    while(!stream->please_quit){
+        if(stream->flow == eRender)
+            alsa_write_data(stream);
+        else if(stream->flow == eCapture)
+            alsa_read_data(stream);
+        alsa_unlock(stream);
+
+        NtDelayExecution(FALSE, &delay);
+
+        alsa_lock(stream);
+        NtQueryPerformanceCounter(&stream->last_period_time, NULL);
+        adjust = next.QuadPart - stream->last_period_time.QuadPart;
+        if(adjust > stream->mmdev_period_rt / 2)
+            adjust = stream->mmdev_period_rt / 2;
+        else if(adjust < -stream->mmdev_period_rt / 2)
+            adjust = -stream->mmdev_period_rt / 2;
+        delay.QuadPart = -(stream->mmdev_period_rt + adjust);
+        next.QuadPart += stream->mmdev_period_rt;
+    }
+
+    alsa_unlock(stream);
+}
+
 static NTSTATUS alsa_start(void *args)
 {
     struct start_params *params = args;
     struct alsa_stream *stream = handle_get_stream(params->stream);
+    static const WCHAR name[] = {'a','u','d','i','o','_','c','l','i','e','n','t','_','t','i','m','e','r',0};
 
     alsa_lock(stream);
 
@@ -1571,6 +1830,7 @@ static NTSTATUS alsa_start(void *args)
             stream->data_in_alsa_frames = 0;
         }
     }
+    if (!stream->timer_thread) create_unix_thread( &stream->timer_thread, name, alsa_timer_loop, stream );
     stream->started = TRUE;
 
     return alsa_unlock_result(stream, &params->result, S_OK);
@@ -1627,44 +1887,6 @@ static NTSTATUS alsa_reset(void *args)
     stream->wri_offs_frames = 0;
 
     return alsa_unlock_result(stream, &params->result, S_OK);
-}
-
-static NTSTATUS alsa_timer_loop(void *args)
-{
-    struct timer_loop_params *params = args;
-    struct alsa_stream *stream = handle_get_stream(params->stream);
-    LARGE_INTEGER delay, next;
-    int adjust;
-
-    alsa_lock(stream);
-
-    delay.QuadPart = -stream->mmdev_period_rt;
-    NtQueryPerformanceCounter(&stream->last_period_time, NULL);
-    next.QuadPart = stream->last_period_time.QuadPart + stream->mmdev_period_rt;
-
-    while(!stream->please_quit){
-        if(stream->flow == eRender)
-            alsa_write_data(stream);
-        else if(stream->flow == eCapture)
-            alsa_read_data(stream);
-        alsa_unlock(stream);
-
-        NtDelayExecution(FALSE, &delay);
-
-        alsa_lock(stream);
-        NtQueryPerformanceCounter(&stream->last_period_time, NULL);
-        adjust = next.QuadPart - stream->last_period_time.QuadPart;
-        if(adjust > stream->mmdev_period_rt / 2)
-            adjust = stream->mmdev_period_rt / 2;
-        else if(adjust < -stream->mmdev_period_rt / 2)
-            adjust = -stream->mmdev_period_rt / 2;
-        delay.QuadPart = -(stream->mmdev_period_rt + adjust);
-        next.QuadPart += stream->mmdev_period_rt;
-    }
-
-    alsa_unlock(stream);
-
-    return STATUS_SUCCESS;
 }
 
 static NTSTATUS alsa_get_render_buffer(void *args)
@@ -1870,6 +2092,7 @@ static NTSTATUS alsa_is_format_supported(void *args)
     unsigned int max = 0, min = 0;
     int err;
     int alsa_channels, alsa_channel_map[32];
+    int limit;
 
     params->result = alsa_open_device(params->device, params->flow, &pcm_handle, &hw_params);
     if(FAILED(params->result))
@@ -1922,6 +2145,13 @@ static NTSTATUS alsa_is_format_supported(void *args)
         WARN("Unable to get max channels: %d (%s)\n", err, snd_strerror(err));
         goto exit;
     }
+
+    limit = get_max_channels_override();
+    if (limit > 0 && max > limit) {
+        max = limit;
+    }
+
+
     if(params->fmt_in->nChannels > max)
         params->result = S_FALSE;
     else if(params->fmt_in->nChannels < min)
@@ -1949,7 +2179,7 @@ static NTSTATUS alsa_get_mix_format(void *args)
     snd_pcm_format_mask_t *formats;
     unsigned int max_rate, max_channels;
     int err;
-
+    int limit;
     params->result = alsa_open_device(params->device, params->flow, &pcm_handle, &hw_params);
     if(FAILED(params->result))
         return STATUS_SUCCESS;
@@ -1998,7 +2228,12 @@ static NTSTATUS alsa_get_mix_format(void *args)
         goto exit;
     }
 
-    if(max_channels > 6)
+    limit = get_max_channels_override();
+    if (limit > 0 && max_channels > limit) {
+        max_channels = limit;
+    }
+
+    if(max_channels > ((limit == 8) ? 8 : 6))
         fmt->Format.nChannels = 2;
     else
         fmt->Format.nChannels = max_channels;
@@ -2251,7 +2486,7 @@ static unsigned int alsa_probe_num_speakers(char *name)
     snd_pcm_hw_params_t *params;
     int err;
     unsigned int max_channels = 0;
-
+    int limit;
     if ((err = snd_pcm_open(&handle, name, SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK)) < 0) {
         WARN("The device \"%s\" failed to open: %d (%s).\n",
                 name, err, snd_strerror(err));
@@ -2275,6 +2510,11 @@ static unsigned int alsa_probe_num_speakers(char *name)
                     &max_channels)) < 0){
         WARN("Unable to get max channels: %d (%s)\n", err, snd_strerror(err));
         goto exit;
+    }
+
+    limit = get_max_channels_override();
+    if (limit > 0 && max_channels > limit) {
+        max_channels = limit;
     }
 
 exit:
@@ -2381,6 +2621,7 @@ static NTSTATUS alsa_get_prop_value(void *args)
     } else if (flow != eCapture && IsEqualPropertyKey(*prop, PKEY_AudioEndpoint_PhysicalSpeakers)) {
         unsigned int num_speakers, card, device;
         char hwname[255];
+        int limit;
 
         if (sscanf(name, "plughw:%u,%u", &card, &device))
             sprintf(hwname, "hw:%u,%u", card, device); /* must be hw rather than plughw to work */
@@ -2393,8 +2634,10 @@ static NTSTATUS alsa_get_prop_value(void *args)
             return STATUS_SUCCESS;
         }
         out->vt = VT_UI4;
-
-        if (num_speakers > 6)
+        limit = get_max_channels_override();
+        if (limit == 8 && num_speakers == 8)
+            out->ulVal = KSAUDIO_SPEAKER_7POINT1_SURROUND;
+        else if (num_speakers > 6)
             out->ulVal = KSAUDIO_SPEAKER_STEREO;
         else if (num_speakers == 6)
             out->ulVal = KSAUDIO_SPEAKER_5POINT1;
@@ -2419,14 +2662,14 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
 {
     alsa_process_attach,
     alsa_not_implemented,
-    alsa_main_loop,
+    alsa_not_implemented,
+    alsa_not_implemented,
     alsa_get_endpoint_ids,
     alsa_create_stream,
     alsa_release_stream,
     alsa_start,
     alsa_stop,
     alsa_reset,
-    alsa_timer_loop,
     alsa_get_render_buffer,
     alsa_release_render_buffer,
     alsa_get_capture_buffer,
@@ -2454,6 +2697,7 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
     alsa_midi_in_message,
     alsa_midi_notify_wait,
     alsa_not_implemented,
+    alsa_not_implemented,
 };
 
 C_ASSERT(ARRAYSIZE(__wine_unix_call_funcs) == funcs_count);
@@ -2461,19 +2705,6 @@ C_ASSERT(ARRAYSIZE(__wine_unix_call_funcs) == funcs_count);
 #ifdef _WIN64
 
 typedef UINT PTR32;
-
-static NTSTATUS alsa_wow64_main_loop(void *args)
-{
-    struct
-    {
-        PTR32 event;
-    } *params32 = args;
-    struct main_loop_params params =
-    {
-        .event = ULongToHandle(params32->event)
-    };
-    return alsa_main_loop(&params);
-}
 
 static NTSTATUS alsa_wow64_get_endpoint_ids(void *args)
 {
@@ -2539,13 +2770,11 @@ static NTSTATUS alsa_wow64_release_stream(void *args)
     struct
     {
         stream_handle stream;
-        PTR32 timer_thread;
         HRESULT result;
     } *params32 = args;
     struct release_stream_params params =
     {
         .stream = params32->stream,
-        .timer_thread = ULongToHandle(params32->timer_thread)
     };
     alsa_release_stream(&params);
     params32->result = params.result;
@@ -2876,14 +3105,14 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
 {
     alsa_process_attach,
     alsa_not_implemented,
-    alsa_wow64_main_loop,
+    alsa_not_implemented,
+    alsa_not_implemented,
     alsa_wow64_get_endpoint_ids,
     alsa_wow64_create_stream,
     alsa_wow64_release_stream,
     alsa_start,
     alsa_stop,
     alsa_reset,
-    alsa_timer_loop,
     alsa_wow64_get_render_buffer,
     alsa_release_render_buffer,
     alsa_wow64_get_capture_buffer,
@@ -2910,6 +3139,7 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
     alsa_wow64_midi_out_message,
     alsa_wow64_midi_in_message,
     alsa_wow64_midi_notify_wait,
+    alsa_not_implemented,
     alsa_not_implemented,
 };
 

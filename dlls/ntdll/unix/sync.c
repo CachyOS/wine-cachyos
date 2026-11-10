@@ -2472,16 +2472,31 @@ NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeou
     {
         for (;;) select( 0, NULL, NULL, NULL, NULL );
     }
+    else if (timeout->QuadPart < 0)
+    {
+        timeout_t when = -timeout->QuadPart, diff;
+        LARGE_INTEGER now;
+
+        NtQueryPerformanceCounter( &now, NULL );
+        when += now.QuadPart;
+
+        NtYieldExecution();
+
+        for (;;)
+        {
+            struct timeval tv;
+            NtQueryPerformanceCounter( &now, NULL );
+            diff = (when - now.QuadPart + 9) / 10;
+            if (diff <= 0) break;
+            tv.tv_sec = diff / 1000000;
+            tv.tv_usec = diff % 1000000;
+            if (select( 0, NULL, NULL, NULL, &tv ) != -1) break;
+        }
+    }
     else
     {
+        timeout_t when = timeout->QuadPart, diff;
         LARGE_INTEGER now;
-        timeout_t when, diff;
-
-        if ((when = timeout->QuadPart) < 0)
-        {
-            NtQuerySystemTime( &now );
-            when = now.QuadPart - when;
-        }
 
         /* Note that we yield after establishing the desired timeout, but
            we only care about the result of the yield for zero timeouts */
@@ -2521,22 +2536,9 @@ NTSTATUS WINAPI NtQuerySystemTime( LARGE_INTEGER *time )
 {
 #ifdef HAVE_CLOCK_GETTIME
     struct timespec ts;
-    static clockid_t clock_id = CLOCK_MONOTONIC; /* placeholder */
 
-    if (clock_id == CLOCK_MONOTONIC)
-    {
-#ifdef CLOCK_REALTIME_COARSE
-        struct timespec res;
-
-        /* Use CLOCK_REALTIME_COARSE if it has 1 ms or better resolution */
-        if (!clock_getres( CLOCK_REALTIME_COARSE, &res ) && res.tv_sec == 0 && res.tv_nsec <= 1000000)
-            clock_id = CLOCK_REALTIME_COARSE;
-        else
-#endif /* CLOCK_REALTIME_COARSE */
-            clock_id = CLOCK_REALTIME;
-    }
-
-    if (!clock_gettime( clock_id, &ts ))
+    /* CLOCK_REALTIME_COARSE has precision issues */
+    if (!clock_gettime( CLOCK_REALTIME, &ts ))
     {
         time->QuadPart = ticks_from_time_t( ts.tv_sec ) + (ts.tv_nsec + 50) / 100;
     }
