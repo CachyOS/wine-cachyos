@@ -1260,15 +1260,14 @@ static void copy_rectangle_into_center_of_square(const unsigned int *src,
 }
 
 /***********************************************************************
- *           wayland_shm_buffer_from_color_bitmaps
+ *           wayland_shm_buffer_from_bitmaps
  *
- * Create a wayland_shm_buffer for a color bitmap.
+ * Create a wayland_shm_buffer for a color bitmap (and optional mask).
  *
  * Adapted from wineandroid.drv code.
  */
-struct wayland_shm_buffer *wayland_shm_buffer_from_color_bitmaps(HDC hdc, HBITMAP color,
-                                                                 HBITMAP mask,
-                                                                 BOOL allow_padding)
+static struct wayland_shm_buffer *wayland_shm_buffer_from_bitmaps(HDC hdc, HBITMAP color,
+                                                                  HBITMAP mask, BOOL allow_padding)
 {
     struct wayland_shm_buffer *shm_buffer = NULL;
     char buffer[FIELD_OFFSET(BITMAPINFO, bmiColors[256])];
@@ -1941,7 +1940,7 @@ void wayland_surface_set_icon_buffer(struct wayland_surface *surface, UINT type,
     TRACE("surface=%p type=%x ii=%p\n", surface, type, ii);
 
     hDC = NtGdiCreateCompatibleDC(0);
-    icon_buf = wayland_shm_buffer_from_color_bitmaps(hDC, ii->hbmColor, ii->hbmMask, TRUE);
+    icon_buf = wayland_shm_buffer_from_bitmaps(hDC, ii->hbmColor, ii->hbmMask, TRUE);
     NtGdiDeleteObjectApp(hDC);
 
     if (surface->big_icon_buffer && type == ICON_BIG)

@@ -118,12 +118,21 @@ struct wayland_keyboard
     unsigned char keystate[0x300];
 };
 
-struct wayland_cursor
+struct wayland_cursor_frame
 {
     struct wayland_shm_buffer *shm_buffer;
+    /* how long this frame should be displayed for */
+    unsigned int delay_ms;
+};
+
+struct wayland_cursor
+{
+    struct wayland_cursor_frame *frames;
     struct wl_surface *wl_surface;
     struct wp_viewport *wp_viewport;
-    int hotspot_x, hotspot_y;
+    unsigned int frame_idx, frame_cnt;
+    unsigned int hotspot_x, hotspot_y;
+    unsigned int last_timestamp;
 };
 
 enum wayland_pointer_frame_flags
@@ -498,8 +507,6 @@ static inline BOOL wayland_surface_is_popup(struct wayland_surface *surface)
 
 struct wayland_shm_buffer *wayland_shm_buffer_create(int width, int height,
                                                      enum wl_shm_format format);
-struct wayland_shm_buffer *wayland_shm_buffer_from_color_bitmaps(HDC hdc, HBITMAP color,
-                                                                 HBITMAP mask, BOOL allow_padding);
 void wayland_shm_buffer_ref(struct wayland_shm_buffer *shm_buffer);
 void wayland_shm_buffer_unref(struct wayland_shm_buffer *shm_buffer);
 
