@@ -2,6 +2,7 @@
  * Wayland pointer handling
  *
  * Copyright (c) 2020 Alexandros Frantzis for Collabora Ltd
+ * Copyright (c) 2026 Etaash Mathamsetty
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
