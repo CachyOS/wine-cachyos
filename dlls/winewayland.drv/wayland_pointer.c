@@ -622,31 +622,29 @@ void wayland_pointer_deinit(void)
  *
  * Adapted from wineandroid.drv code.
  */
-static struct wayland_shm_buffer *create_mono_cursor_buffer(HBITMAP bmp)
+static struct wayland_shm_buffer *create_mono_cursor_buffer(
+                HBITMAP bmp, int width, int height)
 {
     struct wayland_shm_buffer *shm_buffer = NULL;
-    BITMAP bm;
     char *mask = NULL;
     unsigned int i, j, stride, mask_size, *ptr;
 
-    if (!NtGdiExtGetObjectW(bmp, sizeof(bm), &bm)) goto done;
-    stride = ((bm.bmWidth + 15) >> 3) & ~1;
-    mask_size = stride * bm.bmHeight;
+    stride = ((width + 15) >> 3) & ~1;
+    mask_size = stride * height * 2;
     if (!(mask = malloc(mask_size))) goto done;
     if (!NtGdiGetBitmapBits(bmp, mask_size, mask)) goto done;
 
-    bm.bmHeight /= 2;
-    shm_buffer = wayland_shm_buffer_create(bm.bmWidth, bm.bmHeight,
+    shm_buffer = wayland_shm_buffer_create(width, height,
                                            WL_SHM_FORMAT_ARGB8888);
     if (!shm_buffer) goto done;
 
     ptr = shm_buffer->map_data;
-    for (i = 0; i < bm.bmHeight; i++)
+    for (i = 0; i < height; i++)
     {
-        for (j = 0; j < bm.bmWidth; j++, ptr++)
+        for (j = 0; j < width; j++, ptr++)
         {
             int and = ((mask[i * stride + j / 8] << (j % 8)) & 0x80);
-            int xor = ((mask[(i + bm.bmHeight) * stride + j / 8] << (j % 8)) & 0x80);
+            int xor = ((mask[(i + height) * stride + j / 8] << (j % 8)) & 0x80);
             if (!xor && and)
                 *ptr = 0;
             else if (xor && !and)
@@ -660,6 +658,91 @@ static struct wayland_shm_buffer *create_mono_cursor_buffer(HBITMAP bmp)
 done:
     free(mask);
     return shm_buffer;
+}
+
+/* Adapted from winex11.drv */
+static struct wayland_shm_buffer *create_color_cursor_buffer(
+                HDC hdc, HCURSOR hcursor, DWORD istep,
+                unsigned int *delay_ms, HBITMAP color,
+                unsigned char *color_bits, int color_size,
+                HBITMAP mask, unsigned char *mask_bits, int mask_size,
+                int width, int height)
+{
+    struct wayland_shm_buffer *shm_buffer;
+    DWORD delay_jiffies, num_frames;
+    BOOL has_alpha = FALSE;
+    unsigned int *ptr;
+    int i, j;
+
+    if (NtUserGetCursorFrameInfo(hcursor, istep, &delay_jiffies, &num_frames))
+        *delay_ms = (100 * delay_jiffies) / 6;
+    else
+    {
+        WARN("Failed to get delay for frame %d\n", istep);
+        *delay_ms = 100;
+    }
+
+    shm_buffer = wayland_shm_buffer_create(width, height, WL_SHM_FORMAT_ARGB8888);
+    if (!shm_buffer) return NULL;
+
+    ptr = shm_buffer->map_data;
+
+    /* draw the cursor frame to a temporary buffer */
+    memset(color_bits, 0, color_size);
+    NtGdiSelectBitmap(hdc, color);
+    if (!NtUserDrawIconEx(hdc, 0, 0, hcursor, width, height, istep, NULL, DI_NORMAL))
+    {
+        WARN("Could not draw frame %d\n", istep);
+        goto fail;
+    }
+    memcpy(ptr, color_bits, color_size);
+
+    /* check if the cursor frame was drawn with an alpha channel */
+    for (i = 0; i < width * height; i++)
+        if ((has_alpha = (ptr[i] & 0xff000000) != 0)) break;
+
+    /* if no alpha channel was drawn then generate it from the mask */
+    if (!has_alpha)
+    {
+        unsigned int width_bytes = (width + 31) / 32 * 4;
+
+        /* draw the cursor mask to a temporary buffer */
+        memset(mask_bits, 0xff, mask_size);
+        NtGdiSelectBitmap(hdc, mask);
+        if (!NtUserDrawIconEx(hdc, 0, 0, hcursor, width, height, istep, NULL, DI_MASK))
+        {
+            WARN("Failed to draw frame mask %d.\n", istep);
+            goto fail;
+        }
+        for (i = 0; i < height; i++)
+        {
+            for (j = 0; j < width; j++)
+            {
+                if (!((mask_bits[i * width_bytes + j / 8] << (j % 8)) & 0x80))
+                    ptr[i * width + j] |= 0xff000000;
+            }
+        }
+    }
+
+    /* Wayland requires pre-multiplied alpha values */
+    for (i = 0; i < width * height; i++)
+    {
+        unsigned char alpha = ptr[i] >> 24;
+        if (alpha == 0) ptr[i] = 0;
+        else if (alpha != 255)
+        {
+            ptr[i] = (alpha << 24) |
+                     (((BYTE)(ptr[i] >> 16) * alpha / 255) << 16) |
+                     (((BYTE)(ptr[i] >> 8) * alpha / 255) << 8) |
+                     (((BYTE)ptr[i] * alpha / 255));
+        }
+    }
+
+    return shm_buffer;
+
+fail:
+    wayland_shm_buffer_unref(shm_buffer);
+    return NULL;
 }
 
 /***********************************************************************
@@ -699,72 +782,158 @@ static BOOL cursor_buffer_is_transparent(struct wayland_shm_buffer *shm_buffer)
     return TRUE;
 }
 
+static void wayland_pointer_clear_cursor_frames(void)
+{
+    struct wayland_cursor *cursor = &process_wayland.pointer.cursor;
+
+    if (!cursor->frames) return;
+
+    for (unsigned int i = 0; i < cursor->frame_cnt; i++)
+    {
+        if (!cursor->frames[i].shm_buffer) continue;
+        wayland_shm_buffer_unref(cursor->frames[i].shm_buffer);
+        cursor->frames[i].shm_buffer = NULL;
+    }
+
+    free(cursor->frames);
+    cursor->frames = NULL;
+    cursor->frame_idx = cursor->frame_cnt = 0;
+}
+
 static void wayland_pointer_update_cursor_buffer(HCURSOR hcursor, double scale)
 {
     struct wayland_cursor *cursor = &process_wayland.pointer.cursor;
+    struct wayland_shm_buffer *shm_buffer = NULL;
+    DWORD delay_jiffies, num_frames, clear = 1;
     ICONINFOEXW info = {0};
+    BITMAP bm;
 
-    if (!hcursor) goto clear_cursor;
+    wayland_pointer_clear_cursor_frames();
 
-    /* Create a new buffer for the specified cursor. */
-    if (cursor->shm_buffer)
-    {
-        wayland_shm_buffer_unref(cursor->shm_buffer);
-        cursor->shm_buffer = NULL;
-    }
-
+    if (!hcursor) return;
     if (!get_icon_info(hcursor, &info))
     {
         ERR("Failed to get icon info for cursor=%p\n", hcursor);
+        return;
+    }
+
+    if (!info.hbmColor) num_frames = 1;
+    else if (!NtUserGetCursorFrameInfo(hcursor, 0, &delay_jiffies, &num_frames))
+    {
+        ERR("Failed to get frame info for cursor=%p\n", hcursor);
         goto clear_cursor;
     }
+
+    if (!NtGdiExtGetObjectW(info.hbmMask, sizeof(bm), &bm)) goto clear_cursor;
+    if (!info.hbmColor) bm.bmHeight = max(1, bm.bmHeight / 2);
+
+    if (!(cursor->frames = calloc(num_frames, sizeof(*cursor->frames)))) goto clear_cursor;
+    cursor->frame_cnt = num_frames;
 
     if (info.hbmColor)
     {
         HDC hdc = NtGdiCreateCompatibleDC(0);
-        cursor->shm_buffer =
-            wayland_shm_buffer_from_color_bitmaps(hdc, info.hbmColor, info.hbmMask, FALSE);
+        unsigned char *color_bits, *mask_bits;
+        int color_size, mask_size;
+        DWORD transparent = 0;
+        char buffer[FIELD_OFFSET(BITMAPINFO, bmiColors[256])];
+        BITMAPINFO *bm_info = (BITMAPINFO *)buffer;
+        HBITMAP color, mask;
+
+        bm_info->bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bm_info->bmiHeader.biWidth = bm.bmWidth;
+        bm_info->bmiHeader.biHeight = -bm.bmHeight;
+        bm_info->bmiHeader.biPlanes = 1;
+        bm_info->bmiHeader.biCompression = BI_RGB;
+        bm_info->bmiHeader.biXPelsPerMeter = 0;
+        bm_info->bmiHeader.biYPelsPerMeter = 0;
+        bm_info->bmiHeader.biClrUsed = 0;
+        bm_info->bmiHeader.biClrImportant = 0;
+        bm_info->bmiHeader.biBitCount = 32;
+        color_size = bm.bmWidth * bm.bmHeight * 4;
+        bm_info->bmiHeader.biSizeImage = color_size;
+
+        color = NtGdiCreateDIBSection(hdc, NULL, 0, bm_info, DIB_RGB_COLORS,
+                                      0, 0, 0, (void **)&color_bits);
+        if (!color)
+        {
+            ERR("Failed to create DIB section for cursor color data!\n");
+            NtGdiDeleteObjectApp(hdc);
+            goto clear_cursor;
+        }
+
+        bm_info->bmiHeader.biBitCount = 1;
+        bm_info->bmiColors[0].rgbRed      = 0;
+        bm_info->bmiColors[0].rgbGreen    = 0;
+        bm_info->bmiColors[0].rgbBlue     = 0;
+        bm_info->bmiColors[0].rgbReserved = 0;
+        bm_info->bmiColors[1].rgbRed      = 0xff;
+        bm_info->bmiColors[1].rgbGreen    = 0xff;
+        bm_info->bmiColors[1].rgbBlue     = 0xff;
+        bm_info->bmiColors[1].rgbReserved = 0;
+
+        /* width_bytes * height */
+        mask_size = ((bm.bmWidth + 31) / 32 * 4) * bm.bmHeight;
+        bm_info->bmiHeader.biSizeImage = mask_size;
+
+        mask = NtGdiCreateDIBSection(hdc, NULL, 0, bm_info, DIB_RGB_COLORS,
+                                     0, 0, 0, (void **)&mask_bits);
+        if (!mask)
+        {
+            ERR("Failed to create DIB section for cursor mask data!\n");
+            NtGdiDeleteObjectApp(color);
+            NtGdiDeleteObjectApp(hdc);
+            goto clear_cursor;
+        }
+
+        for (DWORD istep = 0; istep < num_frames; istep++)
+        {
+            unsigned int delay_ms;
+            shm_buffer = create_color_cursor_buffer(hdc, hcursor, istep, &delay_ms,
+                                                    color, color_bits, color_size,
+                                                    mask, mask_bits, mask_size,
+                                                    bm.bmWidth, bm.bmHeight);
+            if (!shm_buffer)
+            {
+                ERR("Failed to create shm_buffer for cursor=%p\n", hcursor);
+                break;
+            }
+            if (cursor_buffer_is_transparent(shm_buffer)) transparent++;
+            cursor->frames[istep].shm_buffer = shm_buffer;
+            cursor->frames[istep].delay_ms = delay_ms;
+        }
+        NtGdiDeleteObjectApp(color);
+        NtGdiDeleteObjectApp(mask);
         NtGdiDeleteObjectApp(hdc);
+
+        if (!shm_buffer || num_frames == transparent) goto clear_cursor;
     }
     else
     {
-        cursor->shm_buffer = create_mono_cursor_buffer(info.hbmMask);
+        if (!(shm_buffer = create_mono_cursor_buffer(info.hbmMask, bm.bmWidth, bm.bmHeight)))
+            goto clear_cursor;
+        cursor->frames[0].shm_buffer = shm_buffer;
+        cursor->frames[0].delay_ms = -1;
+        if (cursor_buffer_is_transparent(shm_buffer)) goto clear_cursor;
     }
-
-    if (info.hbmColor) NtGdiDeleteObjectApp(info.hbmColor);
-    if (info.hbmMask) NtGdiDeleteObjectApp(info.hbmMask);
 
     cursor->hotspot_x = info.xHotspot;
     cursor->hotspot_y = info.yHotspot;
 
-    if (!cursor->shm_buffer)
-    {
-        ERR("Failed to create shm_buffer for cursor=%p\n", hcursor);
-        goto clear_cursor;
-    }
-
-    if (cursor_buffer_is_transparent(cursor->shm_buffer))
-        goto clear_cursor;
-
     /* Make sure the hotspot is valid. */
-    if (cursor->hotspot_x >= cursor->shm_buffer->width ||
-        cursor->hotspot_y >= cursor->shm_buffer->height)
+    if (cursor->hotspot_x >= bm.bmWidth || cursor->hotspot_y >= bm.bmHeight)
     {
-        cursor->hotspot_x = cursor->shm_buffer->width / 2;
-        cursor->hotspot_y = cursor->shm_buffer->height / 2;
+        cursor->hotspot_x = bm.bmWidth / 2;
+        cursor->hotspot_y = bm.bmHeight / 2;
     }
 
     cursor->hotspot_x = round(cursor->hotspot_x / scale);
     cursor->hotspot_y = round(cursor->hotspot_y / scale);
-
-    return;
-
+    clear = 0;
 clear_cursor:
-    if (cursor->shm_buffer)
-    {
-        wayland_shm_buffer_unref(cursor->shm_buffer);
-        cursor->shm_buffer = NULL;
-    }
+    if (info.hbmColor) NtGdiDeleteObjectApp(info.hbmColor);
+    if (info.hbmMask) NtGdiDeleteObjectApp(info.hbmMask);
+    if (clear) wayland_pointer_clear_cursor_frames();
 }
 
 static void wayland_pointer_clear_cursor_surface(void)
@@ -781,18 +950,67 @@ static void wayland_pointer_clear_cursor_surface(void)
         wl_surface_destroy(cursor->wl_surface);
         cursor->wl_surface = NULL;
     }
-    if (cursor->shm_buffer)
-    {
-        wayland_shm_buffer_unref(cursor->shm_buffer);
-        cursor->shm_buffer = NULL;
-    }
+    wayland_pointer_clear_cursor_frames();
 }
 
-static void wayland_pointer_update_cursor_surface(double scale)
+static void wayland_cursor_handle_frame(void *data, struct wl_callback *callback, uint32_t time_ms);
+
+static struct wl_callback_listener pointer_callback_listener =
+{
+    wayland_cursor_handle_frame
+};
+
+static void wayland_cursor_handle_frame(void *data, struct wl_callback *callback, uint32_t time_ms)
+{
+    struct wayland_pointer *pointer = &process_wayland.pointer;
+    struct wayland_cursor *cursor = &pointer->cursor;
+    struct wayland_cursor_frame *frame, *prev;
+    uint32_t deadline;
+
+    pthread_mutex_lock(&pointer->mutex);
+    frame = &cursor->frames[cursor->frame_idx];
+    if (cursor->frame_idx) prev = &cursor->frames[cursor->frame_idx - 1];
+    else prev = &cursor->frames[cursor->frame_cnt - 1];
+    /* the cursor texture was updated or is invalid */
+    if (cursor->frames != data || !frame || !prev) goto skip;
+    if (cursor->last_timestamp == -1) deadline = 0;
+    else deadline = cursor->last_timestamp + prev->delay_ms;
+
+    TRACE("time=%u deadline=%u\n", time_ms, deadline);
+
+    if (time_ms >= deadline)
+    {
+        uint32_t new_deadline = deadline;
+        wl_surface_attach(cursor->wl_surface, frame->shm_buffer->wl_buffer, 0, 0);
+        wl_surface_damage_buffer(cursor->wl_surface, 0, 0,
+                                 frame->shm_buffer->width,
+                                 frame->shm_buffer->height);
+        /* Advance to the next frame, skipping over any frames
+         * we missed the deadline for. */
+        do
+        {
+            cursor->frame_idx = (cursor->frame_idx + 1) % cursor->frame_cnt;
+            if (!(frame = &cursor->frames[cursor->frame_idx])) goto skip;
+            new_deadline += frame->delay_ms;
+        }
+        while (deadline && time_ms >= new_deadline);
+        cursor->last_timestamp = time_ms;
+    }
+    /* trigger callback for the next frame */
+    callback = wl_surface_frame(cursor->wl_surface);
+    wl_callback_add_listener(callback, &pointer_callback_listener, data);
+    wl_surface_commit(cursor->wl_surface);
+skip:
+    pthread_mutex_unlock(&pointer->mutex);
+}
+
+static void wayland_pointer_init_cursor_surface(double scale)
 {
     struct wayland_cursor *cursor = &process_wayland.pointer.cursor;
+    struct wayland_cursor_frame *frame = &cursor->frames[0];
 
-    if (!cursor->shm_buffer) goto clear_cursor;
+    if (!frame || !frame->shm_buffer || !cursor->frame_cnt)
+        goto clear_cursor;
 
     if (!cursor->wl_surface)
     {
@@ -817,20 +1035,31 @@ static void wayland_pointer_update_cursor_surface(double scale)
         }
     }
 
+    /* set the last timestamp to something invalid so we don't delay the first frame */
+    cursor->last_timestamp = -1;
+
     /* Commit the cursor buffer to the cursor surface. */
     wl_surface_attach(cursor->wl_surface,
-                      cursor->shm_buffer->wl_buffer, 0, 0);
+                      frame->shm_buffer->wl_buffer, 0, 0);
     wl_surface_damage_buffer(cursor->wl_surface, 0, 0,
-                             cursor->shm_buffer->width,
-                             cursor->shm_buffer->height);
+                             frame->shm_buffer->width,
+                             frame->shm_buffer->height);
     /* Setting only the viewport is enough, but some compositors don't
-     * support wp_viewport for cursor surfaces, so also set the buffer
-     * scale. Note that setting the viewport destination overrides
-     * the buffer scale, so it's fine to set both. */
+        * support wp_viewport for cursor surfaces, so also set the buffer
+        * scale. Note that setting the viewport destination overrides
+        * the buffer scale, so it's fine to set both. */
     wl_surface_set_buffer_scale(cursor->wl_surface, round(scale));
     wp_viewport_set_destination(cursor->wp_viewport,
-                                round(cursor->shm_buffer->width / scale),
-                                round(cursor->shm_buffer->height / scale));
+                                round(frame->shm_buffer->width / scale),
+                                round(frame->shm_buffer->height / scale));
+
+    /* this will recommit the first frame when the callback fires */
+    if (cursor->frame_cnt > 1)
+    {
+        struct wl_callback *callback = wl_surface_frame(cursor->wl_surface);
+        wl_callback_add_listener(callback, &pointer_callback_listener, cursor->frames);
+    }
+
     wl_surface_commit(cursor->wl_surface);
 
     return;
@@ -967,7 +1196,7 @@ static void wayland_set_cursor(HWND hwnd, HCURSOR hcursor, BOOL use_hcursor)
         else
         {
             if (use_hcursor) wayland_pointer_update_cursor_buffer(hcursor, scale);
-            wayland_pointer_update_cursor_surface(scale);
+            wayland_pointer_init_cursor_surface(scale);
             wl_pointer_set_cursor(pointer->wl_pointer,
                                   pointer->enter_serial,
                                   pointer->cursor.wl_surface,
