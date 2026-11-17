@@ -38,6 +38,9 @@
 
 #include "mmdevapi_private.h"
 
+#include "wine/unixlib.h"
+#include "unix/unixlib.h"
+
 WINE_DEFAULT_DEBUG_CHANNEL(mmdevapi);
 WINE_DECLARE_DEBUG_CHANNEL(spatial);
 
@@ -46,6 +49,13 @@ WINE_DECLARE_DEBUG_CHANNEL(spatial);
 static BOOL spatial_option_enabled(const WCHAR *value)
 {
     return *value == 'y' || *value == 'Y' || *value == 't' || *value == 'T' || *value == '1';
+}
+
+static BOOL spatial_unix_init(void)
+{
+    static LONG status = -1;
+    if (status == -1) InterlockedExchange(&status, __wine_init_unix_call());
+    return !status;
 }
 
 static UINT get_spatial_dynamic_budget(void)
@@ -248,6 +258,7 @@ struct SpatialAudioObjectImpl {
 
     float pos[3];
     float volume;
+    UINT engine_slot;
 
     struct list entry;
 };
@@ -271,6 +282,9 @@ struct SpatialAudioStreamImpl {
     UINT32 static_object_map[17];
     UINT32 dyn_max, dyn_live;
     UINT32 dyn_left, dyn_right;
+
+    UINT64 engine;
+    float *hrtf_buf;
 
     struct list objects;
 };
@@ -347,6 +361,12 @@ static ULONG WINAPI SAO_Release(ISpatialAudioObject *iface)
         list_remove(&This->entry);
         if(This->type == AudioObjectType_Dynamic)
             This->sa_stream->dyn_live--;
+        if(This->sa_stream->engine && This->engine_slot != ~0){
+            struct spatial_object_remove_params params;
+            params.handle = This->sa_stream->engine;
+            params.slot = This->engine_slot;
+            WINE_UNIX_CALL(unix_spatial_object_remove, &params);
+        }
         LeaveCriticalSection(&This->sa_stream->lock);
 
         ISpatialAudioObjectRenderStream_Release(&This->sa_stream->ISpatialAudioObjectRenderStream_iface);
@@ -568,6 +588,12 @@ static ULONG WINAPI SAORS_Release(ISpatialAudioObjectRenderStream *iface)
     TRACE("(%p) new ref %lu\n", This, ref);
     if(!ref){
         IAudioClient_Stop(This->client);
+        if(This->engine){
+            struct spatial_release_params params;
+            params.handle = This->engine;
+            WINE_UNIX_CALL(unix_spatial_release, &params);
+        }
+        free(This->hrtf_buf);
         if(This->update_frames != ~0 && This->update_frames > 0)
             IAudioRenderClient_ReleaseBuffer(This->render, This->update_frames, 0);
         IAudioRenderClient_Release(This->render);
@@ -639,6 +665,8 @@ static HRESULT WINAPI SAORS_Start(ISpatialAudioObjectRenderStream *iface)
         return hr;
     }
 
+    TRACE_(spatial)("stream %p started, rendering through %s.\n", This,
+            This->engine ? "the Steam Audio HRTF engine" : "multichannel passthrough");
     return S_OK;
 }
 
@@ -821,7 +849,7 @@ static void mix_static_object(SpatialAudioStreamImpl *stream, SpatialAudioObject
 }
 
 /* lateral equal-power pan; front/back and elevation collapse onto the x axis,
- * pi/4 maps p in [-1, 1] onto [0, pi/2] */
+ * pi/4 maps p in [-1, 1] onto [0, pi/2]; the HRTF backend replaces this mixer */
 static void mix_dynamic_object(SpatialAudioStreamImpl *stream, SpatialAudioObjectImpl *object)
 {
     float len, p, gl, gr;
@@ -842,6 +870,10 @@ static void mix_dynamic_object(SpatialAudioStreamImpl *stream, SpatialAudioObjec
     }
 }
 
+/* Compensates the HRTF stage's per-object power gain, about +2.85 dB against
+ * the reference renderer; applied only to engine-bound objects. */
+#define SPATIAL_HRTF_PAD 0.72027775f
+
 static HRESULT WINAPI SAORS_EndUpdatingAudioObjects(ISpatialAudioObjectRenderStream *iface)
 {
     SpatialAudioStreamImpl *This = impl_from_ISpatialAudioObjectRenderStream(iface);
@@ -858,7 +890,8 @@ static HRESULT WINAPI SAORS_EndUpdatingAudioObjects(ISpatialAudioObjectRenderStr
     }
 
     if(This->update_frames > 0){
-        UINT32 i;
+        struct spatial_mix_object mix_objs[SPATIAL_MAX_SLOTS];
+        UINT32 mix_count = 0, i;
         /* Set by every mixer that writes to dyn_left/dyn_right; only
          * mix_static_object writes anywhere else. */
         BOOL bus_dirty = FALSE;
@@ -869,11 +902,44 @@ static HRESULT WINAPI SAORS_EndUpdatingAudioObjects(ISpatialAudioObjectRenderStr
             if(object->eos_pending && object->eos_frames < This->update_frames)
                 memset(object->buf + object->eos_frames, 0,
                         (This->update_frames - object->eos_frames) * sizeof(float));
-            if(object->type == AudioObjectType_Dynamic){
+            if(This->engine && object->engine_slot != ~0 &&
+                    mix_count < SPATIAL_MAX_SLOTS){
+                mix_objs[mix_count].buffer = (UINT_PTR)object->buf;
+                mix_objs[mix_count].slot = object->engine_slot;
+                memcpy(mix_objs[mix_count].pos, object->pos, sizeof(object->pos));
+                mix_objs[mix_count].volume = object->volume * SPATIAL_HRTF_PAD;
+                mix_count++;
+            }else if(object->type == AudioObjectType_Dynamic){
                 mix_dynamic_object(This, object);
                 bus_dirty = TRUE;
             }else{
                 mix_static_object(This, object);
+            }
+        }
+
+        if(mix_count){
+            struct spatial_mix_params params;
+            memset(This->hrtf_buf, 0, 2 * This->update_frames * sizeof(float));
+            params.handle = This->engine;
+            params.frames = This->update_frames;
+            params.count = mix_count;
+            params.objects = (UINT_PTR)mix_objs;
+            params.out_l = (UINT_PTR)This->hrtf_buf;
+            params.out_r = (UINT_PTR)(This->hrtf_buf + This->update_frames);
+            if(!WINE_UNIX_CALL(unix_spatial_mix, &params)){
+                UINT32 nch = This->stream_fmtex.Format.nChannels;
+                for(i = 0; i < This->update_frames; ++i){
+                    This->buf[i * nch + This->dyn_left] += This->hrtf_buf[i];
+                    This->buf[i * nch + This->dyn_right] += This->hrtf_buf[This->update_frames + i];
+                }
+                bus_dirty = TRUE;
+            }else{
+                LIST_FOR_EACH_ENTRY(object, &This->objects, SpatialAudioObjectImpl, entry){
+                    if((!object->invalidated || object->eos_pending) &&
+                            object->engine_slot != ~0)
+                        mix_dynamic_object(This, object);
+                }
+                bus_dirty = TRUE;
             }
         }
 
@@ -941,6 +1007,7 @@ static HRESULT WINAPI SAORS_ActivateSpatialAudioObject(ISpatialAudioObjectRender
     obj->ref = 1;
     obj->type = type;
     obj->volume = 1.0f;
+    obj->engine_slot = ~0;
     if(type == AudioObjectType_None){
         FIXME("AudioObjectType_None not implemented yet!\n");
         obj->static_idx = ~0;
@@ -981,8 +1048,17 @@ static HRESULT WINAPI SAORS_ActivateSpatialAudioObject(ISpatialAudioObjectRender
         return hr;
     }
 
-    if(type == AudioObjectType_Dynamic)
+    if(type == AudioObjectType_Dynamic){
         This->dyn_live++;
+        if(This->engine){
+            struct spatial_object_add_params params;
+            params.handle = This->engine;
+            if(!WINE_UNIX_CALL(unix_spatial_object_add, &params))
+                obj->engine_slot = params.slot;
+            else
+                WARN("No HRTF effect slot for dynamic object %p, will use panning.\n", obj);
+        }
+    }
     list_add_tail(&This->objects, &obj->entry);
     SAORS_AddRef(&This->ISpatialAudioObjectRenderStream_iface);
 
@@ -1439,6 +1515,26 @@ static HRESULT WINAPI SAC_ActivateSpatialAudioStream(ISpatialAudioClient *iface,
             free(obj);
             *stream = NULL;
             return hr;
+        }
+
+        if(obj->dyn_max){
+            struct spatial_init_params init_params;
+            init_params.rate = obj->stream_fmtex.Format.nSamplesPerSec;
+            init_params.frames = obj->period_frames;
+            init_params.handle = 0;
+            if(spatial_unix_init() && !WINE_UNIX_CALL(unix_spatial_init, &init_params) &&
+                    (obj->hrtf_buf = calloc(2 * obj->period_frames, sizeof(float)))){
+                obj->engine = init_params.handle;
+                TRACE_(spatial)("Using the Steam Audio HRTF engine (up to %u dynamic objects).\n",
+                        obj->dyn_max);
+            }
+            else if(init_params.handle){
+                struct spatial_release_params release_params;
+                release_params.handle = init_params.handle;
+                WINE_UNIX_CALL(unix_spatial_release, &release_params);
+            }
+            if(!obj->engine)
+                WARN_(spatial)("HRTF engine unavailable, dynamic objects will use stereo panning.\n");
         }
 
         *stream = &obj->ISpatialAudioObjectRenderStream_iface;
