@@ -281,6 +281,7 @@ struct SpatialAudioStreamImpl {
 
     UINT32 static_object_map[17];
     UINT32 dyn_max, dyn_live;
+    BOOL virtualize_bed;
     UINT32 dyn_left, dyn_right;
 
     UINT64 engine;
@@ -361,6 +362,7 @@ static ULONG WINAPI SAO_Release(ISpatialAudioObject *iface)
         list_remove(&This->entry);
         if(This->type == AudioObjectType_Dynamic)
             This->sa_stream->dyn_live--;
+        /* bed channels take a slot too when the bed is virtualized */
         if(This->sa_stream->engine && This->engine_slot != ~0){
             struct spatial_object_remove_params params;
             params.handle = This->sa_stream->engine;
@@ -666,7 +668,9 @@ static HRESULT WINAPI SAORS_Start(ISpatialAudioObjectRenderStream *iface)
     }
 
     TRACE_(spatial)("stream %p started, rendering through %s.\n", This,
-            This->engine ? "the Steam Audio HRTF engine" : "multichannel passthrough");
+            This->engine ? "the Steam Audio HRTF engine" :
+            (This->virtualize_bed ? "stereo panning (HRTF unavailable)"
+                                  : "multichannel passthrough"));
     return S_OK;
 }
 
@@ -786,10 +790,11 @@ static HRESULT WINAPI SAORS_BeginUpdatingAudioObjects(ISpatialAudioObjectRenderS
     return S_OK;
 }
 
-/* canonical 7.1.4 bed directions plus the bottom quad and back-center, in
- * listener space (+x right, +y up, -z ahead); fronts and backs sit 30 degrees
- * off centre (0.5, 0.866), the height layer 45 degrees up (0.707); returns
- * FALSE for the only non-directional channel (LFE). */
+/* canonical 7.1.4 bed directions plus the bottom quad and back-center, in Steam
+ * Audio listener space (+x right, +y up, -z ahead); fronts and backs sit 30
+ * degrees off centre (0.5, 0.866), the height layer 45 degrees up (0.707);
+ * returns FALSE for the only non-directional channel (LFE), which bypasses the
+ * HRTF and sums equally to both ears. */
 static BOOL bed_object_position(AudioObjectType type, float pos[3])
 {
     switch(type){
@@ -810,6 +815,18 @@ static BOOL bed_object_position(AudioObjectType type, float pos[3])
     case AudioObjectType_BottomBackRight:  pos[0]= 0.5f; pos[1]=-0.707f; pos[2]= 0.5f;  return TRUE;
     case AudioObjectType_BackCenter:    pos[0]= 0.0f; pos[1]=0.0f;   pos[2]= 1.0f;   return TRUE;
     default:                            pos[0]= 0.0f; pos[1]=0.0f;   pos[2]= 0.0f;   return FALSE;
+    }
+}
+
+static void mix_lfe_object(SpatialAudioStreamImpl *stream, SpatialAudioObjectImpl *object)
+{
+    float *in = object->buf, *out = stream->buf;
+    float g = 0.5f * object->volume;
+    UINT32 nch = stream->stream_fmtex.Format.nChannels, i;
+    for(i = 0; i < stream->update_frames; ++i){
+        out[stream->dyn_left]  += in[i] * g;
+        out[stream->dyn_right] += in[i] * g;
+        out += nch;
     }
 }
 
@@ -911,6 +928,12 @@ static HRESULT WINAPI SAORS_EndUpdatingAudioObjects(ISpatialAudioObjectRenderStr
                 mix_count++;
             }else if(object->type == AudioObjectType_Dynamic){
                 mix_dynamic_object(This, object);
+                bus_dirty = TRUE;
+            }else if(This->virtualize_bed){
+                if(object->type == AudioObjectType_LowFrequency)
+                    mix_lfe_object(This, object);
+                else
+                    mix_dynamic_object(This, object);
                 bus_dirty = TRUE;
             }else{
                 mix_static_object(This, object);
@@ -1058,6 +1081,15 @@ static HRESULT WINAPI SAORS_ActivateSpatialAudioObject(ISpatialAudioObjectRender
             else
                 WARN("No HRTF effect slot for dynamic object %p, will use panning.\n", obj);
         }
+    }else if(This->virtualize_bed){
+        if(bed_object_position(type, obj->pos) && This->engine){
+            struct spatial_object_add_params params;
+            params.handle = This->engine;
+            if(!WINE_UNIX_CALL(unix_spatial_object_add, &params))
+                obj->engine_slot = params.slot;
+            else
+                WARN("No HRTF effect slot for bed channel 0x%x, will use panning.\n", type);
+        }
     }
     list_add_tail(&This->objects, &obj->entry);
     SAORS_AddRef(&This->ISpatialAudioObjectRenderStream_iface);
@@ -1137,7 +1169,8 @@ static HRESULT WINAPI SAC_GetStaticObjectPosition(ISpatialAudioClient *iface,
     if(!x || !y || !z)
         return E_INVALIDARG;
 
-    /* Non-directional types (LFE) report the listener origin. */
+    /* The same directions the HRTF mixer renders each bed channel to;
+     * non-directional types (LFE) report the listener origin. */
     bed_object_position(type, pos);
     *x = pos[0];
     *y = pos[1];
@@ -1327,8 +1360,10 @@ static HRESULT activate_stream(SpatialAudioStreamImpl *stream)
     HRESULT hr;
     REFERENCE_TIME period;
     UINT32 i;
+    WAVEFORMATEX *mix_fmt = NULL;
     WORD bed_ch = 0;
     DWORD bed_mask = 0;
+    UINT32 dev_ch = 0;
     AudioObjectType effective_mask;
 
     if(!(object_fmtex->Format.wFormatTag == WAVE_FORMAT_IEEE_FLOAT ||
@@ -1356,25 +1391,43 @@ static HRESULT activate_stream(SpatialAudioStreamImpl *stream)
             (AudioObjectType_FrontLeft | AudioObjectType_FrontRight);
     static_mask_to_channels(effective_mask, &bed_ch, &bed_mask, stream->static_object_map);
 
-    stream->stream_fmtex.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
-    /* The binaural bus needs real front-left/right channels: with a dynamic
-     * budget, widen a bed that lacks either so the bus never lands on another
-     * channel index. The app never sees this format and the graph downmixes
-     * to the device. */
-    if(stream->sa_client->dyn_budget &&
-            (~bed_mask & (SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT))){
-        effective_mask |= AudioObjectType_FrontLeft | AudioObjectType_FrontRight;
-        static_mask_to_channels(effective_mask, &bed_ch, &bed_mask, stream->static_object_map);
-        TRACE_(spatial)("bed lacks the front pair, widened to %u channels "
-                "(mask 0x%lx) so the binaural bus has somewhere to go.\n",
-                bed_ch, bed_mask);
+    if(SUCCEEDED(IAudioClient_GetMixFormat(stream->client, &mix_fmt))){
+        dev_ch = mix_fmt->nChannels;
+        CoTaskMemFree(mix_fmt);
     }
-    stream->stream_fmtex.Format.nChannels = bed_ch;
-    stream->stream_fmtex.dwChannelMask = bed_mask;
-    i = stream->static_object_map[AudioObjectType_to_index(AudioObjectType_FrontLeft)];
-    stream->dyn_left = i != ~0 ? i : 0;
-    i = stream->static_object_map[AudioObjectType_to_index(AudioObjectType_FrontRight)];
-    stream->dyn_right = i != ~0 ? i : (stream->stream_fmtex.Format.nChannels > 1 ? 1 : 0);
+
+    /* HRTF-virtualize a surround bed only into a stereo endpoint (a headphone
+     * target); real multichannel endpoints keep the passthrough downmix. */
+    stream->virtualize_bed = stream->sa_client->dyn_budget && dev_ch && dev_ch <= 2 && bed_ch > 2;
+
+    stream->stream_fmtex.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+    if(stream->virtualize_bed){
+        stream->stream_fmtex.Format.nChannels = 2;
+        stream->stream_fmtex.dwChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+        stream->dyn_left = 0;
+        stream->dyn_right = 1;
+        TRACE("Bed virtualization requested: %u channels to stereo.\n", bed_ch);
+    }else{
+        /* The binaural bus needs real front-left/right channels: with a
+         * dynamic budget, widen a bed that lacks either so the bus never
+         * lands on another channel index. The app never sees this format and
+         * the graph downmixes to the device. */
+        if(stream->sa_client->dyn_budget &&
+                (~bed_mask & (SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT))){
+            effective_mask |= AudioObjectType_FrontLeft | AudioObjectType_FrontRight;
+            static_mask_to_channels(effective_mask, &bed_ch, &bed_mask,
+                    stream->static_object_map);
+            TRACE_(spatial)("bed lacks the front pair, widened to %u channels "
+                    "(mask 0x%lx) so the binaural bus has somewhere to go.\n",
+                    bed_ch, bed_mask);
+        }
+        stream->stream_fmtex.Format.nChannels = bed_ch;
+        stream->stream_fmtex.dwChannelMask = bed_mask;
+        i = stream->static_object_map[AudioObjectType_to_index(AudioObjectType_FrontLeft)];
+        stream->dyn_left = i != ~0 ? i : 0;
+        i = stream->static_object_map[AudioObjectType_to_index(AudioObjectType_FrontRight)];
+        stream->dyn_right = i != ~0 ? i : (stream->stream_fmtex.Format.nChannels > 1 ? 1 : 0);
+    }
     stream->stream_fmtex.Format.nSamplesPerSec = stream->params.ObjectFormat->nSamplesPerSec;
     stream->stream_fmtex.Format.wBitsPerSample = stream->params.ObjectFormat->wBitsPerSample;
     stream->stream_fmtex.Format.nBlockAlign = (stream->stream_fmtex.Format.nChannels * stream->stream_fmtex.Format.wBitsPerSample) / 8;
@@ -1408,6 +1461,12 @@ static HRESULT activate_stream(SpatialAudioStreamImpl *stream)
 
     stream->period_frames = MulDiv(period, stream->stream_fmtex.Format.nSamplesPerSec, 10000000);
 
+    TRACE_(spatial)("stream %p configured: %u-channel bed -> %u-channel endpoint, %s, "
+            "static mask 0x%x, dynamic budget %u.\n",
+            stream, bed_ch, stream->stream_fmtex.Format.nChannels,
+            stream->virtualize_bed ? "bed virtualization requested, backend chosen at activation"
+                                   : "multichannel passthrough",
+            effective_mask, stream->dyn_max);
     return S_OK;
 }
 
@@ -1517,7 +1576,7 @@ static HRESULT WINAPI SAC_ActivateSpatialAudioStream(ISpatialAudioClient *iface,
             return hr;
         }
 
-        if(obj->dyn_max){
+        if(obj->dyn_max || obj->virtualize_bed){
             struct spatial_init_params init_params;
             init_params.rate = obj->stream_fmtex.Format.nSamplesPerSec;
             init_params.frames = obj->period_frames;
@@ -1525,8 +1584,9 @@ static HRESULT WINAPI SAC_ActivateSpatialAudioStream(ISpatialAudioClient *iface,
             if(spatial_unix_init() && !WINE_UNIX_CALL(unix_spatial_init, &init_params) &&
                     (obj->hrtf_buf = calloc(2 * obj->period_frames, sizeof(float)))){
                 obj->engine = init_params.handle;
-                TRACE_(spatial)("Using the Steam Audio HRTF engine (up to %u dynamic objects).\n",
-                        obj->dyn_max);
+                TRACE_(spatial)("Using the Steam Audio HRTF engine "
+                        "(bed virtualization %s, up to %u dynamic objects).\n",
+                        obj->virtualize_bed ? "on" : "off", obj->dyn_max);
             }
             else if(init_params.handle){
                 struct spatial_release_params release_params;
@@ -1534,7 +1594,9 @@ static HRESULT WINAPI SAC_ActivateSpatialAudioStream(ISpatialAudioClient *iface,
                 WINE_UNIX_CALL(unix_spatial_release, &release_params);
             }
             if(!obj->engine)
-                WARN_(spatial)("HRTF engine unavailable, dynamic objects will use stereo panning.\n");
+                WARN_(spatial)("HRTF engine unavailable, %s will use stereo panning.\n",
+                        obj->virtualize_bed ? "the bed and any dynamic objects"
+                                            : "dynamic objects");
         }
 
         *stream = &obj->ISpatialAudioObjectRenderStream_iface;
