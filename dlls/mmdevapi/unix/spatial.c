@@ -455,6 +455,12 @@ static NTSTATUS spatial_mix(void *args)
     return STATUS_SUCCESS;
 }
 
+static NTSTATUS spatial_available(void *args)
+{
+    pthread_once(&phonon_once, phonon_load);
+    return phonon_handle ? STATUS_SUCCESS : STATUS_NOT_SUPPORTED;
+}
+
 const unixlib_entry_t __wine_unix_call_funcs[] =
 {
     spatial_init,
@@ -462,6 +468,7 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
     spatial_object_add,
     spatial_object_remove,
     spatial_mix,
+    spatial_available,
 };
 
 C_ASSERT(ARRAYSIZE(__wine_unix_call_funcs) == spatial_funcs_count);
@@ -475,6 +482,7 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
     spatial_object_add,
     spatial_object_remove,
     spatial_mix,
+    spatial_available,
 };
 
 C_ASSERT(ARRAYSIZE(__wine_unix_call_wow64_funcs) == spatial_funcs_count);
