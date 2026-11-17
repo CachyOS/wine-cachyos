@@ -175,7 +175,18 @@ struct spatial_engine
     unsigned char tail_pending[SPATIAL_MAX_SLOTS];
     unsigned char tail_blocks;  /* tail_pending reload, 0 until libphonon can report it */
     float *scratch;     /* 2 * frames, deinterleaved L then R */
+    int bass_on;        /* WINE_SPATIAL_BASS one-pole low-shelf active */
+    float bass_g;       /* LF gain, 0..1 (1 = unchanged) */
+    float bass_a;       /* one-pole coefficient = 2*pi*fc/fs */
+    float lp_l, lp_r;   /* lowpass state, persists across mix calls */
 };
+
+/* Off for 0, n, f and off; on for anything else. */
+static int bass_env_on(const char *v)
+{
+    return !(v[0] == '0' || v[0] == 'n' || v[0] == 'N' || v[0] == 'f' || v[0] == 'F' ||
+             ((v[0] == 'o' || v[0] == 'O') && (v[1] == 'f' || v[1] == 'F')));
+}
 
 static NTSTATUS spatial_init(void *args)
 {
@@ -225,6 +236,31 @@ static NTSTATUS spatial_init(void *args)
         goto fail;
     }
     pthread_mutex_unlock(&engine_lock);
+
+    {
+        const char *bass = getenv("WINE_SPATIAL_BASS");
+        const char *gain = getenv("WINE_SPATIAL_BASS_GAIN");
+        const char *hz = getenv("WINE_SPATIAL_BASS_HZ");
+        /* Summing a bed through one HRTF per channel builds up low frequencies. How much
+         * depends on inter-channel correlation the mixer cannot observe, so the gain is fixed. */
+        int on = !bass || bass_env_on(bass);
+        float fc = hz && hz[0] ? (float)atof(hz) : 500.0f;
+        float g = gain && gain[0] ? (float)atof(gain) : 0.48f;
+
+        /* the one-pole state persists across mix calls, so a NaN or a negative
+         * coefficient would poison every later sample; NaN fails every ordered
+         * compare, hence the negated forms */
+        if (!(g >= 0.0f)) g = 0.0f;
+        if (g > 1.0f) g = 1.0f;
+        if (!(fc > 0.0f) || fc > (float)params->rate * 0.5f) fc = 500.0f;
+        engine->bass_g = g;
+        engine->bass_a = 2.0f * (float)M_PI * fc / (float)params->rate;
+        if (engine->bass_a > 1.0f) engine->bass_a = 1.0f;
+        /* a unity gain is the same shelf as none, so it still skips the pass */
+        engine->bass_on = on && g < 1.0f;
+        TRACE("bass low-shelf %s: LF gain %.2f, corner %.0f Hz.\n",
+              engine->bass_on ? "on" : "off", g, fc);
+    }
 
     TRACE("engine %p: %u Hz, %u frames.\n", engine, params->rate, params->frames);
     params->handle = (UINT_PTR)engine;
@@ -400,6 +436,19 @@ static NTSTATUS spatial_mix(void *args)
         {
             out_l[f] += out_data[0][f] * objs[i].volume;
             out_r[f] += out_data[1][f] * objs[i].volume;
+        }
+    }
+
+    if (engine->bass_on)
+    {
+        float a = engine->bass_a, g1 = 1.0f - engine->bass_g;
+
+        for (f = 0; f < params->frames; f++)
+        {
+            engine->lp_l += a * (out_l[f] - engine->lp_l);
+            engine->lp_r += a * (out_r[f] - engine->lp_r);
+            out_l[f] -= g1 * engine->lp_l;
+            out_r[f] -= g1 * engine->lp_r;
         }
     }
 
