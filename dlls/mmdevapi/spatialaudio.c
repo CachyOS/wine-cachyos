@@ -39,6 +39,50 @@
 #include "mmdevapi_private.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(mmdevapi);
+WINE_DECLARE_DEBUG_CHANNEL(spatial);
+
+#define SPATIAL_MAX_DYNAMIC_OBJECTS 112  /* matches Windows Sonic for Headphones */
+
+static BOOL spatial_option_enabled(const WCHAR *value)
+{
+    return *value == 'y' || *value == 'Y' || *value == 't' || *value == 'T' || *value == '1';
+}
+
+static UINT get_spatial_dynamic_budget(void)
+{
+    /* an over-long env value or an empty registry value leaves buf untouched
+     * while still reporting success */
+    WCHAR buf[16] = {0};
+    DWORD size = sizeof(buf), type = REG_NONE;
+    HKEY key;
+    BOOL enabled = FALSE;
+    const char *source = "registry";
+
+    if(GetEnvironmentVariableW(L"WINE_SPATIAL_SOUND", buf, ARRAY_SIZE(buf))){
+        enabled = spatial_option_enabled(buf);
+        source = "environment";
+    }else if(RegOpenKeyW(HKEY_CURRENT_USER, L"Software\\Wine\\mmdevapi", &key) == ERROR_SUCCESS){
+        if(RegQueryValueExW(key, L"SpatialSound", 0, &type, (BYTE*)buf, &size) == ERROR_SUCCESS){
+            if(type == REG_SZ || type == REG_EXPAND_SZ){
+                enabled = spatial_option_enabled(buf);
+            }else if(type == REG_DWORD && size == sizeof(DWORD)){
+                /* a DWORD reads as L"\x0001" as a string, which is neither
+                 * "1" nor "y", so it would otherwise silently mean "off" */
+                DWORD value;
+                memcpy(&value, buf, sizeof(value));
+                enabled = value != 0;
+            }else
+                WARN("Ignoring SpatialSound of type %lu.\n", type);
+        }
+        RegCloseKey(key);
+    }
+
+    TRACE_(spatial)("Spatial sound %s (%s), dynamic object budget %u.\n",
+            enabled ? "enabled" : "disabled", source,
+            enabled ? SPATIAL_MAX_DYNAMIC_OBJECTS : 0);
+
+    return enabled ? SPATIAL_MAX_DYNAMIC_OBJECTS : 0;
+}
 
 /* Index of a static bed channel in static_object_map[], or ~0 for anything
  * that has no channel: None, Dynamic, a multi-bit value, or a bit above
@@ -225,6 +269,8 @@ struct SpatialAudioStreamImpl {
     float *buf;
 
     UINT32 static_object_map[17];
+    UINT32 dyn_max, dyn_live;
+    UINT32 dyn_left, dyn_right;
 
     struct list objects;
 };
@@ -235,6 +281,7 @@ struct SpatialAudioImpl {
     IMMDevice *mmdev;
     LONG ref;
     WAVEFORMATEXTENSIBLE object_fmtex;
+    UINT dyn_budget;
 };
 
 static inline SpatialAudioObjectImpl *impl_from_ISpatialAudioObject(ISpatialAudioObject *iface)
@@ -298,6 +345,8 @@ static ULONG WINAPI SAO_Release(ISpatialAudioObject *iface)
     if(!ref){
         EnterCriticalSection(&This->sa_stream->lock);
         list_remove(&This->entry);
+        if(This->type == AudioObjectType_Dynamic)
+            This->sa_stream->dyn_live--;
         LeaveCriticalSection(&This->sa_stream->lock);
 
         ISpatialAudioObjectRenderStream_Release(&This->sa_stream->ISpatialAudioObjectRenderStream_iface);
@@ -543,7 +592,10 @@ static HRESULT WINAPI SAORS_GetAvailableDynamicObjectCount(
     if(!count)
         return E_POINTER;
 
-    *count = 0;
+    EnterCriticalSection(&This->lock);
+    /* Same source as Begin's out parameter, which Windows requires. */
+    *count = This->dyn_max;
+    LeaveCriticalSection(&This->lock);
     return S_OK;
 }
 
@@ -696,6 +748,9 @@ static HRESULT WINAPI SAORS_BeginUpdatingAudioObjects(ISpatialAudioObjectRenderS
         FIXME("Zero frame update.\n");
     }
 
+    /* Windows reports the per-pass grant, not the remaining capacity;
+     * activation is the gate. */
+    *dyn_count = This->dyn_max;
     *frames = This->update_frames;
 
     LeaveCriticalSection(&This->lock);
@@ -765,6 +820,28 @@ static void mix_static_object(SpatialAudioStreamImpl *stream, SpatialAudioObject
     }
 }
 
+/* lateral equal-power pan; front/back and elevation collapse onto the x axis,
+ * pi/4 maps p in [-1, 1] onto [0, pi/2] */
+static void mix_dynamic_object(SpatialAudioStreamImpl *stream, SpatialAudioObjectImpl *object)
+{
+    float len, p, gl, gr;
+    float *in = object->buf, *out = stream->buf;
+    UINT32 nch = stream->stream_fmtex.Format.nChannels, i;
+
+    len = sqrtf(object->pos[0] * object->pos[0] +
+                object->pos[1] * object->pos[1] +
+                object->pos[2] * object->pos[2]);
+    p = len > 0.0f ? object->pos[0] / len : 0.0f;
+    gl = cosf((p + 1.0f) * 0.78539816f) * object->volume;
+    gr = sinf((p + 1.0f) * 0.78539816f) * object->volume;
+
+    for(i = 0; i < stream->update_frames; ++i){
+        out[stream->dyn_left] += in[i] * gl;
+        out[stream->dyn_right] += in[i] * gr;
+        out += nch;
+    }
+}
+
 static HRESULT WINAPI SAORS_EndUpdatingAudioObjects(ISpatialAudioObjectRenderStream *iface)
 {
     SpatialAudioStreamImpl *This = impl_from_ISpatialAudioObjectRenderStream(iface);
@@ -781,16 +858,45 @@ static HRESULT WINAPI SAORS_EndUpdatingAudioObjects(ISpatialAudioObjectRenderStr
     }
 
     if(This->update_frames > 0){
+        UINT32 i;
+        /* Set by every mixer that writes to dyn_left/dyn_right; only
+         * mix_static_object writes anywhere else. */
+        BOOL bus_dirty = FALSE;
+
         LIST_FOR_EACH_ENTRY(object, &This->objects, SpatialAudioObjectImpl, entry){
             if(object->invalidated && !object->eos_pending)
                 continue;
             if(object->eos_pending && object->eos_frames < This->update_frames)
                 memset(object->buf + object->eos_frames, 0,
                         (This->update_frames - object->eos_frames) * sizeof(float));
-            if(object->type != AudioObjectType_Dynamic)
+            if(object->type == AudioObjectType_Dynamic){
+                mix_dynamic_object(This, object);
+                bus_dirty = TRUE;
+            }else{
                 mix_static_object(This, object);
-            else
-                WARN("Don't know how to mix dynamic object yet. %p\n", object);
+            }
+        }
+
+        /* Hard-clip the two bus channels when something summed into them this
+         * tick. The static path is one-to-one and stays untouched, so
+         * passthrough remains transparent. */
+        if(bus_dirty){
+            UINT32 nch = This->stream_fmtex.Format.nChannels;
+
+            for(i = 0; i < This->update_frames; ++i){
+                float *l = &This->buf[i * nch + This->dyn_left];
+                float *r = &This->buf[i * nch + This->dyn_right];
+
+                /* Zero a non-finite sample: the driver's f32-to-int is
+                 * fminf(fmaxf(v, lo), hi), which sends a NaN out as
+                 * full-scale negative. */
+                if(!isfinite(*l)) *l = 0.0f;
+                else if(*l > 1.0f) *l = 1.0f;
+                else if(*l < -1.0f) *l = -1.0f;
+                if(!isfinite(*r)) *r = 0.0f;
+                else if(*r > 1.0f) *r = 1.0f;
+                else if(*r < -1.0f) *r = -1.0f;
+            }
         }
 
         LIST_FOR_EACH_ENTRY(object, &This->objects, SpatialAudioObjectImpl, entry){
@@ -822,8 +928,8 @@ static HRESULT WINAPI SAORS_ActivateSpatialAudioObject(ISpatialAudioObjectRender
 
     TRACE("(%p)->(0x%x, %p)\n", This, type, object);
 
-    /* The admission tests run under the lock: SAO_Release mutates the object
-     * list. */
+    /* The admission tests run under the lock: SAO_Release mutates dyn_live
+     * and the object list. */
     if(!(obj = calloc(1, sizeof(*obj))))
         return E_OUTOFMEMORY;
     if(!(obj->buf = calloc(This->period_frames,
@@ -846,7 +952,11 @@ static HRESULT WINAPI SAORS_ActivateSpatialAudioObject(ISpatialAudioObjectRender
     EnterCriticalSection(&This->lock);
 
     if(type == AudioObjectType_Dynamic){
-        hr = SPTLAUDCLNT_E_NO_MORE_OBJECTS;
+        if(This->dyn_live >= This->dyn_max){
+            WARN("No dynamic object slots available (%u live, %u max, spatial sound %s).\n",
+                    This->dyn_live, This->dyn_max, This->sa_client->dyn_budget ? "on" : "off");
+            hr = SPTLAUDCLNT_E_NO_MORE_OBJECTS;
+        }
     }else if(type & ~This->params.StaticObjectTypeMask){
         hr = SPTLAUDCLNT_E_STATIC_OBJECT_NOT_AVAILABLE;
     }else if(type != AudioObjectType_None){
@@ -871,6 +981,8 @@ static HRESULT WINAPI SAORS_ActivateSpatialAudioObject(ISpatialAudioObjectRender
         return hr;
     }
 
+    if(type == AudioObjectType_Dynamic)
+        This->dyn_live++;
     list_add_tail(&This->objects, &obj->entry);
     SAORS_AddRef(&This->ISpatialAudioObjectRenderStream_iface);
 
@@ -993,7 +1105,7 @@ static HRESULT WINAPI SAC_GetMaxDynamicObjectCount(ISpatialAudioClient *iface,
     if(!value)
         return E_INVALIDARG;
 
-    *value = 0;
+    *value = This->dyn_budget;
 
     return S_OK;
 }
@@ -1138,6 +1250,7 @@ static HRESULT activate_stream(SpatialAudioStreamImpl *stream)
     WAVEFORMATEXTENSIBLE *object_fmtex = (WAVEFORMATEXTENSIBLE *)stream->params.ObjectFormat;
     HRESULT hr;
     REFERENCE_TIME period;
+    UINT32 i;
     WORD bed_ch = 0;
     DWORD bed_mask = 0;
     AudioObjectType effective_mask;
@@ -1168,8 +1281,24 @@ static HRESULT activate_stream(SpatialAudioStreamImpl *stream)
     static_mask_to_channels(effective_mask, &bed_ch, &bed_mask, stream->static_object_map);
 
     stream->stream_fmtex.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+    /* The binaural bus needs real front-left/right channels: with a dynamic
+     * budget, widen a bed that lacks either so the bus never lands on another
+     * channel index. The app never sees this format and the graph downmixes
+     * to the device. */
+    if(stream->sa_client->dyn_budget &&
+            (~bed_mask & (SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT))){
+        effective_mask |= AudioObjectType_FrontLeft | AudioObjectType_FrontRight;
+        static_mask_to_channels(effective_mask, &bed_ch, &bed_mask, stream->static_object_map);
+        TRACE_(spatial)("bed lacks the front pair, widened to %u channels "
+                "(mask 0x%lx) so the binaural bus has somewhere to go.\n",
+                bed_ch, bed_mask);
+    }
     stream->stream_fmtex.Format.nChannels = bed_ch;
     stream->stream_fmtex.dwChannelMask = bed_mask;
+    i = stream->static_object_map[AudioObjectType_to_index(AudioObjectType_FrontLeft)];
+    stream->dyn_left = i != ~0 ? i : 0;
+    i = stream->static_object_map[AudioObjectType_to_index(AudioObjectType_FrontRight)];
+    stream->dyn_right = i != ~0 ? i : (stream->stream_fmtex.Format.nChannels > 1 ? 1 : 0);
     stream->stream_fmtex.Format.nSamplesPerSec = stream->params.ObjectFormat->nSamplesPerSec;
     stream->stream_fmtex.Format.wBitsPerSample = stream->params.ObjectFormat->wBitsPerSample;
     stream->stream_fmtex.Format.nBlockAlign = (stream->stream_fmtex.Format.nChannels * stream->stream_fmtex.Format.wBitsPerSample) / 8;
@@ -1257,6 +1386,13 @@ static HRESULT WINAPI SAC_ActivateSpatialAudioStream(ISpatialAudioClient *iface,
             return AUDCLNT_E_UNSUPPORTED_FORMAT;
         }
 
+        if(params->MinDynamicObjectCount > This->dyn_budget){
+            WARN("MinDynamicObjectCount %u exceeds the budget of %u.\n",
+                    params->MinDynamicObjectCount, This->dyn_budget);
+            *stream = NULL;
+            return AUDCLNT_E_UNSUPPORTED_FORMAT;
+        }
+
         obj = calloc(1, sizeof(SpatialAudioStreamImpl));
 
         obj->ISpatialAudioObjectRenderStream_iface.lpVtbl = &ISpatialAudioObjectRenderStream_vtbl;
@@ -1264,6 +1400,8 @@ static HRESULT WINAPI SAC_ActivateSpatialAudioStream(ISpatialAudioClient *iface,
         memcpy(&obj->params, params, sizeof(obj->params));
 
         obj->update_frames = ~0;
+        obj->dyn_max = params->MaxDynamicObjectCount < This->dyn_budget ?
+                params->MaxDynamicObjectCount : This->dyn_budget;
 
         InitializeCriticalSection(&obj->lock);
         list_init(&obj->objects);
@@ -1395,6 +1533,7 @@ HRESULT SpatialAudioClient_Create(IMMDevice *mmdev, ISpatialAudioClient **out)
     obj->ref = 1;
     obj->ISpatialAudioClient_iface.lpVtbl = &ISpatialAudioClient_vtbl;
     obj->IAudioFormatEnumerator_iface.lpVtbl = &IAudioFormatEnumerator_vtbl;
+    obj->dyn_budget = get_spatial_dynamic_budget();
 
     obj->object_fmtex.Format.wFormatTag = WAVE_FORMAT_IEEE_FLOAT;
     obj->object_fmtex.Format.nChannels = 1;
@@ -1409,5 +1548,7 @@ HRESULT SpatialAudioClient_Create(IMMDevice *mmdev, ISpatialAudioClient **out)
 
     *out = &obj->ISpatialAudioClient_iface;
 
+    TRACE_(spatial)("client %p created (spatial sound %s, dynamic object budget %u).\n",
+            obj, obj->dyn_budget ? "enabled" : "disabled", obj->dyn_budget);
     return S_OK;
 }
