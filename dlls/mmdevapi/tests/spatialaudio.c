@@ -259,7 +259,7 @@ static void test_audio_object_activation(void)
     hr = ISpatialAudioObjectRenderStream_ActivateSpatialAudioObject(sas, AudioObjectType_FrontLeft, &sao1);
     ok(hr == S_OK, "Failed to activate spatial audio object: 0x%08lx\n", hr);
     hr = ISpatialAudioObject_IsActive(sao1, &is_active);
-    todo_wine ok(hr == S_OK, "Failed to check if spatial audio object is active: 0x%08lx\n", hr);
+    ok(hr == S_OK, "Failed to check if spatial audio object is active: 0x%08lx\n", hr);
     if (hr == S_OK)
         ok(is_active, "Expected spatial audio object to be active\n");
 
@@ -295,7 +295,7 @@ static void test_audio_object_buffers(void)
     SpatialAudioObjectRenderStreamActivationParams activation_params;
     ISpatialAudioObjectRenderStream *sas = NULL;
     PROPVARIANT activation_params_prop;
-    ISpatialAudioObject *sao[4];
+    ISpatialAudioObject *sao[4], *sao_unwritten;
     BYTE *buffer;
     INT i, j, k;
     HRESULT hr;
@@ -324,6 +324,11 @@ static void test_audio_object_buffers(void)
     max_frame_count = frame_count + frame_count / 4;
 
     hr = ISpatialAudioObjectRenderStream_ActivateSpatialAudioObject(sas, AudioObjectType_FrontLeft, &sao[0]);
+    ok(hr == S_OK, "Failed to activate spatial audio object: 0x%08lx\n", hr);
+
+    /* activated up front and never written: a caller may pre-activate a pool
+     * and only write an object once it has content for it */
+    hr = ISpatialAudioObjectRenderStream_ActivateSpatialAudioObject(sas, AudioObjectType_BackLeft, &sao_unwritten);
     ok(hr == S_OK, "Failed to activate spatial audio object: 0x%08lx\n", hr);
 
     hr = ISpatialAudioObjectRenderStream_Start(sas);
@@ -431,13 +436,16 @@ static void test_audio_object_buffers(void)
 
     /* ending the stream */
     hr = ISpatialAudioObject_SetEndOfStream(sao[0], 0);
-    todo_wine ok(hr == SPTLAUDCLNT_E_OUT_OF_ORDER, "Expected that ending the stream at this point won't be allowed: 0x%08lx\n", hr);
+    ok(hr == SPTLAUDCLNT_E_OUT_OF_ORDER, "Expected that ending the stream at this point won't be allowed: 0x%08lx\n", hr);
+
+    hr = ISpatialAudioObject_SetVolume(sao[0], 0.5f);
+    ok(hr == SPTLAUDCLNT_E_OUT_OF_ORDER, "Expected setting the volume at this point won't be allowed: 0x%08lx\n", hr);
 
     hr = WaitForSingleObject(event, 200);
     ok(hr == WAIT_OBJECT_0, "Expected event to be flagged: 0x%08lx\n", hr);
 
     hr = ISpatialAudioObject_SetEndOfStream(sao[0], 0);
-    todo_wine ok(hr == SPTLAUDCLNT_E_OUT_OF_ORDER, "Expected that ending the stream at this point won't be allowed: 0x%08lx\n", hr);
+    ok(hr == SPTLAUDCLNT_E_OUT_OF_ORDER, "Expected that ending the stream at this point won't be allowed: 0x%08lx\n", hr);
 
     hr = ISpatialAudioObjectRenderStream_BeginUpdatingAudioObjects(sas, &dyn_object_count, &frame_count);
     ok(hr == S_OK, "Failed to begin updating audio objects: 0x%08lx\n", hr);
@@ -445,18 +453,32 @@ static void test_audio_object_buffers(void)
 
     /* expect the object that was not updated last cycle to be invalidated */
     hr = ISpatialAudioObject_GetBuffer(sao[ARRAYSIZE(sao) - 1], &buffer, &buffer_length);
-    todo_wine ok(hr == SPTLAUDCLNT_E_RESOURCES_INVALIDATED, "Expected audio object to be invalidated: 0x%08lx\n", hr);
+    ok(hr == SPTLAUDCLNT_E_RESOURCES_INVALIDATED, "Expected audio object to be invalidated: 0x%08lx\n", hr);
+
+    /* an object whose lifetime never started is not invalidated by the passes
+     * it sat out: its first GetBuffer still has to succeed */
+    hr = ISpatialAudioObject_GetBuffer(sao_unwritten, &buffer, &buffer_length);
+    ok(hr == S_OK, "Expected a buffer for a never written audio object: 0x%08lx\n", hr);
 
     for (i = 0; i < ARRAYSIZE(sao) - 1; i++)
     {
         hr = ISpatialAudioObject_GetBuffer(sao[i], &buffer, &buffer_length);
         ok(hr == S_OK, "Expected to be able to get buffers for audio object: 0x%08lx\n", hr);
 
+        hr = ISpatialAudioObject_SetVolume(sao[i], 0.5f);
+        ok(hr == S_OK, "Failed to set the volume of a static object: 0x%08lx\n", hr);
+
+        hr = ISpatialAudioObject_SetPosition(sao[i], 0.0f, 0.0f, -1.0f);
+        ok(hr == SPTLAUDCLNT_E_PROPERTY_NOT_SUPPORTED, "Expected positioning a static object to be unsupported: 0x%08lx\n", hr);
+
         hr = ISpatialAudioObject_SetEndOfStream(sao[i], 0);
-        todo_wine ok(hr == S_OK, "Failed to end the stream: 0x%08lx\n", hr);
+        ok(hr == S_OK, "Failed to end the stream: 0x%08lx\n", hr);
 
         hr = ISpatialAudioObject_GetBuffer(sao[i], &buffer, &buffer_length);
-        todo_wine ok(hr == SPTLAUDCLNT_E_RESOURCES_INVALIDATED, "Expected audio object to be invalidated: 0x%08lx\n", hr);
+        ok(hr == SPTLAUDCLNT_E_RESOURCES_INVALIDATED, "Expected audio object to be invalidated: 0x%08lx\n", hr);
+
+        hr = ISpatialAudioObject_SetVolume(sao[i], 0.5f);
+        ok(hr == SPTLAUDCLNT_E_RESOURCES_INVALIDATED, "Expected setting the volume of an invalidated object to fail: 0x%08lx\n", hr);
     }
 
     hr = ISpatialAudioObjectRenderStream_EndUpdatingAudioObjects(sas);
@@ -487,6 +509,7 @@ static void test_audio_object_buffers(void)
     {
         ISpatialAudioObject_Release(sao[i]);
     }
+    ISpatialAudioObject_Release(sao_unwritten);
 
     ISpatialAudioObjectRenderStream_Release(sas);
 }
