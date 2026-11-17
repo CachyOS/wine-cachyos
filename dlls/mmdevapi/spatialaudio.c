@@ -80,9 +80,102 @@ static const char *debugstr_fmtex(const WAVEFORMATEX *fmt)
     return buf;
 }
 
-static BOOL formats_equal(const WAVEFORMATEX *fmt1, const WAVEFORMATEX *fmt2)
+/* Windows treats WAVE_FORMAT_EXTENSIBLE and the plain tag as the same format. */
+static WORD object_format_tag(const WAVEFORMATEX *fmt)
 {
-    return !memcmp(fmt1, fmt2, sizeof(*fmt1)) && !memcmp(fmt1 + 1, fmt2 + 1, fmt1->cbSize);
+    const WAVEFORMATEXTENSIBLE *fmtex = (const WAVEFORMATEXTENSIBLE *)fmt;
+
+    if(fmt->wFormatTag != WAVE_FORMAT_EXTENSIBLE)
+        return fmt->wFormatTag;
+    if(fmt->cbSize < sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX))
+        return WAVE_FORMAT_UNKNOWN;
+    if(IsEqualGUID(&fmtex->SubFormat, &KSDATAFORMAT_SUBTYPE_IEEE_FLOAT))
+        return WAVE_FORMAT_IEEE_FLOAT;
+    if(IsEqualGUID(&fmtex->SubFormat, &KSDATAFORMAT_SUBTYPE_PCM))
+        return WAVE_FORMAT_PCM;
+    return WAVE_FORMAT_UNKNOWN;
+}
+
+static BOOL object_formats_compatible(const WAVEFORMATEX *fmt1, const WAVEFORMATEX *fmt2)
+{
+    WORD tag = object_format_tag(fmt1);
+
+    /* Shape is validated first, by validate_wave_format_ex: Windows reports a
+     * malformed format and an unsupported one with different HRESULTs. */
+    return tag != WAVE_FORMAT_UNKNOWN &&
+           tag == object_format_tag(fmt2) &&
+           fmt1->nChannels == fmt2->nChannels &&
+           fmt1->nSamplesPerSec == fmt2->nSamplesPerSec &&
+           fmt1->wBitsPerSample == fmt2->wBitsPerSample;
+}
+
+/* Windows' shape validator, run before any support test: only the extensible
+ * arm checks wBitsPerSample and nBlockAlign; dwChannelMask is never read. */
+static HRESULT validate_wave_format_ex(const WAVEFORMATEX *fmt)
+{
+    UINT32 prod;
+
+    if(!fmt)
+        return E_POINTER;
+
+    if(!fmt->nChannels || !fmt->nSamplesPerSec || !fmt->nAvgBytesPerSec ||
+            !fmt->nBlockAlign || fmt->cbSize > 0x400)
+        return E_INVALIDARG;
+
+    /* 32-bit wrapping product, positive for every depth the arms below
+     * accept, so the divide needs no sign handling. */
+    prod = (UINT32)fmt->nChannels * fmt->wBitsPerSample;
+
+    if(fmt->wFormatTag == WAVE_FORMAT_EXTENSIBLE){
+        const WAVEFORMATEXTENSIBLE *ext = (const WAVEFORMATEXTENSIBLE *)fmt;
+        BOOL pcm;
+
+        if(fmt->cbSize < sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX))
+            return E_INVALIDARG;
+
+        /* Only the two known subformats are examined; anything else is
+         * accepted on the prologue alone, so none of the tests below run for
+         * it. */
+        pcm = IsEqualGUID(&ext->SubFormat, &KSDATAFORMAT_SUBTYPE_PCM);
+        if(!pcm && !IsEqualGUID(&ext->SubFormat, &KSDATAFORMAT_SUBTYPE_IEEE_FLOAT))
+            return S_OK;
+
+        if(pcm){
+            if(fmt->wBitsPerSample != 8 && fmt->wBitsPerSample != 16 &&
+                    fmt->wBitsPerSample != 24 && fmt->wBitsPerSample != 32)
+                return E_INVALIDARG;
+        }else if(fmt->wBitsPerSample != 32 && fmt->wBitsPerSample != 64)
+            return E_INVALIDARG;
+
+        if(!ext->Samples.wValidBitsPerSample ||
+                fmt->wBitsPerSample < ext->Samples.wValidBitsPerSample)
+            return E_INVALIDARG;
+
+        if(fmt->nAvgBytesPerSec != ((prod * fmt->nSamplesPerSec) >> 3))
+            return E_INVALIDARG;
+
+        if(fmt->nBlockAlign != prod / 8)
+            return E_INVALIDARG;
+
+        return S_OK;
+    }
+
+    if(fmt->wFormatTag != WAVE_FORMAT_PCM && fmt->wFormatTag != WAVE_FORMAT_IEEE_FLOAT)
+        return S_OK;
+
+    if(fmt->cbSize)
+        return E_INVALIDARG;
+
+    if(fmt->wBitsPerSample & 7)
+        return E_INVALIDARG;
+
+    if(fmt->nChannels > 2)
+        return E_INVALIDARG;
+
+    if(fmt->nAvgBytesPerSec != ((prod * fmt->nSamplesPerSec) >> 3))
+        return E_INVALIDARG;
+
+    return S_OK;
 }
 
 typedef struct SpatialAudioImpl SpatialAudioImpl;
@@ -445,7 +538,10 @@ static HRESULT WINAPI SAORS_GetAvailableDynamicObjectCount(
         ISpatialAudioObjectRenderStream *iface, UINT32 *count)
 {
     SpatialAudioStreamImpl *This = impl_from_ISpatialAudioObjectRenderStream(iface);
-    FIXME("(%p)->(%p)\n", This, count);
+    TRACE("(%p)->(%p)\n", This, count);
+
+    if(!count)
+        return E_POINTER;
 
     *count = 0;
     return S_OK;
@@ -455,8 +551,25 @@ static HRESULT WINAPI SAORS_GetService(ISpatialAudioObjectRenderStream *iface,
         REFIID riid, void **service)
 {
     SpatialAudioStreamImpl *This = impl_from_ISpatialAudioObjectRenderStream(iface);
-    FIXME("(%p)->(%s, %p)\n", This, debugstr_guid(riid), service);
-    return E_NOTIMPL;
+
+    TRACE("(%p)->(%s, %p)\n", This, debugstr_guid(riid), service);
+
+    if(!service)
+        return E_POINTER;
+
+    *service = NULL;
+
+    /* Windows serves these four from the stream's IAudioClient and answers
+     * E_NOINTERFACE otherwise. IAudioRenderClient is withheld: the stream owns
+     * the render packet during a pass. */
+    if(IsEqualIID(riid, &IID_IAudioClock) ||
+            IsEqualIID(riid, &IID_IAudioStreamVolume) ||
+            IsEqualIID(riid, &IID_IAudioSessionControl) ||
+            IsEqualIID(riid, &IID_ISimpleAudioVolume))
+        return IAudioClient_GetService(This->client, riid, service);
+
+    WARN("Unsupported service %s.\n", debugstr_guid(riid));
+    return E_NOINTERFACE;
 }
 
 static HRESULT WINAPI SAORS_Start(ISpatialAudioObjectRenderStream *iface)
@@ -469,6 +582,8 @@ static HRESULT WINAPI SAORS_Start(ISpatialAudioObjectRenderStream *iface)
     hr = IAudioClient_Start(This->client);
     if(FAILED(hr)){
         WARN("IAudioClient::Start failed: %08lx\n", hr);
+        if(hr == AUDCLNT_E_NOT_STOPPED)
+            return SPTLAUDCLNT_E_STREAM_NOT_STOPPED;
         return hr;
     }
 
@@ -482,24 +597,48 @@ static HRESULT WINAPI SAORS_Stop(ISpatialAudioObjectRenderStream *iface)
 
     TRACE("(%p)->()\n", This);
 
+    /* S_FALSE for an already-stopped stream, which is not FAILED, so the
+     * driver's answer has to be forwarded rather than replaced by S_OK. */
     hr = IAudioClient_Stop(This->client);
-    if(FAILED(hr)){
+    if(FAILED(hr))
         WARN("IAudioClient::Stop failed: %08lx\n", hr);
-        return hr;
-    }
 
-    return S_OK;
+    return hr;
 }
 
 static HRESULT WINAPI SAORS_Reset(ISpatialAudioObjectRenderStream *iface)
 {
     SpatialAudioStreamImpl *This = impl_from_ISpatialAudioObjectRenderStream(iface);
+    BOOL pass_open;
     HRESULT hr;
 
     TRACE("(%p)->()\n", This);
 
+    EnterCriticalSection(&This->lock);
+
+    /* Windows' Reset leaves an open pass open. IAudioClient::Reset refuses
+     * while a packet is held, so drop it and reacquire; mixing only happens
+     * in End. */
+    pass_open = This->update_frames != ~0 && This->update_frames > 0;
+    if(pass_open)
+        IAudioRenderClient_ReleaseBuffer(This->render, 0, 0);
+
     hr = IAudioClient_Reset(This->client);
-    if (hr == AUDCLNT_E_NOT_STOPPED)
+
+    if(pass_open){
+        HRESULT buf_hr = IAudioRenderClient_GetBuffer(This->render, This->update_frames,
+                (BYTE **)&This->buf);
+        if(FAILED(buf_hr)){
+            WARN("could not reacquire the render buffer: %08lx\n", buf_hr);
+            This->update_frames = ~0;
+            if(SUCCEEDED(hr))
+                hr = buf_hr;
+        }
+    }
+
+    LeaveCriticalSection(&This->lock);
+
+    if(hr == AUDCLNT_E_NOT_STOPPED)
         return SPTLAUDCLNT_E_STREAM_NOT_STOPPED;
     return hr;
 }
@@ -513,6 +652,14 @@ static HRESULT WINAPI SAORS_BeginUpdatingAudioObjects(ISpatialAudioObjectRenderS
     HRESULT hr;
 
     TRACE("(%p)->(%p, %p)\n", This, dyn_count, frames);
+
+    if(!dyn_count || !frames)
+        return E_POINTER;
+
+    /* Windows zeroes both before any test can fail, so a caller that ignores
+     * the HRESULT reads 0 rather than the previous pass's values. */
+    *dyn_count = 0;
+    *frames = 0;
 
     EnterCriticalSection(&This->lock);
 
@@ -529,6 +676,10 @@ static HRESULT WINAPI SAORS_BeginUpdatingAudioObjects(ISpatialAudioObjectRenderS
             WARN("GetBuffer failed: %08lx\n", hr);
             This->update_frames = ~0;
             LeaveCriticalSection(&This->lock);
+            /* No free packet, i.e. the caller is late.  Windows reports the
+             * buffer-size code for the same state. */
+            if(hr == AUDCLNT_E_BUFFER_TOO_LARGE || hr == AUDCLNT_E_OUT_OF_ORDER)
+                return AUDCLNT_E_BUFFER_SIZE_ERROR;
             return hr;
         }
 
@@ -545,7 +696,6 @@ static HRESULT WINAPI SAORS_BeginUpdatingAudioObjects(ISpatialAudioObjectRenderS
         FIXME("Zero frame update.\n");
     }
 
-    *dyn_count = 0;
     *frames = This->update_frames;
 
     LeaveCriticalSection(&This->lock);
@@ -553,9 +703,53 @@ static HRESULT WINAPI SAORS_BeginUpdatingAudioObjects(ISpatialAudioObjectRenderS
     return S_OK;
 }
 
+/* canonical 7.1.4 bed directions plus the bottom quad and back-center, in
+ * listener space (+x right, +y up, -z ahead); fronts and backs sit 30 degrees
+ * off centre (0.5, 0.866), the height layer 45 degrees up (0.707); returns
+ * FALSE for the only non-directional channel (LFE). */
+static BOOL bed_object_position(AudioObjectType type, float pos[3])
+{
+    switch(type){
+    case AudioObjectType_FrontLeft:     pos[0]=-0.5f; pos[1]=0.0f;   pos[2]=-0.866f; return TRUE;
+    case AudioObjectType_FrontRight:    pos[0]= 0.5f; pos[1]=0.0f;   pos[2]=-0.866f; return TRUE;
+    case AudioObjectType_FrontCenter:   pos[0]= 0.0f; pos[1]=0.0f;   pos[2]=-1.0f;   return TRUE;
+    case AudioObjectType_SideLeft:      pos[0]=-1.0f; pos[1]=0.0f;   pos[2]= 0.0f;   return TRUE;
+    case AudioObjectType_SideRight:     pos[0]= 1.0f; pos[1]=0.0f;   pos[2]= 0.0f;   return TRUE;
+    case AudioObjectType_BackLeft:      pos[0]=-0.5f; pos[1]=0.0f;   pos[2]= 0.866f; return TRUE;
+    case AudioObjectType_BackRight:     pos[0]= 0.5f; pos[1]=0.0f;   pos[2]= 0.866f; return TRUE;
+    case AudioObjectType_TopFrontLeft:  pos[0]=-0.5f; pos[1]=0.707f; pos[2]=-0.5f;   return TRUE;
+    case AudioObjectType_TopFrontRight: pos[0]= 0.5f; pos[1]=0.707f; pos[2]=-0.5f;   return TRUE;
+    case AudioObjectType_TopBackLeft:   pos[0]=-0.5f; pos[1]=0.707f; pos[2]= 0.5f;   return TRUE;
+    case AudioObjectType_TopBackRight:  pos[0]= 0.5f; pos[1]=0.707f; pos[2]= 0.5f;   return TRUE;
+    case AudioObjectType_BottomFrontLeft:  pos[0]=-0.5f; pos[1]=-0.707f; pos[2]=-0.5f;  return TRUE;
+    case AudioObjectType_BottomFrontRight: pos[0]= 0.5f; pos[1]=-0.707f; pos[2]=-0.5f;  return TRUE;
+    case AudioObjectType_BottomBackLeft:   pos[0]=-0.5f; pos[1]=-0.707f; pos[2]= 0.5f;  return TRUE;
+    case AudioObjectType_BottomBackRight:  pos[0]= 0.5f; pos[1]=-0.707f; pos[2]= 0.5f;  return TRUE;
+    case AudioObjectType_BackCenter:    pos[0]= 0.0f; pos[1]=0.0f;   pos[2]= 1.0f;   return TRUE;
+    default:                            pos[0]= 0.0f; pos[1]=0.0f;   pos[2]= 0.0f;   return FALSE;
+    }
+}
+
+/* No SPEAKER_BOTTOM_* bits exist; Windows folds each bottom channel into its
+ * nearest neighbour at -3 dB. */
+#define SPATIAL_BOTTOM_FOLD 0.70794576f
+
+static float static_fold_gain(AudioObjectType type)
+{
+    switch(type){
+    case AudioObjectType_BottomFrontLeft:
+    case AudioObjectType_BottomFrontRight:
+    case AudioObjectType_BottomBackLeft:
+    case AudioObjectType_BottomBackRight:
+        return SPATIAL_BOTTOM_FOLD;
+    default:
+        return 1.0f;
+    }
+}
+
 static void mix_static_object(SpatialAudioStreamImpl *stream, SpatialAudioObjectImpl *object)
 {
-    float *in = object->buf, *out, vol = object->volume;
+    float *in = object->buf, *out, vol;
     UINT32 i;
     if(object->static_idx == ~0 ||
             stream->static_object_map[object->static_idx] == ~0){
@@ -563,6 +757,7 @@ static void mix_static_object(SpatialAudioStreamImpl *stream, SpatialAudioObject
         return;
     }
     out = stream->buf + stream->static_object_map[object->static_idx];
+    vol = object->volume * static_fold_gain(object->type);
     for(i = 0; i < stream->update_frames; ++i){
         *out += *in * vol;
         ++in;
@@ -574,7 +769,7 @@ static HRESULT WINAPI SAORS_EndUpdatingAudioObjects(ISpatialAudioObjectRenderStr
 {
     SpatialAudioStreamImpl *This = impl_from_ISpatialAudioObjectRenderStream(iface);
     SpatialAudioObjectImpl *object;
-    HRESULT hr;
+    HRESULT hr = S_OK;
 
     TRACE("(%p)->()\n", This);
 
@@ -609,11 +804,13 @@ static HRESULT WINAPI SAORS_EndUpdatingAudioObjects(ISpatialAudioObjectRenderStr
             WARN("ReleaseBuffer failed: %08lx\n", hr);
     }
 
+    /* Cleared on every path as on Windows; the ReleaseBuffer failure is
+     * returned so an endpoint loss is reported here. */
     This->update_frames = ~0;
 
     LeaveCriticalSection(&This->lock);
 
-    return S_OK;
+    return hr;
 }
 
 static HRESULT WINAPI SAORS_ActivateSpatialAudioObject(ISpatialAudioObjectRenderStream *iface,
@@ -745,23 +942,56 @@ static HRESULT WINAPI SAC_GetStaticObjectPosition(ISpatialAudioClient *iface,
         AudioObjectType type, float *x, float *y, float *z)
 {
     SpatialAudioImpl *This = impl_from_ISpatialAudioClient(iface);
-    FIXME("(%p)->(0x%x, %p, %p, %p)\n", This, type, x, y, z);
-    return E_NOTIMPL;
+    float pos[3];
+
+    TRACE("(%p)->(0x%x, %p, %p, %p)\n", This, type, x, y, z);
+
+    if(!x || !y || !z)
+        return E_INVALIDARG;
+
+    /* Non-directional types (LFE) report the listener origin. */
+    bed_object_position(type, pos);
+    *x = pos[0];
+    *y = pos[1];
+    *z = pos[2];
+
+    return S_OK;
 }
 
 static HRESULT WINAPI SAC_GetNativeStaticObjectTypeMask(ISpatialAudioClient *iface,
         AudioObjectType *mask)
 {
     SpatialAudioImpl *This = impl_from_ISpatialAudioClient(iface);
-    FIXME("(%p)->(%p)\n", This, mask);
-    return E_NOTIMPL;
+
+    TRACE("(%p)->(%p)\n", This, mask);
+
+    if(!mask)
+        return E_INVALIDARG;
+
+    /* Every static type the bed mixer can place. 0x3fffe is also what Windows
+     * reports for an unrecognised encoder. */
+    *mask = AudioObjectType_FrontLeft | AudioObjectType_FrontRight |
+            AudioObjectType_FrontCenter | AudioObjectType_LowFrequency |
+            AudioObjectType_SideLeft | AudioObjectType_SideRight |
+            AudioObjectType_BackLeft | AudioObjectType_BackRight |
+            AudioObjectType_TopFrontLeft | AudioObjectType_TopFrontRight |
+            AudioObjectType_TopBackLeft | AudioObjectType_TopBackRight |
+            AudioObjectType_BottomFrontLeft | AudioObjectType_BottomFrontRight |
+            AudioObjectType_BottomBackLeft | AudioObjectType_BottomBackRight |
+            AudioObjectType_BackCenter;
+
+    return S_OK;
 }
 
 static HRESULT WINAPI SAC_GetMaxDynamicObjectCount(ISpatialAudioClient *iface,
         UINT32 *value)
 {
     SpatialAudioImpl *This = impl_from_ISpatialAudioClient(iface);
-    FIXME("(%p)->(%p)\n", This, value);
+
+    TRACE("(%p)->(%p)\n", This, value);
+
+    if(!value)
+        return E_INVALIDARG;
 
     *value = 0;
 
@@ -775,21 +1005,38 @@ static HRESULT WINAPI SAC_GetSupportedAudioObjectFormatEnumerator(
 
     TRACE("(%p)->(%p)\n", This, enumerator);
 
+    if(!enumerator)
+        return E_POINTER;
+
     *enumerator = &This->IAudioFormatEnumerator_iface;
     SAC_AddRef(iface);
 
     return S_OK;
 }
 
+static HRESULT WINAPI SAC_IsAudioObjectFormatSupported(ISpatialAudioClient *iface,
+        const WAVEFORMATEX *format);
+
 static HRESULT WINAPI SAC_GetMaxFrameCount(ISpatialAudioClient *iface,
         const WAVEFORMATEX *format, UINT32 *count)
 {
     SpatialAudioImpl *This = impl_from_ISpatialAudioClient(iface);
+    HRESULT hr;
 
     /* FIXME: should get device period from the device */
     static const REFERENCE_TIME period = 100000;
 
     TRACE("(%p)->(%p, %p)\n", This, format, count);
+
+    if(!count)
+        return E_POINTER;
+
+    *count = 0;
+
+    /* Windows runs the support test, including the NULL check, before it
+     * reaches the period. */
+    if((hr = SAC_IsAudioObjectFormatSupported(iface, format)) != S_OK)
+        return hr;
 
     *count = MulDiv(period, format->nSamplesPerSec, 10000000);
 
@@ -800,16 +1047,20 @@ static HRESULT WINAPI SAC_IsAudioObjectFormatSupported(ISpatialAudioClient *ifac
         const WAVEFORMATEX *format)
 {
     SpatialAudioImpl *sac = impl_from_ISpatialAudioClient(iface);
+    HRESULT hr;
 
     TRACE("sac %p, format %s.\n", sac, debugstr_fmtex(format));
 
     if (!format)
         return E_POINTER;
 
-    if (!formats_equal(&sac->object_fmtex.Format, format))
+    if ((hr = validate_wave_format_ex(format)) != S_OK)
+        return hr;
+
+    if (!object_formats_compatible(&sac->object_fmtex.Format, format))
     {
-        FIXME("Reporting format %s as unsupported.\n", debugstr_fmtex(format));
-        return E_INVALIDARG;
+        TRACE("Reporting format %s as unsupported.\n", debugstr_fmtex(format));
+        return AUDCLNT_E_UNSUPPORTED_FORMAT;
     }
 
     return S_OK;
@@ -819,8 +1070,15 @@ static HRESULT WINAPI SAC_IsSpatialAudioStreamAvailable(ISpatialAudioClient *ifa
         REFIID stream_uuid, const PROPVARIANT *info)
 {
     SpatialAudioImpl *This = impl_from_ISpatialAudioClient(iface);
-    FIXME("(%p)->(%s, %p)\n", This, debugstr_guid(stream_uuid), info);
-    return E_NOTIMPL;
+
+    TRACE("(%p)->(%s, %p)\n", This, debugstr_guid(stream_uuid), info);
+
+    /* Windows answers this with no device or budget test. */
+    if(IsEqualIID(stream_uuid, &IID_ISpatialAudioObjectRenderStream))
+        return S_OK;
+
+    WARN("Unsupported spatial stream %s.\n", debugstr_guid(stream_uuid));
+    return SPTLAUDCLNT_E_STREAM_NOT_AVAILABLE;
 }
 
 static WAVEFORMATEX *clone_fmtex(const WAVEFORMATEX *src)
@@ -844,6 +1102,16 @@ static void static_mask_to_channels(AudioObjectType static_mask, WORD *count, DW
     }else{ \
         map[map_idx++] = ~0; \
     }
+    /* The fold target is always mapped before its bottom channel, because both
+     * loops run in AudioObjectType bit order.  A target missing from the mask
+     * leaves ~0, which mix_static_object already reports and drops. */
+#define FOLD_MASK(f, t) \
+    if(static_mask & f){ \
+        map[map_idx++] = map[AudioObjectType_to_index(t)]; \
+        TRACE("folding 0x%x into 0x%x\n", f, t); \
+    }else{ \
+        map[map_idx++] = ~0; \
+    }
     CONVERT_MASK(AudioObjectType_FrontLeft, SPEAKER_FRONT_LEFT);
     CONVERT_MASK(AudioObjectType_FrontRight, SPEAKER_FRONT_RIGHT);
     CONVERT_MASK(AudioObjectType_FrontCenter, SPEAKER_FRONT_CENTER);
@@ -856,6 +1124,12 @@ static void static_mask_to_channels(AudioObjectType static_mask, WORD *count, DW
     CONVERT_MASK(AudioObjectType_TopFrontRight, SPEAKER_TOP_FRONT_RIGHT);
     CONVERT_MASK(AudioObjectType_TopBackLeft, SPEAKER_TOP_BACK_LEFT);
     CONVERT_MASK(AudioObjectType_TopBackRight, SPEAKER_TOP_BACK_RIGHT);
+    /* A bottom channel shares its fold target's endpoint channel, so
+     * nChannels == popcount(*mask). */
+    FOLD_MASK(AudioObjectType_BottomFrontLeft, AudioObjectType_FrontLeft);
+    FOLD_MASK(AudioObjectType_BottomFrontRight, AudioObjectType_FrontRight);
+    FOLD_MASK(AudioObjectType_BottomBackLeft, AudioObjectType_BackLeft);
+    FOLD_MASK(AudioObjectType_BottomBackRight, AudioObjectType_BackRight);
     CONVERT_MASK(AudioObjectType_BackCenter, SPEAKER_BACK_CENTER);
 }
 
@@ -864,6 +1138,9 @@ static HRESULT activate_stream(SpatialAudioStreamImpl *stream)
     WAVEFORMATEXTENSIBLE *object_fmtex = (WAVEFORMATEXTENSIBLE *)stream->params.ObjectFormat;
     HRESULT hr;
     REFERENCE_TIME period;
+    WORD bed_ch = 0;
+    DWORD bed_mask = 0;
+    AudioObjectType effective_mask;
 
     if(!(object_fmtex->Format.wFormatTag == WAVE_FORMAT_IEEE_FLOAT ||
                 (object_fmtex->Format.wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
@@ -886,10 +1163,13 @@ static HRESULT activate_stream(SpatialAudioStreamImpl *stream)
         return hr;
     }
 
+    effective_mask = stream->params.StaticObjectTypeMask ? stream->params.StaticObjectTypeMask :
+            (AudioObjectType_FrontLeft | AudioObjectType_FrontRight);
+    static_mask_to_channels(effective_mask, &bed_ch, &bed_mask, stream->static_object_map);
+
     stream->stream_fmtex.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
-    static_mask_to_channels(stream->params.StaticObjectTypeMask,
-            &stream->stream_fmtex.Format.nChannels, &stream->stream_fmtex.dwChannelMask,
-            stream->static_object_map);
+    stream->stream_fmtex.Format.nChannels = bed_ch;
+    stream->stream_fmtex.dwChannelMask = bed_mask;
     stream->stream_fmtex.Format.nSamplesPerSec = stream->params.ObjectFormat->nSamplesPerSec;
     stream->stream_fmtex.Format.wBitsPerSample = stream->params.ObjectFormat->wBitsPerSample;
     stream->stream_fmtex.Format.nBlockAlign = (stream->stream_fmtex.Format.nChannels * stream->stream_fmtex.Format.wBitsPerSample) / 8;
@@ -935,12 +1215,24 @@ static HRESULT WINAPI SAC_ActivateSpatialAudioStream(ISpatialAudioClient *iface,
 
     TRACE("(%p)->(%s, %p)\n", This, debugstr_guid(riid), stream);
 
+    /* Windows checks these before the IID: E_INVALIDARG for a NULL
+     * PROPVARIANT, E_POINTER for a NULL out pointer. */
+    if(!prop)
+        return E_INVALIDARG;
+    if(!stream)
+        return E_POINTER;
+    *stream = NULL;
+
     if(IsEqualIID(riid, &IID_ISpatialAudioObjectRenderStream)){
         SpatialAudioStreamImpl *obj;
 
-        if(prop &&
-                (prop->vt != VT_BLOB ||
-                 prop->blob.cbSize != sizeof(SpatialAudioObjectRenderStreamActivationParams))){
+        /* Windows accepts the v1 struct or v1 plus the UINT32 that
+         * SpatialAudioObjectRenderStreamActivationParams2 adds; the v2 tail
+         * is not parsed. */
+        if(prop->vt != VT_BLOB || !prop->blob.pBlobData ||
+                (prop->blob.cbSize != sizeof(SpatialAudioObjectRenderStreamActivationParams) &&
+                 prop->blob.cbSize != sizeof(SpatialAudioObjectRenderStreamActivationParams)
+                                      + sizeof(UINT32))){
             WARN("Got invalid params\n");
             *stream = NULL;
             return E_INVALIDARG;
@@ -959,7 +1251,8 @@ static HRESULT WINAPI SAC_ActivateSpatialAudioStream(ISpatialAudioClient *iface,
             return E_INVALIDARG;
         }
 
-        if(!(params->ObjectFormat && formats_equal(params->ObjectFormat, &This->object_fmtex.Format))) {
+        if(!(params->ObjectFormat &&
+             object_formats_compatible(params->ObjectFormat, &This->object_fmtex.Format))) {
             *stream = NULL;
             return AUDCLNT_E_UNSUPPORTED_FORMAT;
         }
@@ -1059,6 +1352,9 @@ static HRESULT WINAPI SAOFE_GetCount(IAudioFormatEnumerator *iface, UINT32 *coun
 
     TRACE("(%p)->(%p)\n", This, count);
 
+    if(!count)
+        return E_POINTER;
+
     *count = 1;
 
     return S_OK;
@@ -1070,6 +1366,9 @@ static HRESULT WINAPI SAOFE_GetFormat(IAudioFormatEnumerator *iface,
     SpatialAudioImpl *This = impl_from_IAudioFormatEnumerator(iface);
 
     TRACE("(%p)->(%u, %p)\n", This, index, format);
+
+    if(!format)
+        return E_POINTER;
 
     if(index > 0)
         return E_INVALIDARG;
@@ -1090,9 +1389,6 @@ static IAudioFormatEnumeratorVtbl IAudioFormatEnumerator_vtbl = {
 HRESULT SpatialAudioClient_Create(IMMDevice *mmdev, ISpatialAudioClient **out)
 {
     SpatialAudioImpl *obj;
-    IAudioClient *aclient;
-    WAVEFORMATEX *closest;
-    HRESULT hr;
 
     obj = calloc(1, sizeof(*obj));
 
@@ -1107,45 +1403,6 @@ HRESULT SpatialAudioClient_Create(IMMDevice *mmdev, ISpatialAudioClient **out)
     obj->object_fmtex.Format.nBlockAlign = (obj->object_fmtex.Format.nChannels * obj->object_fmtex.Format.wBitsPerSample) / 8;
     obj->object_fmtex.Format.nAvgBytesPerSec = obj->object_fmtex.Format.nSamplesPerSec * obj->object_fmtex.Format.nBlockAlign;
     obj->object_fmtex.Format.cbSize = 0;
-
-    hr = IMMDevice_Activate(mmdev, &IID_IAudioClient,
-            CLSCTX_INPROC_SERVER, NULL, (void**)&aclient);
-    if(FAILED(hr)){
-        WARN("Activate failed: %08lx\n", hr);
-        free(obj);
-        return hr;
-    }
-
-    hr = IAudioClient_IsFormatSupported(aclient, AUDCLNT_SHAREMODE_SHARED, &obj->object_fmtex.Format, &closest);
-
-    IAudioClient_Release(aclient);
-
-    if(hr == S_FALSE){
-        if(sizeof(WAVEFORMATEX) + closest->cbSize > sizeof(obj->object_fmtex)){
-            ERR("Returned format too large: %s\n", debugstr_fmtex(closest));
-            CoTaskMemFree(closest);
-            free(obj);
-            return AUDCLNT_E_UNSUPPORTED_FORMAT;
-        }else if(!((closest->wFormatTag == WAVE_FORMAT_IEEE_FLOAT ||
-                    (closest->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
-                     IsEqualGUID(&((WAVEFORMATEXTENSIBLE *)closest)->SubFormat,
-                         &KSDATAFORMAT_SUBTYPE_IEEE_FLOAT))) &&
-                    closest->wBitsPerSample == 32)){
-            ERR("Returned format not 32-bit float: %s\n", debugstr_fmtex(closest));
-            CoTaskMemFree(closest);
-            free(obj);
-            return AUDCLNT_E_UNSUPPORTED_FORMAT;
-        }
-        WARN("The audio stack doesn't support 48kHz 32bit float. Using the closest match. Audio may be glitchy. %s\n", debugstr_fmtex(closest));
-        memcpy(&obj->object_fmtex,
-               closest,
-               sizeof(WAVEFORMATEX) + closest->cbSize);
-        CoTaskMemFree(closest);
-    } else if(hr != S_OK){
-        WARN("Checking supported formats failed: %08lx\n", hr);
-        free(obj);
-        return hr;
-    }
 
     obj->mmdev = mmdev;
     IMMDevice_AddRef(mmdev);
