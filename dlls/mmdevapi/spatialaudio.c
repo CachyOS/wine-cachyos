@@ -58,6 +58,9 @@ static BOOL spatial_unix_init(void)
     return !status;
 }
 
+/* WINE_SPATIAL_SOUND decides when set, then SpatialSound under
+ * HKCU\Software\Wine\mmdevapi. With neither, spatial sound is on when the HRTF
+ * library loads. */
 static UINT get_spatial_dynamic_budget(void)
 {
     /* an over-long env value or an empty registry value leaves buf untouched
@@ -66,13 +69,14 @@ static UINT get_spatial_dynamic_budget(void)
     DWORD size = sizeof(buf), type = REG_NONE;
     HKEY key;
     BOOL enabled = FALSE;
-    const char *source = "registry";
+    const char *source = NULL;
 
     if(GetEnvironmentVariableW(L"WINE_SPATIAL_SOUND", buf, ARRAY_SIZE(buf))){
         enabled = spatial_option_enabled(buf);
         source = "environment";
     }else if(RegOpenKeyW(HKEY_CURRENT_USER, L"Software\\Wine\\mmdevapi", &key) == ERROR_SUCCESS){
         if(RegQueryValueExW(key, L"SpatialSound", 0, &type, (BYTE*)buf, &size) == ERROR_SUCCESS){
+            source = "registry";
             if(type == REG_SZ || type == REG_EXPAND_SZ){
                 enabled = spatial_option_enabled(buf);
             }else if(type == REG_DWORD && size == sizeof(DWORD)){
@@ -85,6 +89,11 @@ static UINT get_spatial_dynamic_budget(void)
                 WARN("Ignoring SpatialSound of type %lu.\n", type);
         }
         RegCloseKey(key);
+    }
+
+    if(!source){
+        enabled = spatial_unix_init() && !WINE_UNIX_CALL(unix_spatial_available, NULL);
+        source = "HRTF library";
     }
 
     TRACE_(spatial)("Spatial sound %s (%s), dynamic object budget %u.\n",
