@@ -3693,7 +3693,7 @@ static void pipewire_read(struct pipewire_stream *stream)
     while ((slot = cap_claim_slot(stream, &idx, &seq)))
     {
         ACPacket *p, *next;
-        LARGE_INTEGER stamp, freq;
+        LARGE_INTEGER stamp;
 
         if (!(p = (ACPacket *)list_head(&stream->packet_free_head)))
         {
@@ -3713,8 +3713,8 @@ static void pipewire_read(struct pipewire_stream *stream)
         {
             stream->held_bytes += stream->period_bytes;
         }
-        NtQueryPerformanceCounter(&stamp, &freq);
-        p->qpcpos = (stamp.QuadPart * (INT64)10000000) / freq.QuadPart;
+        NtQueryPerformanceCounter(&stamp, NULL);
+        p->qpcpos = stamp.QuadPart;
         /* A skipped sequence means an eviction just before this slot;
          * slot->disc covers losses that remove no sequence.  cap_next_seq
          * starts at zero so slots evicted before the first claim count too. */
@@ -4566,9 +4566,9 @@ static NTSTATUS pipewire_get_position(void *args)
 
     if (params->qpctime)
     {
-        LARGE_INTEGER stamp, freq;
-        NtQueryPerformanceCounter(&stamp, &freq);
-        *params->qpctime = (stamp.QuadPart * (INT64)10000000) / freq.QuadPart;
+        LARGE_INTEGER stamp;
+        NtQueryPerformanceCounter(&stamp, NULL);
+        *params->qpctime = stamp.QuadPart;
     }
 
     params->result = S_OK;
