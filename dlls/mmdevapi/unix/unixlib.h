@@ -81,6 +81,7 @@ enum spatial_unix_func
     unix_spatial_object_add,
     unix_spatial_object_remove,
     unix_spatial_mix,
+    unix_spatial_available,
     spatial_funcs_count,
 };
 
