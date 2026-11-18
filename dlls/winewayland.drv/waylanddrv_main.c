@@ -25,21 +25,28 @@
 #include "config.h"
 
 #include <stdlib.h>
+#include <errno.h>
 
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
 
 #include "waylanddrv.h"
 
+WINE_DEFAULT_DEBUG_CHANNEL(waylanddrv);
+
 char *process_name = NULL;
+char *process_activate_token = NULL;
 
 static const struct user_driver_funcs waylanddrv_funcs =
 {
+    .pActivateWindow = WAYLAND_ActivateWindow,
     .pClipboardWindowProc = WAYLAND_ClipboardWindowProc,
     .pClipCursor = WAYLAND_ClipCursor,
     .pDesktopWindowProc = WAYLAND_DesktopWindowProc,
     .pDestroyWindow = WAYLAND_DestroyWindow,
+    .pFlashWindowEx = WAYLAND_FlashWindowEx,
     .pSetIMECompositionRect = WAYLAND_SetIMECompositionRect,
+    .pEnableIMEContext = WAYLAND_EnableIMEContext,
     .pKbdLayerDescriptor = WAYLAND_KbdLayerDescriptor,
     .pReleaseKbdTables = WAYLAND_ReleaseKbdTables,
     .pSetCursor = WAYLAND_SetCursor,
@@ -49,11 +56,15 @@ static const struct user_driver_funcs waylanddrv_funcs =
     .pSetWindowStyle = WAYLAND_SetWindowStyle,
     .pSetWindowText = WAYLAND_SetWindowText,
     .pSysCommand = WAYLAND_SysCommand,
+    .pUpdateLayeredWindow = WAYLAND_UpdateLayeredWindow,
     .pUpdateDisplayDevices = WAYLAND_UpdateDisplayDevices,
     .pWindowMessage = WAYLAND_WindowMessage,
     .pWindowPosChanged = WAYLAND_WindowPosChanged,
     .pWindowPosChanging = WAYLAND_WindowPosChanging,
     .pCreateWindowSurface = WAYLAND_CreateWindowSurface,
+    .pGetWindowStyleMasks = WAYLAND_GetWindowStyleMasks,
+    .pGetWindowStateUpdates = WAYLAND_GetWindowStateUpdates,
+    .pHasWindowManager = WAYLAND_HasWindowManager,
     .pVulkanInit = WAYLAND_VulkanInit,
     .pOpenGLInit = WAYLAND_OpenGLInit,
 };
@@ -86,6 +97,21 @@ static void wayland_init_process_name(void)
     }
 }
 
+static void wayland_init_activation_token(void)
+{
+    char *env;
+
+    if ((env = getenv("XDG_ACTIVATION_TOKEN")))
+        process_activate_token = strdup(env);
+    else if ((env = getenv("DESKTOP_STARTUP_ID")))
+        process_activate_token = strdup(env);
+
+    unsetenv("DESKTOP_STARTUP_ID");
+    unsetenv("XDG_ACTIVATION_TOKEN");
+
+    TRACE("activation token %s\n", debugstr_a(process_activate_token));
+}
+
 static NTSTATUS waylanddrv_unix_init(void *arg)
 {
     /* Set the user driver functions now so that they are available during
@@ -93,6 +119,7 @@ static NTSTATUS waylanddrv_unix_init(void *arg)
     __wine_set_user_driver(&waylanddrv_funcs, WINE_GDI_DRIVER_VERSION);
 
     wayland_init_process_name();
+    wayland_init_activation_token();
 
     if (!wayland_process_init()) goto err;
 
@@ -105,20 +132,36 @@ err:
 
 static NTSTATUS waylanddrv_unix_read_events(void *arg)
 {
+    int error;
+    uint32_t id, proto_err;
+    const struct wl_interface *interface;
+
     while (wl_display_dispatch_queue(process_wayland.wl_display,
                                      process_wayland.wl_event_queue) != -1)
         continue;
     /* This function only returns on a fatal error, e.g., if our connection
      * to the Wayland server is lost. */
+
+    error = wl_display_get_error(process_wayland.wl_display);
+
+    if (error == EPROTO)
+    {
+        proto_err = wl_display_get_protocol_error(process_wayland.wl_display,
+                                                  &interface, &id);
+        ERR("Protocol error on %s#%u with code %u\n",
+            (interface && interface->name) ? interface->name : "Unknown", id, proto_err);
+    }
+    else ERR("%s when dispatching event queue\n", strerror(error));
+
     return STATUS_UNSUCCESSFUL;
 }
 
 static NTSTATUS waylanddrv_unix_init_clipboard(void *arg)
 {
-    /* If the compositor supports zwlr_data_control_manager_v1, we don't need
+    /* If the compositor supports ext_data_control_manager_v1, we don't need
      * per-process clipboard window and handling, we can use the default clipboard
      * window from the desktop process. */
-    if (process_wayland.zwlr_data_control_manager_v1) return STATUS_UNSUCCESSFUL;
+    if (process_wayland.ext_data_control_manager_v1) return STATUS_UNSUCCESSFUL;
     return STATUS_SUCCESS;
 }
 

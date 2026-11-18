@@ -117,7 +117,11 @@ void *opengl_drawable_create( UINT size, const struct opengl_drawable_funcs *fun
     drawable->interval = INT_MIN;
     drawable->doublebuffer = !!(pixel_formats[format - 1].pfd.dwFlags & PFD_DOUBLEBUFFER);
     drawable->stereo = !!(pixel_formats[format - 1].pfd.dwFlags & PFD_STEREO);
-    if ((drawable->client = client)) client_surface_add_ref( client );
+    if ((drawable->client = client))
+    {
+        client_surface_add_ref( client );
+        InterlockedIncrement( &client->busy_ref );
+    }
     for (UINT i = 0; i < ARRAY_SIZE(drawable->buffer_map); i++) drawable->buffer_map[i] = GL_FRONT_LEFT + i;
 
     TRACE( "created %s\n", debugstr_opengl_drawable( drawable ) );
@@ -142,7 +146,11 @@ void opengl_drawable_release( struct opengl_drawable *drawable )
 
         drawable->funcs->destroy( drawable );
         if (drawable->surface) funcs->p_eglDestroySurface( egl->display, drawable->surface );
-        if (drawable->client) client_surface_release( drawable->client );
+        if (drawable->client)
+        {
+            InterlockedDecrement( &drawable->client->busy_ref );
+            client_surface_release( drawable->client );
+        }
         free( drawable );
     }
 }
@@ -167,10 +175,111 @@ static void opengl_drawable_flush( struct opengl_drawable *drawable, int interva
     if (flags) drawable->funcs->flush( drawable, flags );
 }
 
+static void opengl_update_toplevel_contents( struct opengl_drawable *draw )
+{
+    struct client_surface *surface = draw->client;
+    const struct opengl_funcs *funcs = &display_funcs;
+    HWND hwnd = surface->hwnd;
+    BOOL other_process = FALSE;
+    DWORD pid;
+    HDC hdc;
+    ULONG *bits = NULL, *remote_bits = NULL;
+    RECT client;
+    BITMAPINFO info, *remote_info = NULL;
+    LARGE_INTEGER size;
+    HWND toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
+
+    if (!hwnd || !NtUserGetClientRect(hwnd, &client, NtUserGetDpiForWindow(hwnd))) return;
+
+    info.bmiHeader.biSize = sizeof(info.bmiHeader);
+    info.bmiHeader.biWidth = client.right - client.left;
+    info.bmiHeader.biHeight = client.bottom - client.top;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    size.QuadPart = sizeof(*bits) * info.bmiHeader.biWidth * info.bmiHeader.biHeight + sizeof(info);
+
+    if (NtUserGetWindowThread(toplevel, &pid) && (other_process = (pid != GetCurrentProcessId())))
+    {
+        HANDLE handle = 0;
+        NTSTATUS status;
+        SIZE_T view_size = 0;
+        CLIENT_ID id = {.UniqueProcess = ULongToHandle(pid)};
+        HANDLE proc;
+
+        status = NtCreateSection(&handle, GENERIC_READ | SECTION_MAP_READ | SECTION_MAP_WRITE,
+                                 NULL, &size, PAGE_READWRITE, SEC_COMMIT, 0);
+
+        if (status)
+        {
+            ERR("Failed to create section!\n");
+            return;
+        }
+
+        status = NtMapViewOfSection(handle, GetCurrentProcess(), (void *)&remote_info, 0, 0, NULL,
+                                    &view_size, ViewUnmap, 0, PAGE_READWRITE);
+        *remote_info = info;
+        bits = (void *)(remote_info + 1);
+
+        if (status)
+        {
+            ERR("Failed to map view of section to current process!\n");
+            return;
+        }
+
+        status = NtOpenProcess(&proc, PROCESS_ALL_ACCESS, NULL, &id);
+
+        if (status)
+        {
+            ERR("Failed to open other process!\n");
+            return;
+        }
+
+        view_size = 0;
+        status = NtMapViewOfSection(handle, proc, (void *)&remote_bits, 0, 0, NULL,
+                                    &view_size, ViewUnmap, 0, PAGE_READONLY);
+
+        if (status)
+        {
+            ERR("Failed to map view of section to other process\n");
+            return;
+        }
+
+        NtClose(proc);
+        NtClose(handle);
+    }
+    else bits = malloc(size.QuadPart);
+
+    funcs->p_glBindFramebuffer( GL_READ_FRAMEBUFFER, draw->draw_fbo );
+    funcs->p_glReadBuffer( GL_BACK );
+    funcs->p_glReadPixels( 0, 0, info.bmiHeader.biWidth, info.bmiHeader.biHeight, GL_BGRA,
+                           GL_UNSIGNED_BYTE, bits );
+    funcs->p_glBindFramebuffer( GL_READ_FRAMEBUFFER, 0 );
+
+    if (other_process)
+    {
+        NtUnmapViewOfSection(GetCurrentProcess(), bits);
+        NtUserPostMessage(toplevel, WM_WINE_UPDATE_WIN_CONTENTS, (WPARAM)hwnd, (LPARAM)remote_bits);
+        return;
+    }
+    if (!other_process && !(hdc = NtUserGetDCEx(hwnd, 0, DCX_CACHE | DCX_USESTYLE))) goto fail;
+
+    OffsetRect(&client, -client.left, -client.top);
+    NtGdiSetDIBitsToDeviceInternal( hdc, client.left, client.top, client.right - client.left,
+                                    client.bottom - client.top, 0, 0, 0, abs(info.bmiHeader.biHeight),
+                                    bits, &info, DIB_RGB_COLORS, 0, 0, FALSE, NULL );
+    NtUserReleaseDC(hwnd, hdc);
+
+fail:
+    free(bits);
+}
+
 static BOOL opengl_drawable_swap( struct opengl_drawable *drawable )
 {
     if (!is_client_surface_window( drawable->client, 0 )) return FALSE;
     client_surface_update( drawable->client );
+    if (drawable->client->offscreen && !user_driver->dc_funcs.pPutImage)
+        opengl_update_toplevel_contents( drawable );
     return drawable->funcs->swap( drawable );
 }
 
@@ -1398,10 +1507,19 @@ static BOOL egldrv_make_current( struct opengl_drawable *draw, struct opengl_dra
 {
     const struct opengl_funcs *funcs = &display_funcs;
     const struct egl_platform *egl = &display_egl;
+    BOOL ret;
 
     TRACE( "draw %s, read %s, context %p\n", debugstr_opengl_drawable( draw ), debugstr_opengl_drawable( read ), context );
 
-    return funcs->p_eglMakeCurrent( egl->display, context ? draw->surface : EGL_NO_SURFACE, context ? read->surface : EGL_NO_SURFACE, context );
+    ret = funcs->p_eglMakeCurrent( egl->display, context ? draw->surface : EGL_NO_SURFACE, context ? read->surface : EGL_NO_SURFACE, context );
+    if (ret && context && draw->surface != EGL_NO_SURFACE && egl->display && egl->type == EGL_PLATFORM_WAYLAND_KHR)
+    {
+        /* HACK: set swap interval to 0 for the wayland platform,
+         * winewayland implements swap interval=1 instead of the GPU driver. */
+        ERR("HACK: Using swap interval 0\n");
+        funcs->p_eglSwapInterval( egl->display, 0 );
+    }
+    return ret;
 }
 
 static void egldrv_pbuffer_destroy( struct opengl_drawable *drawable )
@@ -1676,6 +1794,17 @@ static void init_device_info( struct egl_platform *egl, const struct opengl_func
     funcs->p_eglBindAPI( EGL_OPENGL_API );
     funcs->p_eglGetConfigs( egl->display, &config, 1, &count );
     if (!count) config = EGL_NO_CONFIG_KHR;
+
+    if (!(context = funcs->p_eglCreateContext( egl->display, config, EGL_NO_CONTEXT, NULL )))
+    {
+        WARN( "Unable to create a context, ignoring device\n" );
+        funcs->p_eglTerminate( egl->display );
+        list_remove( &egl->entry );
+        free( egl );
+        return;
+    }
+    funcs->p_eglDestroyContext( egl->display, context );
+    context = EGL_NO_CONTEXT;
 
     for (i = 0; i < ARRAY_SIZE(versions) && (!egl->core_version || !egl->compat_version); i++)
     {
@@ -3308,7 +3437,7 @@ void win32u_glImportSemaphoreWin32NameEXT( GLuint semaphore, GLenum type, const 
 
 static void display_funcs_init(void)
 {
-    struct egl_platform *egl;
+    struct egl_platform *egl, *next;
     UINT status;
 
     const char *env = getenv( "WINE_DISABLE_FULLSCREEN_HACK" );
@@ -3467,7 +3596,7 @@ static void display_funcs_init(void)
         display_funcs.p_wglQueryCurrentRendererStringWINE = win32u_wglQueryCurrentRendererStringWINE;
         display_funcs.p_wglQueryRendererIntegerWINE = win32u_wglQueryRendererIntegerWINE;
         display_funcs.p_wglQueryRendererStringWINE = win32u_wglQueryRendererStringWINE;
-        LIST_FOR_EACH_ENTRY( egl, &devices_egl, struct egl_platform, entry )
+        LIST_FOR_EACH_ENTRY_SAFE( egl, next, &devices_egl, struct egl_platform, entry )
             init_device_info( egl, &display_funcs );
     }
 }

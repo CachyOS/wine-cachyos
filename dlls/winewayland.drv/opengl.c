@@ -116,6 +116,8 @@ static BOOL wayland_opengl_surface_create(HWND hwnd, BOOL raw, int format, struc
     gl->base.buffer_map[GL_FRONT - GL_FRONT_LEFT] = GL_BACK;
     gl->base.buffer_map[GL_FRONT_AND_BACK - GL_FRONT_LEFT] = GL_BACK;
 
+    NtCreateEvent(&client->throttle, EVENT_ALL_ACCESS, NULL, SynchronizationEvent, TRUE);
+
     if (!(gl->wl_egl_window = wl_egl_window_create(client->wl_surface, rect.right, rect.bottom))) goto err;
     if (!(gl->base.surface = funcs->p_eglCreateWindowSurface(egl->display, config, gl->wl_egl_window, attribs))) goto err;
     set_client_surface(hwnd, client);
@@ -145,18 +147,53 @@ static void wayland_drawable_flush(struct opengl_drawable *base, UINT flags)
 
     TRACE("drawable %s, flags %#x\n", debugstr_opengl_drawable(base), flags);
 
-    if (flags & GL_FLUSH_INTERVAL) funcs->p_eglSwapInterval(egl->display, abs(base->interval));
-
     /* Since context_flush is called from operations that may latch the native size,
      * perform any pending resizes before calling them. */
     if (flags & GL_FLUSH_UPDATED) wayland_gl_drawable_sync_size(gl);
 }
 
+static void wayland_gl_frame_done(void *data, struct wl_callback *wl_callback, uint32_t callback_data)
+{
+    struct client_surface *client = data;
+    struct wayland_client_surface *surface = impl_from_client_surface(client);
+
+    if (surface->wl_callback != wl_callback) return;
+
+    TRACE("hwnd=%p\n", client->hwnd);
+
+    surface->wl_callback = NULL;
+    if (surface->throttle) NtSetEvent(surface->throttle, NULL);
+}
+
+static const struct wl_callback_listener gl_throttle_listener =
+{
+    wayland_gl_frame_done,
+};
+
 static BOOL wayland_drawable_swap(struct opengl_drawable *base)
 {
     struct wayland_gl_drawable *gl = impl_from_opengl_drawable(base);
+    struct wayland_client_surface *surface = impl_from_client_surface(base->client);
 
     client_surface_present(base->client);
+    if (base->interval && surface->toplevel)
+    {
+        /* 1 second, relative */
+        const LARGE_INTEGER timeout = { .QuadPart = -10000 * 1000 };
+        NTSTATUS status;
+
+        if (surface->throttle)
+        {
+            status = NtWaitForSingleObject(surface->throttle, FALSE, &timeout);
+            if (status == STATUS_TIMEOUT) WARN("Present timed out!\n");
+        }
+       /* Currently, EGL is implemented using frame callbacks, so replicate that here.
+        * although it would be better to use fifo + commit timing
+        * (that way swap interval > 1 can be implemented),
+        * that's not something easily done from the wine side. */
+        surface->wl_callback = wl_surface_frame(surface->wl_surface);
+        wl_callback_add_listener(surface->wl_callback, &gl_throttle_listener, base->client);
+    }
     funcs->p_eglSwapBuffers(egl->display, gl->base.surface);
 
     return TRUE;

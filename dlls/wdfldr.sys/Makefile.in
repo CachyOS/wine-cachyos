@@ -1,0 +1,3 @@
+MODULE  = wdfldr.sys
+
+SOURCES = wdfldr_main.c

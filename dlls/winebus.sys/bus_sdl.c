@@ -944,6 +944,28 @@ BOOL is_sdl_ignored_device(WORD vid, WORD pid)
     return FALSE;
 }
 
+static BOOL is_emulating_steaminput(void)
+{
+    const char *env = getenv("PROTON_EMULATE_STEAMINPUT");
+    return env && atoi(env);
+}
+
+static void fixup_steaminput_vidpid( struct device_desc *desc )
+{
+    static int cached = -1;
+
+    if (cached == -1)
+    {
+        const char *s = getenv( "PROTON_SPOOF_STEAMINPUT_VIDPID" );
+        cached = s && *s != '0';
+        if (cached) ERR( "HACK: spoofing Steam Input controller vid / pid.\n" );
+    }
+    if (!cached) return;
+
+    desc->vid = 0x045e;
+    desc->pid = 0x028e;
+}
+
 static void sdl_add_device(unsigned int index)
 {
     struct device_desc desc =
@@ -998,6 +1020,16 @@ static void sdl_add_device(unsigned int index)
         if (controller) pSDL_GameControllerClose(controller);
         pSDL_JoystickClose(joystick);
         return;
+    }
+
+    if (is_emulating_steaminput())
+    {
+        TRACE("emulating steam input with %s\n", debugstr_device_desc(&desc));
+        desc.vid = 0x28de;
+        desc.pid = 0x11ff;
+        desc.version = 0;
+
+        fixup_steaminput_vidpid(&desc);
     }
 
     if (pSDL_JoystickGetSerial && (sdl_serial = pSDL_JoystickGetSerial(joystick)))

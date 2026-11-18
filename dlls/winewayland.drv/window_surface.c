@@ -111,7 +111,17 @@ static struct wayland_buffer_queue *wayland_buffer_queue_create(int width, int h
     queue = calloc(1, sizeof(*queue));
     if (!queue) goto err;
 
+#if (WAYLAND_VERSION_MAJOR == 1 && WAYLAND_VERSION_MINOR >= 23)
+    {
+        char buffer[1024];
+        snprintf(buffer, ARRAY_SIZE(buffer), "%s buffer queue",
+                 process_name ? process_name : "winewayland");
+        queue->wl_event_queue =
+            wl_display_create_queue_with_name(process_wayland.wl_display, buffer);
+    }
+#else
     queue->wl_event_queue = wl_display_create_queue(process_wayland.wl_display);
+#endif
     if (!queue->wl_event_queue) goto err;
     queue->width = width;
     queue->height = height;

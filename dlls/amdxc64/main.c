@@ -27,21 +27,102 @@
 #include "winbase.h"
 #include "winternl.h"
 #include "wine/debug.h"
+#include "wine/vulkan.h"
 
 #define COBJMACROS
 #include "initguid.h"
 #include "d3d12.h"
-#include "dxgi1_4.h"
 
 #include "amdxc_interfaces.h"
+#include "vkd3d_device_vkd3d_ext.h"
+#include "vkd3d_vk_includes.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(amdxc);
+
+static void check_intrinsic_support(ID3D12Device *device, BOOL *fp8, BOOL *p_wmma, ULONG *intrinsics)
+{
+    ID3D12DeviceExt3 *ext;
+    const char *e;
+    BOOL wmma;
+    static int once;
+
+    if (FAILED(ID3D12Device_QueryInterface(device, &IID_ID3D12DeviceExt3, (void **)&ext))) return;
+
+    wmma = ID3D12DeviceExt3_SupportsAGSExtension(ext, D3D12_AGS_EXTENSION_WMMA_FP8);
+    *fp8 = ID3D12DeviceExt3_SupportsAGSExtension(ext, D3D12_AGS_EXTENSION_WMMA_FP8_NATIVE);
+
+    if (*fp8) TRACE("FSR4 FP8 supported!\n");
+    if ((e = getenv("DXIL_SPIRV_CONFIG")) && !strcmp(e, "wmma_rdna3_workaround"))
+    {
+        if ((*fp8 = wmma) && !once++)
+            FIXME("FSR4 FP16 emulation is not recommended, please use FSR 4.1.1\n");
+    }
+    if (p_wmma) *p_wmma = wmma;
+
+    /* check which intrinsics we support */
+    for (int i = D3D12_AGS_EXTENSION_INTRINSICS_16;
+         intrinsics && i <= D3D12_AGS_EXTENSION_SHADER_CLOCK; i++)
+    {
+        if (ID3D12DeviceExt3_SupportsAGSExtension(ext, i)) *intrinsics |= (1 << i);
+    }
+
+    ID3D12DeviceExt3_Release(ext);
+}
+
+static BOOL is_rdna2(ID3D12Device *device)
+{
+    ID3D12DXVKInteropDevice *interop;
+    VkInstance instance;
+    VkDevice vk_device;
+    VkPhysicalDevice phys_device;
+    VkPhysicalDeviceProperties2 prop = {0};
+    VkPhysicalDeviceDriverProperties driver_prop = {0};
+    const char **extensions = NULL;
+    UINT extension_count = 0;
+    BOOL ret = FALSE;
+
+    if (FAILED(ID3D12Device_QueryInterface(device, &IID_ID3D12DXVKInteropDevice, (void **)&interop)))
+        return FALSE;
+
+    if (FAILED(ID3D12DXVKInteropDevice_GetVulkanHandles(interop, &instance, &phys_device, &vk_device)))
+        goto fail;
+
+    prop.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    prop.pNext = &driver_prop;
+    driver_prop.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES;
+
+    vkGetPhysicalDeviceProperties2(phys_device, &prop);
+
+    if (prop.properties.vendorID != 0x1002) goto fail;
+    /* Do not enable by default on iGPUs. They are not powerful enough.
+     * Still can be enabled manually through FSR4_UPGRADE=1. */
+    if (prop.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) goto fail;
+
+    if (FAILED(ID3D12DXVKInteropDevice_GetDeviceExtensions(interop, &extension_count, NULL)))
+        goto fail;
+
+    extensions = malloc(sizeof(*extensions) * extension_count);
+
+    if (FAILED(ID3D12DXVKInteropDevice_GetDeviceExtensions(interop, &extension_count, extensions)))
+        goto fail;
+
+    for (UINT i = 0; i < extension_count; i++)
+    {
+        if (!strcmp("VK_KHR_fragment_shading_rate", extensions[i])) ret = TRUE;
+    }
+
+fail:
+    if (extensions) free(extensions);
+    ID3D12DXVKInteropDevice_Release(interop);
+
+    return ret;
+}
 
 struct AMDFSR4FFX
 {
     IAmdExtFfxApi IAmdExtFfxApi_iface;
     LONG ref;
-    LUID luid;
+    BOOL fp8_supported, rdna2;
 };
 
 static struct AMDFSR4FFX* impl_from_IAmdExtFfxApi(IAmdExtFfxApi* iface)
@@ -70,83 +151,127 @@ HRESULT STDMETHODCALLTYPE AMDFSR4FFX_QueryInterface(IAmdExtFfxApi *iface, REFIID
     return E_NOINTERFACE;
 }
 
-static BOOL is_device_supported(LUID luid)
+/* maintain compat with older SDK 2.0.0 and older */
+typedef HRESULT (__stdcall *updateffxapi_pfn)(void*, unsigned int);
+/* SDK 2.1.0 requires this */
+typedef HRESULT (__stdcall *updateffxapi_pfn_ex)(void*, unsigned int, void*);
+
+typedef ULONG (*pfnCanProvide)(ULONG64 typeId);
+typedef ULONG (*pfnCreateContext)(void* context, void* desc, const void* allocator);
+typedef ULONG (*pfnDestroyContext)(void* context, const void* allocator);
+typedef ULONG (*pfnConfigure)(void* context, const void* desc);
+typedef ULONG (*pfnQuery)(void* context, void* desc);
+typedef ULONG (*pfnDispatch)(void* context, const void* desc);
+
+struct ffxExternalProvider
 {
-    IDXGIFactory4 *factory;
-    IDXGIAdapter *adapter;
-    DXGI_ADAPTER_DESC desc;
-    BOOL ret = FALSE;
-    HRESULT hr;
+    ULONG structVersion; /* 0x0 */
+    ULONG64 descType; /* 0x8 */
+    ULONG64 versionId; /* 0x10 */
+    const char* versionName; /* 0x18 */
+    pfnCanProvide canProvide; /* 0x20 */
+    pfnCreateContext createContext; /* 0x28 */
+    pfnDestroyContext destroyContext; /* 0x30 */
+    pfnConfigure configure; /* 0x38 */
+    pfnQuery query; /* 0x40 */
+    pfnDispatch dispatch; /* 0x48 */
+};
 
-    hr = CreateDXGIFactory2(0, &IID_IDXGIFactory4, (void **)&factory);
-    if (hr != S_OK)
-    {
-        ERR("Failed to create DXGI Factory: %#lx!\n", hr);
-        return FALSE;
-    }
+static void dump_provider(struct ffxExternalProvider *provider)
+{
+    if (!provider) return;
 
-    hr = IDXGIFactory4_EnumAdapterByLuid(factory, luid, &IID_IDXGIAdapter, (void**) &adapter);
-    if (hr != S_OK)
-    {
-        ERR("Failed to create find adapter by LUID %08lx:%08lx: %#lx!\n", luid.HighPart, luid.LowPart, hr);
-        IDXGIFactory4_Release(factory);
-        return FALSE;
-    }
-
-    IDXGIAdapter_GetDesc(adapter, &desc);
-
-    IDXGIAdapter_Release(adapter);
-    IDXGIFactory4_Release(factory);
-
-    TRACE("The device vid:pid is %#x:%#x.\n", desc.VendorId, desc.DeviceId);
-
-    /* supported discrete NAVI3s */
-    if (desc.VendorId == 0x1002 &&
-            (desc.DeviceId == 0x73f0 || (desc.DeviceId >= 0x7440 && desc.DeviceId <= 0x749f))
-        ) {
-        TRACE("Device supported.\n");
-        return TRUE;
-    }
-
-    TRACE("Device may be unsupported.\n");
-
-    return ret;
+    TRACE("returned provider: %lx %I64x %s\n",
+          provider->structVersion, provider->descType,
+          debugstr_a(provider->versionName));
 }
 
-typedef HRESULT (__stdcall *updateffxapi_pfn)(void*, unsigned int);
+static updateffxapi_pfn_ex pUpdateFfxApiProviderEx;
+static updateffxapi_pfn pUpdateFfxApiProvider;
+static HMODULE amdffx;
+static INIT_ONCE init_once = INIT_ONCE_STATIC_INIT;
+static BOOL mlfg_env;
+static BOOL fsr4_env;
+static BOOL fsr4_env_enabled;
+static BOOL mlfg_env_enabled;
 
-HRESULT STDMETHODCALLTYPE AMDFSR4FFX_UpdateFfxApiProvider(IAmdExtFfxApi *iface, void* data, unsigned int size)
+BOOL WINAPI init_callback(INIT_ONCE *once, void *param, void **context)
 {
-    static int once;
     const char *env;
-    struct AMDFSR4FFX* amdfs4ffx_data = impl_from_IAmdExtFfxApi(iface);
-    updateffxapi_pfn pfn;
-    HMODULE amdffx;
+
+    fsr4_env_enabled = (fsr4_env = !!(env = getenv("FSR4_UPGRADE"))) && !strcmp(env, "1");
+    mlfg_env_enabled = (mlfg_env = !!(env = getenv("MLFG_UPGRADE"))) && !strcmp(env, "1");
+
+    if (!(amdffx = LoadLibraryA("amdxcffx64"))) return TRUE;
+
+    pUpdateFfxApiProviderEx = (updateffxapi_pfn_ex)GetProcAddress(amdffx, "UpdateFfxApiProviderEx");
+    pUpdateFfxApiProvider = (updateffxapi_pfn)GetProcAddress(amdffx, "UpdateFfxApiProvider");
+
+    return TRUE;
+}
+
+HRESULT STDMETHODCALLTYPE AMDFSR4FFX_UpdateFfxApiProvider(IAmdExtFfxApi *iface, void *_data, unsigned int size)
+{
+    struct AMDFSR4FFX *this = impl_from_IAmdExtFfxApi(iface);
+    struct ffxExternalProvider *data = _data;
+    struct unk_data {
+        int unk[4];
+        struct unk_data *next;
+    };
+    /* required to expose MLFG support */
+    struct unk_data unk_data[1] = {{{0, 1, 0, 0}, NULL}};
 
     TRACE("%p %p %u\n", iface, data, size);
 
-    env = getenv("FSR4_UPGRADE");
+    if (!data) return E_INVALIDARG;
 
-    /* either FSR4_UPGRADE=1 or unset but on a supported device */
-    if ((!env && is_device_supported(amdfs4ffx_data->luid)) ||
-        (env && !strcmp(env, "1")))
+    InitOnceExecuteOnce(&init_once, init_callback, NULL, NULL);
+
+    if (this->fp8_supported || mlfg_env_enabled)
+        unk_data->unk[2] = !mlfg_env || mlfg_env_enabled;
+
+    if (!fsr4_env_enabled && !this->rdna2) return E_NOTIMPL;
+    /* explicitly disabled */
+    if (fsr4_env && !fsr4_env_enabled) return E_NOTIMPL;
+
+    if (!amdffx)
     {
-        amdffx = LoadLibraryA("amdxcffx64");
-        if (!amdffx)
+        ERR("Failed to load FSR4 driver dll (amdxcffx64)!\n");
+        return E_NOINTERFACE;
+    }
+
+    if (pUpdateFfxApiProviderEx)
+    {
+        HRESULT ret = pUpdateFfxApiProviderEx(data, size, unk_data);
+
+        TRACE("status: %lx\n", ret);
+        dump_provider(data);
+
+        return ret;
+    }
+
+    if (pUpdateFfxApiProvider)
+    {
+        HRESULT ret;
+
+        /* ensure user doesn't do dumb things on legacy amdxcffx64 */
+        if (!this->fp8_supported)
         {
-            ERR("Failed to load FSR4 dll (amdxcffx)!\n");
+            ERR("FSR4 not supported on this system!\n");
             return E_NOINTERFACE;
         }
 
-        pfn = (updateffxapi_pfn)GetProcAddress(amdffx, "UpdateFfxApiProvider");
+        if (!fsr4_env_enabled) return E_NOINTERFACE;
 
-        if (pfn)
-        {
-            if (!once++) WARN("Replaced FSR3 with FSR4!\n");
-            return pfn(data, size);
-        }
+        ret = pUpdateFfxApiProvider(data, size);
+
+        TRACE("status: %lx\n", ret);
+        dump_provider(data);
+
+        return ret;
     }
 
+    ERR("UpdateFfxApiProvider[Ex] symbol not found!\n");
     return E_NOINTERFACE;
 }
 
@@ -157,137 +282,448 @@ static const struct IAmdExtFfxApiVtbl AMDFSR4FFX_vtable = {
     AMDFSR4FFX_UpdateFfxApiProvider
 };
 
-struct AMDExtStub2
+struct AmdExtD3DShaderIntrinsics
 {
-    IAmdExtStub2 IAmdExtStub2_iface;
+    IAmdExtD3DShaderIntrinsics IAmdExtD3DShaderIntrinsics_iface;
     LONG ref;
+    BOOL supports_wmma;
+    BOOL supports_fp8;
+    ULONG intrinsics;
 };
 
-struct AMDExtStub2* impl_from_IAMDExtStub2(IAmdExtStub2 *iface)
+struct AmdExtD3DShaderIntrinsics* impl_from_IAmdExtD3DShaderIntrinsics(IAmdExtD3DShaderIntrinsics *iface)
 {
-    return CONTAINING_RECORD(iface, struct AMDExtStub2, IAmdExtStub2_iface);
+    return CONTAINING_RECORD(iface, struct AmdExtD3DShaderIntrinsics, IAmdExtD3DShaderIntrinsics_iface);
 }
 
-ULONG STDMETHODCALLTYPE AMDExtStub2_AddRef(IAmdExtStub2 *iface)
+ULONG STDMETHODCALLTYPE AmdExtD3DShaderIntrinsics_AddRef(IAmdExtD3DShaderIntrinsics *iface)
 {
-    struct AMDExtStub2 *this = impl_from_IAMDExtStub2(iface);
+    struct AmdExtD3DShaderIntrinsics *this = impl_from_IAmdExtD3DShaderIntrinsics(iface);
     return InterlockedIncrement(&this->ref);
 }
 
-ULONG STDMETHODCALLTYPE AMDExtStub2_Release(IAmdExtStub2 *iface)
+ULONG STDMETHODCALLTYPE AmdExtD3DShaderIntrinsics_Release(IAmdExtD3DShaderIntrinsics *iface)
 {
-    struct AMDExtStub2 *this = impl_from_IAMDExtStub2(iface);
+    struct AmdExtD3DShaderIntrinsics *this = impl_from_IAmdExtD3DShaderIntrinsics(iface);
     ULONG ret = InterlockedDecrement(&this->ref);
     if (!ret) free(this);
     return ret;
 }
 
-HRESULT STDMETHODCALLTYPE AMDExtStub2_QueryInterface(IAmdExtStub2 *iface, REFIID iid, void **out)
+HRESULT STDMETHODCALLTYPE AmdExtD3DShaderIntrinsics_QueryInterface(IAmdExtD3DShaderIntrinsics *iface, REFIID iid, void **out)
 {
     FIXME("%p %s %p stub!\n", iface, debugstr_guid(iid), out);
     return E_NOINTERFACE;
 }
 
-void STDMETHODCALLTYPE AMDExtStub2_stub1(IAmdExtStub2 *iface)
+HRESULT STDMETHODCALLTYPE AmdExtD3DShaderIntrinsics_GetInfo(IAmdExtD3DShaderIntrinsics *iface,
+                                                            AmdExtD3DShaderIntrinsicsInfo *info)
 {
-    FIXME("%p stub!\n", iface);
+    FIXME("%p %p stub!\n", iface, info);
+    return S_OK;
 }
 
-void STDMETHODCALLTYPE AMDExtStub2_stub2(IAmdExtStub2 *iface, unsigned int unk)
+HRESULT STDMETHODCALLTYPE AmdExtD3DShaderIntrinsics_CheckSupport(IAmdExtD3DShaderIntrinsics *iface,
+                                                                 AmdExtD3DShaderIntrinsicsSupport opcode)
 {
-    FIXME("%p %u stub!\n", iface, unk);
+    struct AmdExtD3DShaderIntrinsics *this = impl_from_IAmdExtD3DShaderIntrinsics(iface);
+    TRACE("%p %u\n", iface, opcode);
+
+    if (opcode == AmdExtD3DShaderIntrinsicsSupport_Float8Conversion && this->supports_fp8)
+        return S_OK;
+    if (opcode == AmdExtD3DShaderIntrinsicsSupport_WaveMatrix && this->supports_wmma)
+        return S_OK;
+
+    /* These correspond to intrinsic 16 */
+    if (opcode >= AmdExtD3DShaderIntrinsicsSupport_Readfirstlane &&
+        opcode <= AmdExtD3DShaderIntrinsicsSupport_Barycentrics &&
+        this->intrinsics & (1 << D3D12_AGS_EXTENSION_INTRINSICS_16))
+        return S_OK;
+
+    /* These correspond to intrinsic 17 */
+    if (opcode >= AmdExtD3DShaderIntrinsicsSupport_WaveReduce &&
+        opcode <= AmdExtD3DShaderIntrinsicsSupport_WaveScan &&
+        this->intrinsics & (1 << D3D12_AGS_EXTENSION_INTRINSICS_17))
+        return S_OK;
+
+    /* These correspond to intrinsic 19 */
+    if (opcode >= AmdExtD3DShaderIntrinsicsSupport_DrawIndex &&
+        opcode <= AmdExtD3DShaderIntrinsicsSupport_AtomicU64 &&
+        this->intrinsics & (1 << D3D12_AGS_EXTENSION_INTRINSICS_19))
+        return S_OK;
+
+    /* this has a typo in vkd3d-proton, it's shader clock, not shader token */
+    if (opcode >= AmdExtD3DShaderIntrinsicsSupport_ShaderClock &&
+        opcode <= AmdExtD3DShaderIntrinsicsSupport_ShaderRealtimeClock &&
+        this->intrinsics & (1 << D3D12_AGS_EXTENSION_SHADER_CLOCK))
+        return S_OK;
+
+    if (opcode == AmdExtD3DShaderIntrinsicsSupport_BaseInstance &&
+        this->intrinsics & (1 << D3D12_AGS_EXTENSION_BASE_INSTANCE))
+        return S_OK;
+
+    if (opcode == AmdExtD3DShaderIntrinsicsSupport_BaseVertex &&
+        this->intrinsics & (1 << D3D12_AGS_EXTENSION_BASE_VERTEX))
+        return S_OK;
+
+    if (opcode == AmdExtD3DShaderIntrinsicsSupport_GetWaveSize &&
+        this->intrinsics & (1 << D3D12_AGS_EXTENSION_GET_WAVE_SIZE))
+        return S_OK;
+
+    if (opcode == AmdExtD3DShaderIntrinsicsSupport_FloatConversion &&
+        this->intrinsics & (1 << D3D12_AGS_EXTENSION_FLOAT_CONVERSION))
+        return S_OK;
+
+    if (opcode == AmdExtD3DShaderIntrinsicsSupport_ReadlaneAt &&
+        this->intrinsics & (1 << D3D12_AGS_EXTENSION_READ_LANE_AT))
+        return S_OK;
+
+    if (opcode == AmdExtD3DShaderIntrinsicsSupport_RayTraceHitToken &&
+        this->intrinsics & (1 << D3D12_AGS_EXTENSION_RAY_HIT_TOKEN))
+        return S_OK;
+
+    return E_NOTIMPL;
 }
 
-void STDMETHODCALLTYPE AMDExtStub2_stub3(IAmdExtStub2 *iface)
+HRESULT STDMETHODCALLTYPE AmdExtD3DShaderIntrinsics_Enable(IAmdExtD3DShaderIntrinsics *iface)
 {
-    FIXME("%p stub!\n", iface);
+    TRACE("%p\n", iface);
+    /* shader intrinsics are always handled by vkd3d-proton */
+    return S_OK;
 }
 
-const static struct IAmdExtStub2Vtbl AMDSTUB2_vtable = {
-    AMDExtStub2_QueryInterface,
-    AMDExtStub2_AddRef,
-    AMDExtStub2_Release,
-    AMDExtStub2_stub1,
-    AMDExtStub2_stub2,
-    AMDExtStub2_stub3
+const static struct IAmdExtD3DShaderIntrinsicsVtbl AmdExtD3DShaderIntrinsics_vtable = {
+    AmdExtD3DShaderIntrinsics_QueryInterface,
+    AmdExtD3DShaderIntrinsics_AddRef,
+    AmdExtD3DShaderIntrinsics_Release,
+    AmdExtD3DShaderIntrinsics_GetInfo,
+    AmdExtD3DShaderIntrinsics_CheckSupport,
+    AmdExtD3DShaderIntrinsics_Enable
 };
 
-struct AMDExtStub1
+struct AmdExtD3DDevice8
 {
-    IAmdExtStub1 IAmdExtStub1_iface;
+    IAmdExtD3DDevice8 IAmdExtD3DDevice8_iface;
+    LONG ref;
+    BOOL fp8_supported;
 };
 
-struct AMDExtStub1* impl_from_IAMDExtStub1(IAmdExtStub1 *iface)
+struct AmdExtD3DDevice8 *impl_from_IAmdExtD3DDevice8(IAmdExtD3DDevice8 *iface)
 {
-    return CONTAINING_RECORD(iface, struct AMDExtStub1, IAmdExtStub1_iface);
+    return CONTAINING_RECORD(iface, struct AmdExtD3DDevice8, IAmdExtD3DDevice8_iface);
 }
 
-ULONG STDMETHODCALLTYPE AMDExtStub1_AddRef(IAmdExtStub1 *iface)
+HRESULT STDMETHODCALLTYPE AmdExtD3DDevice8_QueryInterface(IAmdExtD3DDevice8 *iface, REFIID iid, void **out)
+{
+    TRACE("%p %s %p\n", iface, debugstr_guid(iid), out);
+    return E_NOINTERFACE;
+}
+
+ULONG STDMETHODCALLTYPE AmdExtD3DDevice8_AddRef(IAmdExtD3DDevice8 *iface)
+{
+    struct AmdExtD3DDevice8* this = impl_from_IAmdExtD3DDevice8(iface);
+    return InterlockedIncrement(&this->ref);
+}
+
+ULONG STDMETHODCALLTYPE AmdExtD3DDevice8_Release(IAmdExtD3DDevice8 *iface)
+{
+    struct AmdExtD3DDevice8* this = impl_from_IAmdExtD3DDevice8(iface);
+    ULONG ret = InterlockedDecrement(&this->ref);
+    if (!ret) free(this);
+    return ret;
+}
+
+HRESULT STDMETHODCALLTYPE AmdExtD3DDevice8_CreateGraphicsPipelineState(IAmdExtD3DDevice8 *iface,
+                                                                       const AmdExtD3DCreateInfo *pCreateInfo,
+                                                                       const D3D12_GRAPHICS_PIPELINE_STATE_DESC *pDesc,
+                                                                       REFIID iid, void **ppPipelineState)
+{
+    FIXME("%p %p %p %s %p stub!\n", iface, pCreateInfo, pDesc, debugstr_guid(iid), ppPipelineState);
+    return E_NOTIMPL;
+}
+
+void STDMETHODCALLTYPE AmdExtD3DDevice8_PushMarker(IAmdExtD3DDevice8 *iface, ID3D12GraphicsCommandList *pGfxCmdList,
+                                                   const char *pMarkerData)
+{
+    FIXME("%p %p %s stub!\n", iface, pGfxCmdList, pMarkerData);
+}
+
+void STDMETHODCALLTYPE AmdExtD3DDevice8_PopMarker(IAmdExtD3DDevice8 *iface, ID3D12GraphicsCommandList *pGfxCmdList)
+{
+    FIXME("%p %p stub!\n", iface, pGfxCmdList);
+}
+
+void STDMETHODCALLTYPE AmdExtD3DDevice8_SetMarker(IAmdExtD3DDevice8 *iface, ID3D12GraphicsCommandList *pGfxCmdList,
+                                                  const char *pMarkerData)
+{
+    FIXME("%p %p %s stub!\n", iface, pGfxCmdList, pMarkerData);
+}
+
+HRESULT STDMETHODCALLTYPE AmdExtD3DDevice8_CheckExtFeatureSupport(IAmdExtD3DDevice8 *iface, AmdExtD3DCheckFeatureSupportType type,
+                                                                  void *data, SIZE_T size)
+{
+    FIXME("%p %u %p %lu stub!\n", iface, type, data, (ULONG)size);
+    return E_NOTIMPL;
+}
+
+HRESULT STDMETHODCALLTYPE AmdExtD3DDevice8_CreateComputePipelineState(IAmdExtD3DDevice8 *iface,
+                                                                      const AmdExtD3DCreateInfo* pAmdExtCreateInfo,
+                                                                      const D3D12_COMPUTE_PIPELINE_STATE_DESC* pDesc,
+                                                                      REFIID iid, void **ppPipelineState)
+{
+    FIXME("%p %p %p %s %p stub!\n", iface, pAmdExtCreateInfo, pDesc, debugstr_guid(iid), ppPipelineState);
+    return E_NOTIMPL;
+}
+
+HRESULT STDMETHODCALLTYPE AmdExtD3DDevice8_CreatePipelineState(IAmdExtD3DDevice8 *iface,
+                                                               const AmdExtD3DCreateInfo *pAmdExtCreateInfo,
+                                                               const D3D12_PIPELINE_STATE_STREAM_DESC* pDesc,
+                                                               REFIID iid, void **ppPipelineState)
+{
+    FIXME("%p %p %p %s %p stub!\n", iface, pAmdExtCreateInfo, pDesc, debugstr_guid(iid), ppPipelineState);
+    return E_NOTIMPL;
+}
+
+void STDMETHODCALLTYPE AmdExtD3DDevice8_SetPrimitiveTopology(IAmdExtD3DDevice8 *iface,
+                                                             ID3D12GraphicsCommandList *pGfxCmdList,
+                                                             AmdExtD3DPrimitiveTopology topology)
+{
+    FIXME("%p %p %u stub!\n", iface, pGfxCmdList, topology);
+}
+
+HRESULT STDMETHODCALLTYPE AmdExtD3DDevice8_CreateComputePipelineFromElf(IAmdExtD3DDevice8 *iface,
+                                                                        AmdExtD3DPipelineElfInfo *pAmdExtCreateInfo,
+                                                                        REFIID iid, void **ppPipelineState)
+{
+    FIXME("%p %p %s %p stub!\n", iface, pAmdExtCreateInfo, debugstr_guid(iid), ppPipelineState);
+    return E_NOTIMPL;
+}
+
+void STDMETHODCALLTYPE AmdExtD3DDevice8_SetKernelArguments(IAmdExtD3DDevice8 *iface,
+                                                           ID3D12GraphicsCommandList *pCmdList,
+                                                           ULONG first, ULONG count, const void *ppValues)
+{
+    FIXME("%p %p %lu %lu %p stub!\n", iface, pCmdList, first, count, ppValues);
+}
+
+void STDMETHODCALLTYPE AmdExtD3DDevice8_GetGpuRtInterfaceVersion(IAmdExtD3DDevice8 *iface,
+                                                                 AmdExtD3DGpuRtVersion *pInterfaceVersion)
+{
+    FIXME("%p %p stub!\n", iface, pInterfaceVersion);
+}
+
+void STDMETHODCALLTYPE AmdExtD3DDevice8_GetGpuRtBinaryVersion(IAmdExtD3DDevice8 *iface,
+                                                              AmdExtD3DGpuRtVersion *pBinaryVersion)
+{
+    FIXME("%p %p stub!\n", iface, pBinaryVersion);
+}
+
+HRESULT STDMETHODCALLTYPE AmdExtD3DDevice8_CreateComputePipelineCrossCompile(IAmdExtD3DDevice8 *iface,
+                                                                             const AmdExtD3DPipelineCrossCompileInfo* pAmdExtCreateInfo,
+                                                                             REFIID iid, void **ppPipelineState)
+{
+    FIXME("%p %p %s %p stub!\n", iface, pAmdExtCreateInfo, debugstr_guid(iid), ppPipelineState);
+    return E_NOTIMPL;
+}
+
+HRESULT STDMETHODCALLTYPE AmdExtD3DDevice8_GetWaveMatrixProperties(IAmdExtD3DDevice8 *iface,
+                                                                   SIZE_T *pCount, AmdExtWaveMatrixProperties *pProperties)
+{
+    struct AmdExtD3DDevice8 *this = impl_from_IAmdExtD3DDevice8(iface);
+    static AmdExtWaveMatrixProperties prop[1] =
+    {
+        {
+            16, 16, 16, AMD_EXT_WMMA_TYPE_FP8, AMD_EXT_WMMA_TYPE_FP8,
+            AMD_EXT_WMMA_TYPE_FP32, AMD_EXT_WMMA_TYPE_FP32, FALSE
+        }
+    };
+
+    TRACE("%p %p %p\n", iface, pCount, pProperties);
+
+    if (!pCount) return E_INVALIDARG;
+
+    if (!this->fp8_supported)
+    {
+        *pCount = 0;
+        return S_OK;
+    }
+
+    if (*pCount >= sizeof(prop)/sizeof(prop[0]))
+    {
+        *pCount = sizeof(prop)/sizeof(prop[0]);
+        memcpy(pProperties, prop, sizeof(prop));
+        return S_OK;
+    }
+
+    return E_NOT_SUFFICIENT_BUFFER;
+}
+
+static const struct IAmdExtD3DDevice8Vtbl AmdExtD3DDevice8_vtable = {
+    AmdExtD3DDevice8_QueryInterface,
+    AmdExtD3DDevice8_AddRef,
+    AmdExtD3DDevice8_Release,
+    AmdExtD3DDevice8_CreateGraphicsPipelineState,
+    AmdExtD3DDevice8_PushMarker,
+    AmdExtD3DDevice8_PopMarker,
+    AmdExtD3DDevice8_SetMarker,
+    AmdExtD3DDevice8_CheckExtFeatureSupport,
+    AmdExtD3DDevice8_CreateComputePipelineState,
+    AmdExtD3DDevice8_CreatePipelineState,
+    AmdExtD3DDevice8_SetPrimitiveTopology,
+    AmdExtD3DDevice8_CreateComputePipelineFromElf,
+    AmdExtD3DDevice8_SetKernelArguments,
+    AmdExtD3DDevice8_GetGpuRtInterfaceVersion,
+    AmdExtD3DDevice8_GetGpuRtBinaryVersion,
+    AmdExtD3DDevice8_CreateComputePipelineCrossCompile,
+    AmdExtD3DDevice8_GetWaveMatrixProperties
+};
+
+struct AmdExtD3DFactory
+{
+    IAmdExtD3DFactory IAmdExtD3DFactory_iface;
+};
+
+struct AmdExtD3DFactory* impl_from_IAmdExtD3DFactory(IAmdExtD3DFactory *iface)
+{
+    return CONTAINING_RECORD(iface, struct AmdExtD3DFactory, IAmdExtD3DFactory_iface);
+}
+
+ULONG STDMETHODCALLTYPE AmdExtD3DFactory_AddRef(IAmdExtD3DFactory *iface)
 {
     return 2;
 }
 
-ULONG STDMETHODCALLTYPE AMDExtStub1_Release(IAmdExtStub1 *iface)
+ULONG STDMETHODCALLTYPE AmdExtD3DFactory_Release(IAmdExtD3DFactory *iface)
 {
     return 1;
 }
 
-HRESULT STDMETHODCALLTYPE AmdExtStub1_QueryInterface2(IAmdExtStub1 *iface, void* unk, REFIID iid, void **out)
+HRESULT STDMETHODCALLTYPE AmdExtD3DFactory_CreateInterface(IAmdExtD3DFactory *iface, IUnknown *outer, REFIID iid, void **out)
 {
-    TRACE("%p %p %s %p\n", iface, unk, debugstr_guid(iid), out);
+    TRACE("%p %p %s %p\n", iface, outer, debugstr_guid(iid), out);
 
+    if (!out) return E_INVALIDARG;
     *out = NULL;
-    if(IsEqualGUID(iid, &IID_IAmdExtStub2))
-    {
-        struct AMDExtStub2 *this = calloc(1, sizeof(struct AMDExtStub2));
 
-        this->IAmdExtStub2_iface.lpVtbl = &AMDSTUB2_vtable;
+    if (IsEqualGUID(iid, &IID_IAmdExtD3DShaderIntrinsics))
+    {
+        struct AmdExtD3DShaderIntrinsics *this = calloc(1, sizeof(struct AmdExtD3DShaderIntrinsics));
+        this->IAmdExtD3DShaderIntrinsics_iface.lpVtbl = &AmdExtD3DShaderIntrinsics_vtable;
         this->ref = 1;
-        *out = &this->IAmdExtStub2_iface;
+        check_intrinsic_support((ID3D12Device *)outer, &this->supports_fp8, &this->supports_wmma, &this->intrinsics);
+        *out = &this->IAmdExtD3DShaderIntrinsics_iface;
         return S_OK;
-    } else {
+    }
+    else if (IsEqualGUID(iid, &IID_IAmdExtD3DDevice8))
+    {
+        struct AmdExtD3DDevice8 *this = calloc(1, sizeof(struct AmdExtD3DDevice8));
+        this->IAmdExtD3DDevice8_iface.lpVtbl = &AmdExtD3DDevice8_vtable;
+        this->ref = 1;
+        check_intrinsic_support((ID3D12Device *)outer, &this->fp8_supported, NULL, NULL);
+        *out = &this->IAmdExtD3DDevice8_iface;
+        return S_OK;
+    }
+    /* some apps will try to query IAmdExtD3DDevice1 for debugging markers,
+     * prevent that from causing spam in proton logs */
+    else if (IsEqualGUID(iid, &IID_IAmdExtD3DDevice) ||
+             IsEqualGUID(iid, &IID_IAmdExtD3DDevice1))
+        return E_NOINTERFACE;
+    else
+    {
         FIXME("unknown guid %s\n", debugstr_guid(iid));
     }
 
     return E_NOINTERFACE;
 }
 
-HRESULT STDMETHODCALLTYPE AmdExtStub1_QueryInterface(IAmdExtStub1 *iface, REFIID iid, void **out)
+HRESULT STDMETHODCALLTYPE AmdExtD3DFactory_QueryInterface(IAmdExtD3DFactory *iface, REFIID iid, void **out)
 {
-    return AmdExtStub1_QueryInterface2(iface, NULL, iid, out);
+    TRACE("%p %s %p\n", iface, debugstr_guid(iid), out);
+    return E_NOINTERFACE;
 }
 
-static const struct IAmdExtStub1Vtbl AMDSTUB1_vtable = {
-    AmdExtStub1_QueryInterface,
-    AMDExtStub1_AddRef,
-    AMDExtStub1_Release,
-    AmdExtStub1_QueryInterface2
+static const struct IAmdExtD3DFactoryVtbl AmdExtD3DFactory_vtable = {
+    AmdExtD3DFactory_QueryInterface,
+    AmdExtD3DFactory_AddRef,
+    AmdExtD3DFactory_Release,
+    AmdExtD3DFactory_CreateInterface
 };
 
-static struct AMDExtStub1 amd_ext_stub1 =
-{
-    .IAmdExtStub1_iface = { &AMDSTUB1_vtable },
+static const struct AmdExtD3DFactory amd_d3d_factory = {
+    .IAmdExtD3DFactory_iface = { &AmdExtD3DFactory_vtable },
 };
 
-LUID get_luid(IUnknown *outer)
+struct AmdExtD3DCreateDevice
 {
-    LUID luid = {};
-    ID3D12Device *device;
-    HRESULT hr;
+    IAmdExtD3DCreateDevice IAmdExtD3DCreateDevice_iface;
+};
 
-    /* XXX: can it be something else like d3d11? */
-    hr = IUnknown_QueryInterface(outer, &IID_ID3D12Device, (void**)&device);
-    if (hr != S_OK)
+HRESULT STDMETHODCALLTYPE AmdExtD3DCreateDevice_QueryInterface(IAmdExtD3DCreateDevice *iface, REFIID iid, void **out)
+{
+    FIXME("%p %s %p stub!\n", iface, debugstr_guid(iid), out);
+    return E_NOTIMPL;
+}
+
+ULONG STDMETHODCALLTYPE AmdExtD3DCreateDevice_AddRef(IAmdExtD3DCreateDevice *iface)
+{
+    return 2;
+}
+
+ULONG STDMETHODCALLTYPE AmdExtD3DCreateDevice_Release(IAmdExtD3DCreateDevice *iface)
+{
+    return 1;
+}
+
+HRESULT STDMETHODCALLTYPE AmdExtD3DCreateDevice_AmdD3D12CreateDevice(IAmdExtD3DCreateDevice *iface, IDXGIAdapter *adapter, D3D_FEATURE_LEVEL minLevel,
+                                                                     REFIID iid, void **device, AmdExtD3DCreateDeviceInfo *ext)
+{
+    HRESULT ret;
+    HMODULE d3d12 = LoadLibraryW(L"d3d12.dll");
+    static typeof(D3D12CreateDevice) *pD3D12CreateDevice;
+
+    TRACE("%p %p %u %s %p %p\n", iface, adapter, minLevel, debugstr_guid(iid), device, ext);
+
+    if (!d3d12) return E_FAIL;
+
+    pD3D12CreateDevice = (void *)GetProcAddress(d3d12, "D3D12CreateDevice");
+    if (!pD3D12CreateDevice) return E_FAIL;
+
+    ret = pD3D12CreateDevice((IUnknown *)adapter, minLevel, iid, device);
+
+    while (ext)
     {
-        ERR("Failed to get ID3D12Device from outer: %#lx!\n", hr);
-        return luid;
-    }
-    luid = ID3D12Device_GetAdapterLuid(device);
-    TRACE("LUID = %08lx:%08lx\n", luid.HighPart, luid.LowPart);
-    ID3D12Device_Release(device);
+        switch (ext->type)
+        {
+            case AmdExtD3DStructTypeAppRegId:
+            {
+                AmdExtAppRegInfo *info = (void *)ext;
+                /* TODO add an interface into vkd3d-proton for this */
+                TRACE("reg info %s %u %s %u\n", debugstr_w(info->appName), info->appVersion,
+                                                debugstr_w(info->pEngineName), info->engineVersion);
+                break;
+            }
+            default:
+                FIXME("Unimplemented ext type %u\n", ext->type);
+                break;
+        }
 
-    return luid;
+        ext = (void *)ext->pNext;
+    }
+
+    FreeLibrary(d3d12);
+    return ret;
 }
+
+static const struct IAmdExtD3DCreateDeviceVtbl AmdExtD3DCreateDevice_vtable = {
+    AmdExtD3DCreateDevice_QueryInterface,
+    AmdExtD3DCreateDevice_AddRef,
+    AmdExtD3DCreateDevice_Release,
+    AmdExtD3DCreateDevice_AmdD3D12CreateDevice,
+};
+
+static const struct AmdExtD3DCreateDevice amd_d3d_create = {
+    .IAmdExtD3DCreateDevice_iface = { &AmdExtD3DCreateDevice_vtable },
+};
 
 HRESULT CDECL AmdExtD3DCreateInterface(IUnknown *outer, REFIID iid, void **obj)
 {
@@ -298,13 +734,17 @@ HRESULT CDECL AmdExtD3DCreateInterface(IUnknown *outer, REFIID iid, void **obj)
         struct AMDFSR4FFX* ffx = calloc(1, sizeof(struct AMDFSR4FFX));
         ffx->IAmdExtFfxApi_iface.lpVtbl = &AMDFSR4FFX_vtable;
         ffx->ref = 1;
-        ffx->luid = get_luid(outer);
+        ffx->rdna2 = is_rdna2((ID3D12Device *)outer);
+        check_intrinsic_support((ID3D12Device *)outer, &ffx->fp8_supported, NULL, NULL);
         *obj = &ffx->IAmdExtFfxApi_iface;
         return S_OK;
     } else if (IsEqualGUID(iid, &IID_IAmdExtAntiLagApi)) {
         return ID3D12Device_QueryInterface((ID3D12Device *)outer, &IID_IAmdExtAntiLagApi, obj);
-    } else if(IsEqualGUID(iid, &IID_IAmdExtStub1)) {
-        *obj = &amd_ext_stub1;
+    } else if (IsEqualGUID(iid, &IID_IAmdExtD3DFactory)) {
+        *obj = (void *)&amd_d3d_factory.IAmdExtD3DFactory_iface;
+        return S_OK;
+    } else if (IsEqualGUID(iid, &IID_IAmdExtD3DCreateDevice)) {
+        *obj = (void *)&amd_d3d_create.IAmdExtD3DCreateDevice_iface;
         return S_OK;
     } else {
         FIXME("unknown guid: %s\n", debugstr_guid(iid));
@@ -316,4 +756,26 @@ HRESULT CDECL AmdExtD3DCreateInterface(IUnknown *outer, REFIID iid, void **obj)
 HMODULE WINAPI AmdGetDxcModuleHandle(void)
 {
     return GetModuleHandleA(NULL);
+}
+
+BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, void *reserved)
+{
+    const char *env;
+
+    switch (reason)
+    {
+        case DLL_PROCESS_ATTACH:
+        {
+            /* this creates a watermark for driver side FSR3 as well */
+            if ((env = getenv("FSR_WATERMARK")) && !strcmp(env, "1"))
+                _putenv("MLSR-WATERMARK=1");
+            /* same here */
+            if ((env = getenv("FSR_FG_WATERMARK")) && !strcmp(env, "1"))
+                _putenv("MLFI-WATERMARK=1");
+            break;
+        }
+        default: break;
+    }
+
+    return TRUE;
 }
