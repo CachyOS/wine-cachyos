@@ -19,6 +19,8 @@
  */
 
 #include <stdarg.h>
+#include <stdlib.h>
+#include <string.h>
 
 #define COBJMACROS
 
@@ -75,6 +77,9 @@ __ASM_GLOBAL_FUNC( call_on_voice_processing_pass_start,
 
 static XA2VoiceImpl *impl_from_IXAudio2Voice(IXAudio2Voice *iface);
 
+/* workaround for Darksiders Warmastered Edition (462780) freeing movies PCM too early */
+static BOOL enable_darksiders_hack;
+
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD reason, void *pReserved)
 {
     TRACE("(%p, %ld, %p)\n", hinstDLL, reason, pReserved);
@@ -84,6 +89,10 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD reason, void *pReserved)
     case DLL_PROCESS_ATTACH:
         DisableThreadLibraryCalls( hinstDLL );
         TRACE("Using FAudio version %d\n", FAudioLinkedVersion() );
+        {
+            const char *id = getenv("SteamGameId");
+            enable_darksiders_hack = id && !strcmp(id, "462780");
+        }
         break;
     }
     return TRUE;
@@ -394,6 +403,15 @@ static inline XA2VoiceImpl *impl_from_FAudioVoiceCallback(FAudioVoiceCallback *i
     return CONTAINING_RECORD(iface, XA2VoiceImpl, FAudioVoiceCallback_vtbl);
 }
 
+/* wrapper for wine-owned audio data copies to avoid premature freeing */
+/* i'm not proud of this in the slightest, but whatever... */
+#define XA2_BUFFER_COPY_MAGIC 0x58413242UL  /* 'XA2B' */
+struct xa2_buffer_copy {
+    ULONG_PTR magic;
+    void     *audio_data;
+    void     *original_context;
+};
+
 static void FAUDIOCALL XA2VCB_OnVoiceProcessingPassStart(FAudioVoiceCallback *iface,
         UINT32 BytesRequired)
 {
@@ -436,9 +454,21 @@ static void FAUDIOCALL XA2VCB_OnBufferEnd(FAudioVoiceCallback *iface,
         void *pBufferContext)
 {
     XA2VoiceImpl *This = impl_from_FAudioVoiceCallback(iface);
+    struct xa2_buffer_copy *wrap = pBufferContext;
+    void *ctx;
+
+    if (enable_darksiders_hack && wrap && wrap->magic == XA2_BUFFER_COPY_MAGIC)
+    {
+        ctx = wrap->original_context;
+        free(wrap->audio_data);
+        free(wrap);
+    }
+    else
+        ctx = pBufferContext;
+
     TRACE("%p\n", This);
     if(This->cb)
-        IXAudio2VoiceCallback_OnBufferEnd(This->cb, pBufferContext);
+        IXAudio2VoiceCallback_OnBufferEnd(This->cb, ctx);
 }
 
 static void FAUDIOCALL XA2VCB_OnLoopEnd(FAudioVoiceCallback *iface,
@@ -790,10 +820,44 @@ static HRESULT WINAPI XA2SRC_SubmitSourceBuffer(IXAudio2SourceVoice *iface,
         const XAUDIO2_BUFFER *pBuffer, const XAUDIO2_BUFFER_WMA *pBufferWMA)
 {
     XA2VoiceImpl *This = impl_from_IXAudio2SourceVoice(iface);
+    XAUDIO2_BUFFER copy = *pBuffer;
+    struct xa2_buffer_copy *wrap = NULL;
+    HRESULT hr;
 
     TRACE("%p, %p, %p\n", This, pBuffer, pBufferWMA);
 
-    return FAudioSourceVoice_SubmitSourceBuffer(This->faudio_voice, (FAudioBuffer*)pBuffer, (FAudioBufferWMA*)pBufferWMA);
+    if (enable_darksiders_hack && pBuffer->pAudioData && pBuffer->AudioBytes > 0)
+    {
+        FAudioVoiceDetails details;
+
+        FAudioVoice_GetVoiceDetails(This->faudio_voice, &details);
+        if (details.InputChannels >= 6
+                || (details.InputChannels == 2 && details.InputSampleRate == 44100 && pBuffer->AudioBytes == 8192))
+        {
+            wrap = malloc(sizeof(*wrap));
+            if (!wrap)
+                return E_OUTOFMEMORY;
+            wrap->magic            = XA2_BUFFER_COPY_MAGIC;
+            wrap->audio_data       = malloc(pBuffer->AudioBytes);
+            if (!wrap->audio_data)
+            {
+                free(wrap);
+                return E_OUTOFMEMORY;
+            }
+            memcpy(wrap->audio_data, pBuffer->pAudioData, pBuffer->AudioBytes);
+            wrap->original_context = pBuffer->pContext;
+            copy.pAudioData        = wrap->audio_data;
+            copy.pContext          = wrap;
+        }
+    }
+
+    hr = FAudioSourceVoice_SubmitSourceBuffer(This->faudio_voice, (FAudioBuffer*)&copy, (FAudioBufferWMA*)pBufferWMA);
+    if (FAILED(hr) && wrap)
+    {
+        free(wrap->audio_data);
+        free(wrap);
+    }
+    return hr;
 }
 
 static HRESULT WINAPI XA2SRC_FlushSourceBuffers(IXAudio2SourceVoice *iface)
