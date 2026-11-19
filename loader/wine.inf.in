@@ -146,6 +146,7 @@ AddReg=\
     CurrentVersionWow64.ntarm
 
 [DefaultInstall.Services]
+AddService=AudioEndpointBuilder,0,AudioEndpointBuilderService
 AddService=BITS,0,BITSService
 AddService=EventLog,0x800,EventLogService
 AddService=HTTP,0,HTTPService
@@ -167,6 +168,7 @@ AddService=NDIS,0x800,NDISService
 AddService=nsiproxy,0x800,NsiProxyService
 
 [DefaultInstall.ntx86.Services]
+AddService=AudioEndpointBuilder,0,AudioEndpointBuilderService
 AddService=BITS,0,BITSService
 AddService=EventLog,0x800,EventLogService
 AddService=HTTP,0,HTTPService
@@ -188,6 +190,7 @@ AddService=NDIS,0x800,NDISService
 AddService=nsiproxy,0x800,NsiProxyService
 
 [DefaultInstall.ntamd64.Services]
+AddService=AudioEndpointBuilder,0,AudioEndpointBuilderService
 AddService=BITS,0,BITSService
 AddService=EventLog,0x800,EventLogService
 AddService=HTTP,0,HTTPService
@@ -209,6 +212,7 @@ AddService=NDIS,0x800,NDISService
 AddService=nsiproxy,0x800,NsiProxyService
 
 [DefaultInstall.ntarm64.Services]
+AddService=AudioEndpointBuilder,0,AudioEndpointBuilderService
 AddService=BITS,0,BITSService
 AddService=EventLog,0x800,EventLogService
 AddService=HTTP,0,HTTPService
@@ -1373,6 +1377,19 @@ ErrorControl=1
 [TaskSchedulerServiceKeys]
 HKR,Parameters,"ServiceDll",,"%11%\schedsvc.dll"
 HKLM,%CurrentVersionNT%\SvcHost,"netsvcs",0x00010008,"Schedule"
+
+[AudioEndpointBuilderService]
+AddReg=AudioEndpointBuilderServiceKeys
+Description="Manages audio endpoint devices"
+DisplayName="Windows Audio Endpoint Builder"
+ServiceBinary="%11%\svchost.exe -k LocalSystemNetworkRestricted"
+ServiceType=32
+StartType=2
+ErrorControl=1
+
+[AudioEndpointBuilderServiceKeys]
+HKR,Parameters,"ServiceDll",,"%11%\mmdevapi.dll"
+HKLM,%CurrentVersionNT%\SvcHost,"LocalSystemNetworkRestricted",0x00010008,"AudioEndpointBuilder"
 
 [wuauService]
 Description="wuauserv"
