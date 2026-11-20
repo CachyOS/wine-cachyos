@@ -1176,7 +1176,8 @@ static void wayland_set_cursor(HWND hwnd, HCURSOR hcursor, BOOL use_hcursor)
             wayland_win_data_release(data);
             return;
         }
-        scale = surface->window.scale;
+        scale = (double)NtUserGetWinMonitorDpi(hwnd, MDT_RAW_DPI) / NtUserGetDpiForWindow(hwnd);
+        scale *= surface->window.scale;
         if (use_hcursor) surface->hcursor = hcursor;
         /* this hcursor must always be valid due to above */
         else hcursor = surface->hcursor;
