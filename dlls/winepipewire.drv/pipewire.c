@@ -49,6 +49,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <signal.h>
 #include <time.h>
 #include <dlfcn.h>
 #include <elf.h>
@@ -1042,6 +1043,13 @@ static HRESULT pipewire_connect(const WCHAR *appname)
 
 static NTSTATUS pipewire_main_loop_start(void *args)
 {
+    sigset_t sigset, old;
+
+    /* A thread terminated inside dlopen() keeps the loader lock and exit() never returns. */
+    sigemptyset(&sigset);
+    sigaddset(&sigset, SIGQUIT);
+    pthread_sigmask(SIG_BLOCK, &sigset, &old);
+
     pthread_mutex_lock(&pw_init_mutex);
     if (pw_loop_global)
         goto out;
@@ -1070,6 +1078,7 @@ static NTSTATUS pipewire_main_loop_start(void *args)
 
 out:
     pthread_mutex_unlock(&pw_init_mutex);
+    pthread_sigmask(SIG_SETMASK, &old, NULL);
     return STATUS_SUCCESS;
 }
 
