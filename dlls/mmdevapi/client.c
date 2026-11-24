@@ -533,6 +533,7 @@ static HRESULT stream_init(struct audio_client *client, const BOOLEAN force_def_
     params.fmt           = fmt;
     params.channel_count = &channel_count;
     params.stream        = &stream;
+    params.category      = client->category;
 
     wine_unix_call(create_stream, &params);
 
@@ -1115,6 +1116,8 @@ static HRESULT WINAPI client_SetClientProperties(IAudioClient3 *iface,
 
     if (legacy_prop->bIsOffload)
         return AUDCLNT_E_ENDPOINT_OFFLOAD_NOT_CAPABLE;
+
+    This->category = legacy_prop->eCategory;
 
     return S_OK;
 }

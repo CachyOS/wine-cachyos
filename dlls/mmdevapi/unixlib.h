@@ -78,6 +78,8 @@ struct create_stream_params
     HRESULT result;
     UINT32 *channel_count;
     stream_handle *stream;
+    /* Last, so the wow64 thunks of drivers that ignore it stay valid. */
+    AUDIO_STREAM_CATEGORY category;
 };
 
 struct release_stream_params

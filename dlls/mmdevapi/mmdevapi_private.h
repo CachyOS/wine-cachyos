@@ -74,6 +74,7 @@ struct audio_client {
     float *vols;
     UINT32 channel_count;
     stream_handle stream;
+    AUDIO_STREAM_CATEGORY category;
 
     struct audio_session *session;
     struct audio_session_wrapper *session_wrapper;
