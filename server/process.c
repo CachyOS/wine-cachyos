@@ -714,7 +714,7 @@ struct process *create_process( int fd, struct process *parent, unsigned int fla
     list_init( &process->locks );
     list_init( &process->asyncs );
     list_init( &process->classes );
-    list_init( &process->views );
+    init_process_views( process );
 
     process->end_time = 0;
 
