@@ -169,6 +169,7 @@ struct pipewire_stream
     BOOL pending_error;
 
     DWORD flags;
+    AUDIO_STREAM_CATEGORY category;
     AUDCLNT_SHAREMODE share;
     HANDLE event;
     float vol[PW_CHANNELS_MAX];
@@ -365,6 +366,27 @@ static char *app_name_from_wstr(const WCHAR *appname)
         if (*w > ' ')
             return wstr_to_str(appname);
     return NULL;
+}
+
+/* Alerts would be Notification, which WirePlumber restores from one volume and
+ * mute shared by every Notification stream of every application. */
+static const char *media_role_from_category(AUDIO_STREAM_CATEGORY category)
+{
+    switch (category)
+    {
+    case AudioCategory_Communications:
+    case AudioCategory_GameChat:
+        return "Communication";
+    case AudioCategory_GameEffects:
+    case AudioCategory_GameMedia:
+        return "Game";
+    case AudioCategory_Movie:
+        return "Movie";
+    case AudioCategory_Media:
+        return "Music";
+    default:
+        return NULL;
+    }
 }
 
 static WCHAR *utf8_to_wstr(const char *s)
@@ -3138,6 +3160,7 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
     const struct spa_pod *params[1];
     SIZE_T period_frames;
     char *app;
+    const char *role;
     static LONG stream_number;
     char media_name[32];
 
@@ -3183,6 +3206,11 @@ static HRESULT pipewire_stream_connect(struct pipewire_stream *stream, const cha
     if (stream->dataflow == eCapture &&
         ((stream->flags & AUDCLNT_STREAMFLAGS_LOOPBACK) || capture_sink))
         pw_properties_set(props, PW_KEY_STREAM_CAPTURE_SINK, "true");
+    /* The session manager moves a capture stream carrying the Communication
+     * role onto a Bluetooth headset's hands-free source, where the profile
+     * autoswitch no longer counts it. */
+    if (stream->dataflow == eRender && (role = media_role_from_category(stream->category)))
+        pw_properties_set(props, PW_KEY_MEDIA_ROLE, role);
 
     /* libpipewire copies this into media.name, which applets print next to
      * application.name, so the app name here would show up twice. */
@@ -3405,6 +3433,7 @@ static NTSTATUS pipewire_create_stream(void *args)
 
     stream->def_period = params->period;
     stream->flags = params->flags;
+    stream->category = params->category;
     stream->share = params->share;
     stream->mmdev_period_usec = params->period / 10;
 
@@ -4868,6 +4897,7 @@ static NTSTATUS pipewire_wow64_create_stream(void *args)
         HRESULT result;
         PTR32 channel_count;
         PTR32 stream;
+        AUDIO_STREAM_CATEGORY category;
     } *params32 = args;
     struct create_stream_params params =
     {
@@ -4880,7 +4910,8 @@ static NTSTATUS pipewire_wow64_create_stream(void *args)
         .period = params32->period,
         .fmt = ULongToPtr(params32->fmt),
         .channel_count = ULongToPtr(params32->channel_count),
-        .stream = ULongToPtr(params32->stream)
+        .stream = ULongToPtr(params32->stream),
+        .category = params32->category
     };
     pipewire_create_stream(&params);
     params32->result = params.result;
