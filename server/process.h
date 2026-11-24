@@ -22,6 +22,7 @@
 #define __WINE_SERVER_PROCESS_H
 
 #include "object.h"
+#include "wine/rbtree.h"
 
 struct atom_table;
 struct handle_table;
@@ -78,7 +79,8 @@ struct process
     obj_handle_t         winstation;      /* main handle to process window station */
     obj_handle_t         desktop;         /* handle to desktop to use for new threads */
     struct token        *token;           /* security token associated with this process */
-    struct list          views;           /* list of memory views */
+    struct list          views;           /* list of memory views, main exe first */
+    struct rb_tree       view_tree;       /* memory views by base address */
     client_ptr_t         peb;             /* PEB address in client address space */
     struct dir_cache    *dir_cache;       /* map of client-side directory cache */
     unsigned int         trace_data;      /* opaque data used by the process tracing mechanism */
