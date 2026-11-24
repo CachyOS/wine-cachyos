@@ -690,6 +690,17 @@ static UINT get_channel_mask(unsigned int channels)
     return 0;
 }
 
+static UINT popcount(UINT val)
+{
+#ifdef HAVE___BUILTIN_POPCOUNT
+    return __builtin_popcount(val);
+#else
+    val -= val >> 1 & 0x55555555;
+    val = (val & 0x33333333) + (val >> 2 & 0x33333333);
+    return ((val + (val >> 4)) & 0x0f0f0f0f) * 0x01010101 >> 24;
+#endif
+}
+
 /* find the nearest Windows-reportable channel configuration that is a
  * superset of the given speakers (transplant of pulse convert_channel_map) */
 static void convert_channel_map(uint32_t channels, UINT mask, WAVEFORMATEXTENSIBLE *fmt)
@@ -740,6 +751,15 @@ static void convert_channel_map(uint32_t channels, UINT mask, WAVEFORMATEXTENSIB
     {
         fmt->Format.nChannels = 8;
         fmt->dwChannelMask = KSAUDIO_SPEAKER_7POINT1_SURROUND;
+        return;
+    }
+    /* A channel with no WASAPI speaker position (AUX on pro-audio profiles) cannot be
+     * described, so such a format is refused at Initialize.  The session manager links
+     * FL and FR to the sink's first two channels. */
+    if (popcount(mask) != channels)
+    {
+        fmt->Format.nChannels = 2;
+        fmt->dwChannelMask = KSAUDIO_SPEAKER_STEREO;
         return;
     }
     fmt->Format.nChannels = channels;
