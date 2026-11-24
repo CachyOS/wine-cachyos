@@ -1301,6 +1301,23 @@ static NTSTATUS pipewire_main_loop_stop(void *args)
  * pw only, never ntdll/Wine (no TRACE).  Strings stay UTF-8 until the
  * unix-call thread converts them. */
 
+enum probe_form
+{
+    PROBE_FORM_NONE = 0,
+    PROBE_FORM_HEADPHONE,
+    PROBE_FORM_HEADSET,
+    PROBE_FORM_HANDSET,
+};
+
+enum probe_profile
+{
+    PROBE_PROFILE_OTHER = 0,
+    PROBE_PROFILE_BT_HEADSET,  /* HSP/HFP */
+    PROBE_PROFILE_BT_OTHER,
+    PROBE_PROFILE_HDMI,
+    PROBE_PROFILE_IEC958,
+};
+
 struct probe_node
 {
     struct list entry;
@@ -1316,6 +1333,8 @@ struct probe_node
     int have_format;
     uint32_t device_id;    /* parent device.id, or SPA_ID_INVALID */
     enum pw_device_bus bus;
+    enum probe_form form;
+    enum probe_profile profile;
 };
 
 /* Vendor/product ids live on the Device object, not the node.  Registry
@@ -1326,6 +1345,7 @@ struct probe_device
     struct list entry;
     uint32_t id;
     enum pw_device_bus bus;
+    enum probe_form form;
     UINT16 vendor_id, product_id;
     char *sysfs_path;
     struct pw_device *proxy;
@@ -1386,8 +1406,49 @@ static void on_probe_node_param(void *data, int seq, uint32_t id, uint32_t index
     }
 }
 
+static enum probe_form parse_form_factor(const char *form)
+{
+    if (!form)
+        return PROBE_FORM_NONE;
+    if (!strcmp(form, "headphone"))
+        return PROBE_FORM_HEADPHONE;
+    if (!strcmp(form, "headset") || !strcmp(form, "hands-free"))
+        return PROBE_FORM_HEADSET;
+    if (!strcmp(form, "handset"))
+        return PROBE_FORM_HANDSET;
+    return PROBE_FORM_NONE;
+}
+
+static enum probe_profile parse_profile(const struct spa_dict *props)
+{
+    const char *bt = spa_dict_lookup(props, "api.bluez5.profile");
+    const char *profile = spa_dict_lookup(props, "device.profile.name");
+
+    if (bt && !strcmp(bt, "headset-head-unit"))
+        return PROBE_PROFILE_BT_HEADSET;
+    if (bt)
+        return PROBE_PROFILE_BT_OTHER;
+    if (profile && !strncmp(profile, "hdmi-", 5))
+        return PROBE_PROFILE_HDMI;
+    if (profile && !strncmp(profile, "iec958-", 7))
+        return PROBE_PROFILE_IEC958;
+    return PROBE_PROFILE_OTHER;
+}
+
+/* Registry globals carry neither the profile nor the form factor. */
+static void on_probe_node_info(void *data, const struct pw_node_info *info)
+{
+    struct probe_node *pn = data;
+
+    if (!info || !info->props)
+        return;
+    pn->form = parse_form_factor(spa_dict_lookup(info->props, PW_KEY_DEVICE_FORM_FACTOR));
+    pn->profile = parse_profile(info->props);
+}
+
 static const struct pw_node_events probe_node_events = {
     PW_VERSION_NODE_EVENTS,
+    .info = on_probe_node_info,
     .param = on_probe_node_param,
 };
 
@@ -1505,6 +1566,7 @@ static void on_probe_device_info(void *data, const struct pw_device_info *info)
     /* strdup is libc and legal here.  info repeats, so keep the first path. */
     if (!pd->sysfs_path && (sysfs_path = spa_dict_lookup(info->props, PW_KEY_DEVICE_SYSFS_PATH)))
         pd->sysfs_path = strdup(sysfs_path);
+    pd->form = parse_form_factor(spa_dict_lookup(info->props, PW_KEY_DEVICE_FORM_FACTOR));
 }
 
 static const struct pw_device_events probe_device_events = {
@@ -1768,6 +1830,7 @@ static void add_default_device(struct list *list, EndpointFormFactor form, const
     {
         def->fmt = def_src->fmt;
         def->channel_mask = def_src->channel_mask;
+        def->form = def_src->form;
     }
     else
     {
@@ -1916,6 +1979,36 @@ static void fill_device_path_info(struct pw_phys_device *dev, struct probe *p,
     }
 }
 
+static EndpointFormFactor endpoint_form(struct probe *p, const struct probe_node *pn)
+{
+    struct probe_device *pd = probe_find_device(p, pn->device_id);
+    enum probe_form form = pn->form ? pn->form : (pd ? pd->form : PROBE_FORM_NONE);
+    BOOL render = pn->flow == eRender;
+
+    if (pn->profile == PROBE_PROFILE_BT_HEADSET)
+        return Headset;
+    if (pn->profile == PROBE_PROFILE_HDMI && render)
+        return DigitalAudioDisplayDevice;
+    if (pn->profile == PROBE_PROFILE_IEC958)
+        return SPDIF;
+    switch (form)
+    {
+    case PROBE_FORM_HEADSET:
+        /* Outside HSP/HFP a Bluetooth headset's sink is its stereo endpoint, which
+         * Windows reports as headphones. */
+        return render && pn->profile == PROBE_PROFILE_BT_OTHER ? Headphones : Headset;
+    case PROBE_FORM_HEADPHONE:
+        if (render)
+            return Headphones;
+        break;
+    case PROBE_FORM_HANDSET:
+        return Handset;
+    case PROBE_FORM_NONE:
+        break;
+    }
+    return render ? Speakers : Microphone;
+}
+
 static void build_device_cache(struct probe *p)
 {
     struct probe_node *pn;
@@ -1954,7 +2047,7 @@ static void build_device_cache(struct probe *p)
     LIST_FOR_EACH_ENTRY(pn, &p->nodes, struct probe_node, entry)
     {
         struct list *list = (pn->flow == eRender) ? &g_render_devices : &g_capture_devices;
-        EndpointFormFactor form = (pn->flow == eRender) ? Speakers : Microphone;
+        EndpointFormFactor form = endpoint_form(p, pn);
         uint32_t channels = pn->have_format ? pn->channels : 2;
         UINT mask = pn->have_format ? positions_to_mask(pn->position, pn->channels)
                                     : (SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT);
