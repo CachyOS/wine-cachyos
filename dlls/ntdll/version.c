@@ -481,7 +481,7 @@ void version_init(void)
 
     NtQuerySystemInformation( SystemWineVersionInformation, wine_version, sizeof(wine_version), NULL );
 
-    current_version = &VersionData[WIN10];
+    current_version = &VersionData[WIN11];
 
     RtlOpenCurrentUser( KEY_ALL_ACCESS, &root );
     InitializeObjectAttributes( &attr, &nameW, OBJ_CASE_INSENSITIVE, root, NULL );

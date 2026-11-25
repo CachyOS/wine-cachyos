@@ -24,7 +24,6 @@
 #include <string.h>
 #include <utime.h>
 #include <stdarg.h>
-#include <stdbool.h>
 #include <inttypes.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -33,33 +32,11 @@
 #include "unix_private.h"
 #include "wine/rbtree.h"
 
-#ifdef _WINEDMO
-
-#define GST_ERROR(fmt, ...) ERR(fmt "\n", ## __VA_ARGS__)
-#define GST_WARNING(fmt, ...) WARN(fmt "\n", ## __VA_ARGS__)
-#define GST_INFO(fmt, ...) TRACE(fmt "\n", ## __VA_ARGS__)
-#define GST_TRACE(fmt, ...) TRACE(fmt "\n", ## __VA_ARGS__)
-#define GST_DEBUG(fmt, ...) TRACE(fmt "\n", ## __VA_ARGS__)
-typedef struct gst_buffer GstBuffer; /* not used */
-extern size_t gst_buffer_extract(GstBuffer*,size_t,void*,size_t); /* not used */
-
-#else /* _WINEDMO */
-
 GST_DEBUG_CATEGORY_EXTERN(media_converter_debug);
 #undef GST_CAT_DEFAULT
 #define GST_CAT_DEFAULT media_converter_debug
 
-#endif /* _WINEDMO */
-
 typedef int (*data_read_callback)(void *data_reader, uint8_t *buffer, size_t size, size_t *read_size);
-
-#define VIDEO_CONV_FOZ_TAG_VIDEODATA        0
-#define VIDEO_CONV_FOZ_TAG_OGVDATA          1
-#define VIDEO_CONV_FOZ_TAG_STREAM           2
-#define VIDEO_CONV_FOZ_TAG_MKVDATA          3
-#define VIDEO_CONV_FOZ_TAG_CODEC            4
-#define VIDEO_CONV_FOZ_TAG_ORIGINAL_ENTRIES 5
-#define VIDEO_CONV_FOZ_NUM_TAGS             6
 
 /* Changing this will invalidate the cache. You MUST clear it. */
 #define HASH_SEED 0x4AA61F63
@@ -148,7 +125,6 @@ struct fozdb_entry
 extern int fozdb_entry_compare( const void *key, const struct rb_entry *ptr );
 extern void fozdb_entry_destroy( struct rb_entry *entry, void *context );
 extern struct fozdb_entry *fozdb_entry_put( struct rb_tree *tree, uint32_t tag, const struct fozdb_hash *hash );
-extern struct fozdb_entry *fozdb_entry_get( struct rb_tree *tree, uint32_t tag, const struct fozdb_hash *hash );
 
 extern struct rb_entry *fozdb_tag_head( struct rb_tree *tree, uint32_t tag );
 #define FOZDB_FOR_EACH_TAG_ENTRY( e, t, d )                                                       \
@@ -183,8 +159,6 @@ extern uint32_t crc32(uint32_t crc, const uint8_t *ptr, size_t buf_len);
 extern int create_placeholder_file(const char *file_name);
 extern int dump_fozdb_open(struct dump_fozdb *db, bool create, const char *file_path_env, int num_tags);
 extern void dump_fozdb_close(struct dump_fozdb *db);
-extern void mark_transcoded_stream(struct fozdb *fozdb, struct fozdb_hash *hash);
-extern int discard_transcoded_streams(struct fozdb *dump_db, struct fozdb *read_fozdb);
 
 /* murmur3.c. */
 extern void murmur3_x64_128_state_init(struct murmur3_x64_128_state *state, uint32_t seed);
