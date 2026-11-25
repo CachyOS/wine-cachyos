@@ -1194,7 +1194,11 @@ NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
         if ((flags & CONTEXT_DEBUG_REGISTERS) && (ret == STATUS_UNSUCCESSFUL))
             WARN_(seh)( "Setting debug registers is not supported under Rosetta\n" );
 #endif
-        if (ret || !self) return ret;
+        if (ret || !self)
+        {
+            unblock_sigusr1();
+            return ret;
+        }
         if (flags & CONTEXT_DEBUG_REGISTERS)
         {
             amd64_thread_data()->dr0 = context->Dr0;
