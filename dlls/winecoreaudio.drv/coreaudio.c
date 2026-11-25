@@ -65,6 +65,7 @@
 #include "mmdeviceapi.h"
 #include "initguid.h"
 #include "audioclient.h"
+#include "devpkey.h"
 #include "wine/debug.h"
 #include "wine/unixlib.h"
 
@@ -88,6 +89,7 @@ struct coreaudio_stream
     DWORD flags;
     AUDCLNT_SHAREMODE share;
     HANDLE event;
+    HANDLE timer_thread;
 
     BOOL playing, please_quit;
     REFERENCE_TIME period;
@@ -211,13 +213,6 @@ static NTSTATUS unix_process_attach(void *args)
         zero_bits = (ULONG_PTR)info.HighestUserAddress | 0x7fffffff;
     }
 #endif
-    return STATUS_SUCCESS;
-}
-
-static NTSTATUS unix_main_loop(void *args)
-{
-    struct main_loop_params *params = args;
-    NtSetEvent(params->event, NULL);
     return STATUS_SUCCESS;
 }
 
@@ -825,10 +820,10 @@ static NTSTATUS unix_release_stream( void *args )
     struct coreaudio_stream *stream = handle_get_stream(params->stream);
     SIZE_T size;
 
-    if(params->timer_thread){
+    if(stream->timer_thread){
         stream->please_quit = TRUE;
-        NtWaitForSingleObject(params->timer_thread, FALSE, NULL);
-        NtClose(params->timer_thread);
+        NtWaitForSingleObject(stream->timer_thread, FALSE, NULL);
+        NtClose(stream->timer_thread);
     }
 
     if(stream->unit){
@@ -1356,10 +1351,37 @@ static NTSTATUS unix_get_current_padding(void *args)
     return STATUS_SUCCESS;
 }
 
+static void unix_timer_loop(void *args)
+{
+    struct coreaudio_stream *stream = args;
+    LARGE_INTEGER delay, next, last;
+    int adjust;
+
+    delay.QuadPart = -stream->period;
+    NtQueryPerformanceCounter(&last, NULL);
+    next.QuadPart = last.QuadPart + stream->period;
+
+    while(!stream->please_quit){
+        NtSetEvent(stream->event, NULL);
+        NtDelayExecution(FALSE, &delay);
+        NtQueryPerformanceCounter(&last, NULL);
+
+        adjust = next.QuadPart - last.QuadPart;
+        if(adjust > stream->period / 2)
+            adjust = stream->period / 2;
+        else if(adjust < -stream->period / 2)
+            adjust = -stream->period / 2;
+
+        delay.QuadPart = -(stream->period + adjust);
+        next.QuadPart += stream->period;
+    }
+}
+
 static NTSTATUS unix_start(void *args)
 {
     struct start_params *params = args;
     struct coreaudio_stream *stream = handle_get_stream(params->stream);
+    static const WCHAR name[] = {'a','u','d','i','o','_','c','l','i','e','n','t','_','t','i','m','e','r',0};
 
     os_unfair_lock_lock(&stream->lock);
 
@@ -1373,6 +1395,7 @@ static NTSTATUS unix_start(void *args)
     }
 
     os_unfair_lock_unlock(&stream->lock);
+    if (!stream->timer_thread) create_unix_thread( &stream->timer_thread, name, unix_timer_loop, stream );
 
     return STATUS_SUCCESS;
 }
@@ -1421,35 +1444,6 @@ static NTSTATUS unix_reset(void *args)
     }
 
     os_unfair_lock_unlock(&stream->lock);
-    return STATUS_SUCCESS;
-}
-
-static NTSTATUS unix_timer_loop(void *args)
-{
-    struct timer_loop_params *params = args;
-    struct coreaudio_stream *stream = handle_get_stream(params->stream);
-    LARGE_INTEGER delay, next, last;
-    int adjust;
-
-    delay.QuadPart = -stream->period;
-    NtQueryPerformanceCounter(&last, NULL);
-    next.QuadPart = last.QuadPart + stream->period;
-
-    while(!stream->please_quit){
-        NtSetEvent(stream->event, NULL);
-        NtDelayExecution(FALSE, &delay);
-        NtQueryPerformanceCounter(&last, NULL);
-
-        adjust = next.QuadPart - last.QuadPart;
-        if(adjust > stream->period / 2)
-            adjust = stream->period / 2;
-        else if(adjust < -stream->period / 2)
-            adjust = -stream->period / 2;
-
-        delay.QuadPart = -(stream->period + adjust);
-        next.QuadPart += stream->period;
-    }
-
     return STATUS_SUCCESS;
 }
 
@@ -1715,12 +1709,76 @@ static NTSTATUS unix_is_started(void *args)
     return STATUS_SUCCESS;
 }
 
+static NTSTATUS get_device_vid_pid(const char *device, DWORD *vid, DWORD *pid)
+{
+    UInt32 type_property;
+    UInt32 size;
+    OSStatus sc;
+    AudioObjectPropertyAddress addr;
+    const AudioDeviceID dev_id = dev_id_from_device(device);
+
+    addr.mScope = kAudioObjectPropertyScopeGlobal;
+    addr.mElement = kAudioObjectPropertyElementMain;
+    addr.mSelector = kAudioDevicePropertyTransportType;
+    type_property = 0;
+    size = sizeof(type_property);
+    sc = AudioObjectGetPropertyData(dev_id, &addr, 0, NULL, &size, &type_property);
+    if(sc == noErr && type_property == kAudioDeviceTransportTypeUSB){
+        CFStringRef property_value = NULL;
+
+        addr.mSelector = kAudioDevicePropertyModelUID;
+        size = sizeof(property_value);
+        sc = AudioObjectGetPropertyData(dev_id, &addr, 0, NULL, &size, &property_value);
+        if(sc == noErr){
+            WCHAR output[255];
+
+            size = min(CFStringGetLength(property_value), ARRAY_SIZE(output) - 1);
+            CFStringGetCharacters(property_value, CFRangeMake(0, size), (UniChar*)output);
+            output[size] = 0;
+            CFRelease(property_value);
+
+            if(size > 10 && output[size - 5] == ':' && output[size - 10] == ':'){
+                *vid = wcstoul(&output[size - 9], NULL, 16);
+                *pid = wcstoul(&output[size - 4], NULL, 16);
+                return STATUS_SUCCESS;
+            }
+        }
+    }
+    return STATUS_UNSUCCESSFUL;
+}
+
 static NTSTATUS unix_get_prop_value(void *args)
 {
     struct get_prop_value_params *params = args;
+    const PROPERTYKEY *prop = params->prop;
+
+    if(IsEqualPropertyKey(*prop, DEVPKEY_Device_InstanceId)){
+        DWORD vid = 0, pid = 0;
+
+        if (SUCCEEDED(get_device_vid_pid(params->device, &vid, &pid))){
+            int len;
+            char buf[128];
+            PROPVARIANT *out = params->value;
+
+            len = sizeof(buf);
+            snprintf(buf, len, "{1}.USB\\VID_%04X&PID_%04X", vid, pid);
+
+            len = strlen(buf) + 1;
+            if(*params->buffer_size < len * sizeof(WCHAR)){
+                params->result = E_NOT_SUFFICIENT_BUFFER;
+                *params->buffer_size = len * sizeof(WCHAR);
+                return STATUS_SUCCESS;
+            }
+
+            out->vt = VT_LPWSTR;
+            out->pwszVal = params->buffer;
+            ntdll_umbstowcs(buf, len, out->pwszVal, len);
+            params->result = S_OK;
+            return STATUS_SUCCESS;
+        }
+    }
 
     params->result = E_NOTIMPL;
-
     return STATUS_SUCCESS;
 }
 
@@ -1782,14 +1840,14 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
 {
     unix_process_attach,
     unix_not_implemented,
-    unix_main_loop,
+    unix_not_implemented,
+    unix_not_implemented,
     unix_get_endpoint_ids,
     unix_create_stream,
     unix_release_stream,
     unix_start,
     unix_stop,
     unix_reset,
-    unix_timer_loop,
     unix_get_render_buffer,
     unix_release_render_buffer,
     unix_get_capture_buffer,
@@ -1817,6 +1875,7 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
     unix_midi_in_message,
     unix_midi_notify_wait,
     unix_not_implemented,
+    unix_not_implemented,
 };
 
 C_ASSERT(ARRAYSIZE(__wine_unix_call_funcs) == funcs_count);
@@ -1824,19 +1883,6 @@ C_ASSERT(ARRAYSIZE(__wine_unix_call_funcs) == funcs_count);
 #ifdef _WIN64
 
 typedef UINT PTR32;
-
-static NTSTATUS unix_wow64_main_loop(void *args)
-{
-    struct
-    {
-        PTR32 event;
-    } *params32 = args;
-    struct main_loop_params params =
-    {
-        .event = ULongToHandle(params32->event)
-    };
-    return unix_main_loop(&params);
-}
 
 static NTSTATUS unix_wow64_get_endpoint_ids(void *args)
 {
@@ -1902,13 +1948,11 @@ static NTSTATUS unix_wow64_release_stream(void *args)
     struct
     {
         stream_handle stream;
-        PTR32 timer_thread;
         HRESULT result;
     } *params32 = args;
     struct release_stream_params params =
     {
         .stream = params32->stream,
-        .timer_thread = ULongToHandle(params32->timer_thread)
     };
     unix_release_stream(&params);
     params32->result = params.result;
@@ -2238,14 +2282,14 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
 {
     unix_process_attach,
     unix_not_implemented,
-    unix_wow64_main_loop,
+    unix_not_implemented,
+    unix_not_implemented,
     unix_wow64_get_endpoint_ids,
     unix_wow64_create_stream,
     unix_wow64_release_stream,
     unix_start,
     unix_stop,
     unix_reset,
-    unix_timer_loop,
     unix_wow64_get_render_buffer,
     unix_release_render_buffer,
     unix_wow64_get_capture_buffer,
@@ -2272,6 +2316,7 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
     unix_wow64_midi_out_message,
     unix_wow64_midi_in_message,
     unix_wow64_midi_notify_wait,
+    unix_not_implemented,
     unix_not_implemented,
 };
 

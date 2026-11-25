@@ -40,6 +40,7 @@
 #include "audiopolicy.h"
 #include "devpkey.h"
 #include "winreg.h"
+#include "winsvc.h"
 #include "spatialaudioclient.h"
 #include "mmddk.h"
 
@@ -74,25 +75,21 @@ static BOOL load_driver(const WCHAR *name, DriverFuncs *driver)
 {
     NTSTATUS status;
     WCHAR driver_module[264], path[MAX_PATH];
+    UNICODE_STRING str;
     struct test_connect_params params;
 
     lstrcpyW(driver_module, L"wine");
     lstrcatW(driver_module, name);
     lstrcatW(driver_module, L".drv");
+    RtlInitUnicodeString( &str, driver_module );
 
     TRACE("Attempting to load %s\n", wine_dbgstr_w(driver_module));
 
-    driver->module = LoadLibraryW(driver_module);
-    if(!driver->module){
-        TRACE("Unable to load %s: %lu\n", wine_dbgstr_w(driver_module),
-                GetLastError());
+    status = __wine_load_unix_lib( &str, &driver->module, &driver->module_unixlib );
+    if (status)
+    {
+        TRACE("Unable to load %s: %lx\n", wine_dbgstr_w(driver_module), status );
         return FALSE;
-    }
-
-    if ((status = NtQueryVirtualMemory(GetCurrentProcess(), driver->module, MemoryWineLoadUnixLib,
-        &driver->module_unixlib, sizeof(driver->module_unixlib), NULL))) {
-        ERR("Unable to load UNIX functions: %lx\n", status);
-        goto fail;
     }
 
     if ((status = __wine_unix_call(driver->module_unixlib, process_attach, NULL))) {
@@ -119,18 +116,22 @@ static BOOL load_driver(const WCHAR *name, DriverFuncs *driver)
 
     return TRUE;
 fail:
-    FreeLibrary(driver->module);
+    __wine_unload_unix_lib( driver->module );
     return FALSE;
 }
 
 static BOOL WINAPI init_driver(INIT_ONCE *once, void *param, void **context)
 {
-    static WCHAR default_list[] = L"pulse,alsa,oss,coreaudio";
+    static WCHAR default_list[] = L"pipewire,pulse,alsa,oss,coreaudio";
     DriverFuncs driver;
+    DWORD env_len;
     HKEY key;
     WCHAR reg_list[256], *p, *next, *driver_list = default_list;
 
-    if(RegOpenKeyW(HKEY_CURRENT_USER, drv_keyW, &key) == ERROR_SUCCESS){
+    env_len = GetEnvironmentVariableW(L"WINE_AUDIO_DRIVER", reg_list, ARRAY_SIZE(reg_list));
+    if(env_len && env_len < ARRAY_SIZE(reg_list))
+        driver_list = reg_list;
+    else if(RegOpenKeyW(HKEY_CURRENT_USER, drv_keyW, &key) == ERROR_SUCCESS){
         DWORD size = sizeof(reg_list);
 
         if(RegQueryValueExW(key, L"Audio", 0, NULL, (BYTE*)reg_list, &size) == ERROR_SUCCESS){
@@ -155,15 +156,15 @@ static BOOL WINAPI init_driver(INIT_ONCE *once, void *param, void **context)
         driver.priority = Priority_Unavailable;
         if(load_driver(p, &driver)){
             if(driver.priority == Priority_Unavailable)
-                FreeLibrary(driver.module);
+                __wine_unload_unix_lib(driver.module);
             else if(!drvs.module || driver.priority > drvs.priority){
                 TRACE("Selecting driver %s with priority %s\n",
                         wine_dbgstr_w(p), get_priority_string(driver.priority));
                 if(drvs.module)
-                    FreeLibrary(drvs.module);
+                    __wine_unload_unix_lib(drvs.module);
                 drvs = driver;
             }else
-                FreeLibrary(driver.module);
+                __wine_unload_unix_lib(driver.module);
         }else
             TRACE("Failed to load driver %s\n", wine_dbgstr_w(p));
 
@@ -196,7 +197,7 @@ static BOOL WINAPI init_driver(INIT_ONCE *once, void *param, void **context)
             "Maybe check dependencies with WINEDEBUG=warn+module.\n",
             wine_dbgstr_w(driver_list));
 
-    return drvs.module != 0;
+    return TRUE;
 }
 
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
@@ -212,17 +213,17 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
             if (drvs.module_unixlib)
             {
                 wine_unix_call( process_detach, NULL );
-                FreeLibrary( drvs.module );
-                if (midi_driver.module != drvs.module)
-                {
-                    MIDI_CALL( process_detach, NULL );
-                    FreeLibrary( midi_driver.module );
-                }
+                if (midi_driver.module != drvs.module) MIDI_CALL( process_detach, NULL );
             }
-            main_loop_stop();
+            if (lpvReserved) break;
 
-            if (!lpvReserved)
-                MMDevEnum_Free();
+            if (drvs.module_unixlib)
+            {
+                wine_unix_call( main_loop_stop, NULL );
+                __wine_unload_unix_lib( drvs.module );
+                if (midi_driver.module != drvs.module) __wine_unload_unix_lib( midi_driver.module );
+            }
+            MMDevEnum_Free();
             break;
     }
 
@@ -345,6 +346,42 @@ HRESULT WINAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, LPVOID *ppv)
     WARN("(%s, %s, %p): no class found.\n", debugstr_guid(rclsid),
          debugstr_guid(riid), ppv);
     return CLASS_E_CLASSNOTAVAILABLE;
+}
+
+static SERVICE_STATUS_HANDLE service_handle;
+static HANDLE service_stop_event;
+
+static DWORD WINAPI service_handler( DWORD ctrl, DWORD event_type, void *event_data, void *context )
+{
+    SERVICE_STATUS status = { SERVICE_WIN32_SHARE_PROCESS, SERVICE_STOP_PENDING };
+
+    if (ctrl != SERVICE_CONTROL_STOP && ctrl != SERVICE_CONTROL_SHUTDOWN)
+        return ERROR_CALL_NOT_IMPLEMENTED;
+
+    SetServiceStatus( service_handle, &status );
+    SetEvent( service_stop_event );
+    return NO_ERROR;
+}
+
+void WINAPI ServiceMain( DWORD argc, WCHAR **argv )
+{
+    SERVICE_STATUS status = { SERVICE_WIN32_SHARE_PROCESS, SERVICE_RUNNING,
+                              SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN };
+
+    if (!(service_stop_event = CreateEventW( NULL, TRUE, FALSE, NULL ))) return;
+    if (!(service_handle = RegisterServiceCtrlHandlerExW( L"AudioEndpointBuilder",
+                                                          service_handler, NULL )))
+        return;
+
+    /* The first process of a session waits for this status, so register the endpoints first. */
+    InitOnceExecuteOnce( &init_once, init_driver, NULL, NULL );
+    SetServiceStatus( service_handle, &status );
+
+    WaitForSingleObject( service_stop_event, INFINITE );
+
+    status.dwCurrentState = SERVICE_STOPPED;
+    status.dwControlsAccepted = 0;
+    SetServiceStatus( service_handle, &status );
 }
 
 static void notify_client(struct notify_context *notify)

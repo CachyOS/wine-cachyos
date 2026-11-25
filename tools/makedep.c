@@ -4144,7 +4144,6 @@ static void output_sources( struct makefile *make )
             if (make->importlib && (is_multiarch( arch ) || (!arch && !is_native_arch_disabled( make ))))
                 output_import_lib( make, arch );
         }
-        if (make->unixlib) output_unix_lib( make );
         if (make->is_exe && !make->is_win16 && unix_lib_supported && strendswith( make->module, ".exe" ))
         {
             char *binary = replace_extension( make->module, ".exe", "" );
@@ -4157,6 +4156,8 @@ static void output_sources( struct makefile *make )
             if (is_multiarch( arch )) output_test_module( make, arch );
     }
     else if (make->programs.count) output_programs( make );
+
+    if (make->unixlib) output_unix_lib( make );
 
     STRARRAY_FOR_EACH( script, &make->scripts ) install_script( make, script );
 
@@ -4632,22 +4633,19 @@ static void load_sources( struct makefile *make )
     make->is_exe     = strarray_exists( make->extradllflags, "-mconsole" ) ||
                        strarray_exists( make->extradllflags, "-mwindows" );
 
-    if (make->module)
+    /* add default install rules if nothing was specified */
+    for (i = 0; i < NB_INSTALL_RULES; i++) if (make->install[i].count) break;
+    if (i == NB_INSTALL_RULES && !make->extlib)
     {
-        /* add default install rules if nothing was specified */
-        for (i = 0; i < NB_INSTALL_RULES; i++) if (make->install[i].count) break;
-        if (i == NB_INSTALL_RULES && !make->extlib)
+        if (make->unixlib) strarray_add( &make->install[INSTALL_UNIXLIB], make->unixlib );
+        if (make->importlib) strarray_add( &make->install[INSTALL_DEV], make->importlib );
+        if (make->staticlib) strarray_add( &make->install[INSTALL_DEV], make->staticlib );
+        else if (make->module) strarray_add( &make->install[INSTALL_LIB], make->module );
+        for (arch = 1; arch < archs.count; arch++)
         {
-            if (make->unixlib) strarray_add( &make->install[INSTALL_UNIXLIB], make->unixlib );
-            if (make->importlib) strarray_add( &make->install[INSTALL_DEV], make->importlib );
-            if (make->staticlib) strarray_add( &make->install[INSTALL_DEV], make->staticlib );
-            else strarray_add( &make->install[INSTALL_LIB], make->module );
-            for (arch = 1; arch < archs.count; arch++)
-            {
-                char *module;
-                if (!(module = get_expanded_arch_var( make, "MODULE", arch ))) continue;
-                strarray_add( &make->install[INSTALL_LIB], module );
-            }
+            char *module;
+            if (!(module = get_expanded_arch_var( make, "MODULE", arch ))) continue;
+            strarray_add( &make->install[INSTALL_LIB], module );
         }
     }
 
