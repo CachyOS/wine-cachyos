@@ -2102,22 +2102,22 @@ static void handle_syscall_opcode( ucontext_t *sigcontext )
 
     TRACE_(seh)( "rax %#lx, rip %#lx.\n", (long)RAX_sig(sigcontext), (long)RIP_sig(sigcontext) );
 
-    frame->rip = RIP_sig(ucontext) + 0xb;
-    frame->rcx = RIP_sig(ucontext);
-    frame->eflags = EFL_sig(ucontext);
+    frame->rip = RIP_sig(sigcontext) + 0xb;
+    frame->rcx = RIP_sig(sigcontext);
+    frame->eflags = EFL_sig(sigcontext);
     frame->restore_flags = 0;
     if (instrumentation_callback) {
         frame->r10 = frame->rip;
         frame->restore_flags |= RESTORE_FLAGS_INSTRUMENTATION;
     }
-    RCX_sig(ucontext) = (ULONG_PTR)frame;
-    R11_sig(ucontext) = frame->eflags;
-    if (EFL_sig(ucontext) & 0x100)
+    RCX_sig(sigcontext) = (ULONG_PTR)frame;
+    R11_sig(sigcontext) = frame->eflags;
+    if (EFL_sig(sigcontext) & 0x100)
     {
-        EFL_sig(ucontext) &= ~0x100;  /* clear single-step flag */
+        EFL_sig(sigcontext) &= ~0x100;  /* clear single-step flag */
         frame->restore_flags |= CONTEXT_CONTROL;
     }
-    RIP_sig(ucontext) = (ULONG64)__wine_syscall_dispatcher_prolog_end_ptr;
+    RIP_sig(sigcontext) = (ULONG64)__wine_syscall_dispatcher_prolog_end_ptr;
 }
 
 
