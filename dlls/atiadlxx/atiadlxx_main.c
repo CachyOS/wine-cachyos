@@ -19,6 +19,8 @@
 
 #include "dxgi1_6.h"
 
+#include "dxvk_interfaces.h"
+
 #define MAX_GPUS 64
 #define VENDOR_AMD 0x1002
 
@@ -98,6 +100,45 @@ typedef struct ADLAdapterInfo {
     int iOSDisplayIndex;
 } ADLAdapterInfo, *LPADLAdapterInfo;
 
+typedef struct ADLAdapterInfoX2
+{
+    /// Size of the structure.
+    int iSize;
+    /// The ADL index handle. One GPU may be associated with one or two index handles
+    int iAdapterIndex;
+    /// The unique device ID associated with this adapter.
+    char strUDID[ADL_MAX_PATH];
+    /// The BUS number associated with this adapter.
+    int iBusNumber;
+    /// The driver number associated with this adapter.
+    int iDeviceNumber;
+    /// The function number.
+    int iFunctionNumber;
+    /// The vendor ID associated with this adapter.
+    int iVendorID;
+    /// Adapter name.
+    char strAdapterName[ADL_MAX_PATH];
+    /// Display name. For example, "\\\\Display0"
+    char strDisplayName[ADL_MAX_PATH];
+    /// Present or not; 1 if present and 0 if not present.It the logical adapter is present, the display name such as \\\\.\\Display1 can be found from OS
+    int iPresent;
+    /// Exist or not; 1 is exist and 0 is not present.
+    int iExist;
+    /// Driver registry path.
+    char strDriverPath[ADL_MAX_PATH];
+    /// Driver registry path Ext for.
+    char strDriverPathExt[ADL_MAX_PATH];
+    /// PNP string from Windows.
+    char strPNPString[ADL_MAX_PATH];
+    /// It is generated from EnumDisplayDevices.
+    int iOSDisplayIndex;
+    /// The bit mask identifies the adapter info
+    int iInfoMask;
+    /// The bit identifies the adapter info \ref define_adapter_info
+    int iInfoValue;
+} ADLAdapterInfoX2, *LPADLAdapterInfoX2;
+
+
 typedef struct ADLGraphicCoreInfo
 {
     int iGCGen;
@@ -159,6 +200,22 @@ typedef struct ADLMemoryInfo
     char strMemoryType[ADL_MAX_PATH];
     long long iMemoryBandwidth;
 } ADLMemoryInfo, *LPADLMemoryInfo;
+
+typedef struct ADLMemoryInfo2
+{
+	/// Memory size in bytes.
+	long long iMemorySize;
+	/// Memory type in string.
+	char strMemoryType[ADL_MAX_PATH];
+	/// Highest default performance level Memory bandwidth in Mbytes/s
+	long long iMemoryBandwidth;
+	/// HyperMemory size in bytes.
+	long long iHyperMemorySize;
+	/// Invisible Memory size in bytes.
+	long long iInvisibleMemorySize;
+	/// Visible Memory size in bytes.
+	long long iVisibleMemorySize;
+} ADLMemoryInfo2, *LPADLMemoryInfo2;
 
 typedef struct ADLDisplayTarget
 {
@@ -318,17 +375,94 @@ typedef struct ADLAdapterODClockInfo
     ADLODClockSetting sEngineClock;
 } ADLAdapterODClockInfo;
 
+typedef struct ADLOD6ParameterRange
+{
+    /// The starting value of the clock range
+    int     iMin;
+    /// The ending value of the clock range
+    int     iMax;
+    /// The minimum increment between clock values
+    int     iStep;
+} ADLOD6ParameterRange;
+
+typedef struct ADLOD6Capabilities
+{
+    /// Contains a bitmap of the OD6 capability flags.  Possible values: \ref ADL_OD6_CAPABILITY_SCLK_CUSTOMIZATION,
+    /// \ref ADL_OD6_CAPABILITY_MCLK_CUSTOMIZATION, \ref ADL_OD6_CAPABILITY_GPU_ACTIVITY_MONITOR
+    int     iCapabilities;
+    /// Contains a bitmap indicating the power states
+    /// supported by OD6.  Currently only the performance state
+    /// is supported. Possible Values: \ref ADL_OD6_SUPPORTEDSTATE_PERFORMANCE
+    int     iSupportedStates;
+    /// Number of levels. OD6 will always use 2 levels, which describe
+    /// the minimum to maximum clock ranges.
+    /// The 1st level indicates the minimum clocks, and the 2nd level
+    /// indicates the maximum clocks.
+    int     iNumberOfPerformanceLevels;
+    /// Contains the hard limits of the sclk range.  Overdrive
+    /// clocks cannot be set outside this range.
+    ADLOD6ParameterRange     sEngineClockRange;
+    /// Contains the hard limits of the mclk range.  Overdrive
+    /// clocks cannot be set outside this range.
+    ADLOD6ParameterRange     sMemoryClockRange;
+
+    /// Value for future extension
+    int     iExtValue;
+    /// Mask for future extension
+    int     iExtMask;
+} ADLOD6Capabilities;
+
+typedef struct ADLOD6PerformanceLevel
+{
+    /// Engine (core) clock.
+    int iEngineClock;
+    /// Memory clock.
+    int iMemoryClock;
+} ADLOD6PerformanceLevel;
+
+typedef struct ADLOD6StateInfo
+{
+    /// Number of levels.  OD6 uses clock ranges instead of discrete performance levels.
+    /// iNumberOfPerformanceLevels is always 2.  The 1st level indicates the minimum clocks
+    /// in the range.  The 2nd level indicates the maximum clocks in the range.
+    int     iNumberOfPerformanceLevels;
+
+    /// Value for future extension
+    int     iExtValue;
+    /// Mask for future extension
+    int     iExtMask;
+
+    /// Variable-sized array of levels.
+    /// The number of elements in the array is specified by iNumberofPerformanceLevels.
+    ADLOD6PerformanceLevel aLevels [1];
+} ADLOD6StateInfo;
+
+typedef struct ADLFreeSyncCap
+{
+    /// FreeSync capability flags. \ref define_freesync_caps
+    int iCaps;
+    /// Reports minimum FreeSync refresh rate supported by the display in micro hertz
+    int iMinRefreshRateInMicroHz;
+    /// Reports maximum FreeSync refresh rate supported by the display in micro hertz
+    int iMaxRefreshRateInMicroHz;
+    /// Index of FreeSync Label to use:  ADL_FREESYNC_LABEL_*
+    unsigned char ucLabelIndex;
+    /// Reserved
+    char cReserved[3];
+    int iReserved[4];
+} ADLFreeSyncCap;
+
 typedef unsigned int ADL_D3DKMT_HANDLE;
 
 static const ADLVersionsInfo version = {
     "99.19.02-230831a-396538C-AMD-Software-Adrenalin-Edition",
-    "",
+    "99.10",
     "http://support.amd.com/drivers/xml/driver_09_us.xml",
 };
 
 static const ADLVersionsInfoX2 version2 = {
     "99.19.02-230831a-396538C-AMD-Software-Adrenalin-Edition",
-    "",
+    "99.10",
     "99.10.2",
     "http://support.amd.com/drivers/xml/driver_09_us.xml",
 };
@@ -359,7 +493,7 @@ struct gpu
     LUID luid;
     char device_string[256];
     char device_path[256];
-    struct monitor *displays;
+    struct monitor **displays;
     UINT32 vendor_id;
     int display_count;
     int adapter_count;
@@ -393,7 +527,7 @@ static ADL_CONTEXT_HANDLE default_ctx;
 
 int CDECL ADL2_Main_Control_Destroy(ADL_CONTEXT_HANDLE ctx)
 {
-    int i;
+    int i, j;
 
     TRACE("ctx %p.\n", ctx);
 
@@ -401,7 +535,11 @@ int CDECL ADL2_Main_Control_Destroy(ADL_CONTEXT_HANDLE ctx)
     if (ctx == default_ctx) default_ctx = NULL;
 
     for (i = 0; i < ctx->gpu_count; ++i)
+    {
+        for (j = 0; j < ctx->gpus[i].display_count; j++)
+            free(ctx->gpus[i].displays[j]);
         free(ctx->gpus[i].displays);
+    }
 
     free(ctx->adapters);
     free(ctx->gpus);
@@ -527,14 +665,13 @@ static int init_info(ADL_CONTEXT_HANDLE ctx)
 
         for (j = 0; j < gpu->display_count; ++j)
         {
-            if (paths[i].targetInfo.id == gpu->displays[j].output_id) break;
+            if (paths[i].targetInfo.id == gpu->displays[j]->output_id) break;
         }
 
         if (j == gpu->display_count)
         {
             gpu->displays = realloc(gpu->displays, (gpu->display_count + 1) * sizeof(*gpu->displays));
-            display = &gpu->displays[gpu->display_count];
-            memset(display, 0, sizeof(*gpu->displays));
+            display = gpu->displays[gpu->display_count] = calloc(1, sizeof(**gpu->displays));
             display->output_id = paths[i].targetInfo.id;
             display->physical_adapter_index = gpu->first_adapter_index;
             display->logical_adapter_index = adapter - &ctx->adapters[0];
@@ -645,6 +782,12 @@ static int init_info(ADL_CONTEXT_HANDLE ctx)
                     i, display->display_name, display->logical_adapter_index,
                     ctx->adapters[i].gdi_device_name);
         }
+        else
+        {
+            TRACE("dxgi output found for display %d, %s, adapter %d, %s.\n",
+                i, display->display_name, display->logical_adapter_index,
+                ctx->adapters[i].gdi_device_name);
+        }
     }
     err = ADL_OK;
 
@@ -700,6 +843,13 @@ int CDECL ADL2_Adapter_NumberOfAdapters_Get(ADL_CONTEXT_HANDLE ctx, int *count)
     return ADL_OK;
 }
 
+int CDECL ADL2_Graphics_VersionsX3_Get(ADL_CONTEXT_HANDLE ptr, int adapter_index, ADLVersionsInfoX2 *ver)
+{
+    FIXME("ptr %p, index %d, ver %p semi-stub.\n", ptr, adapter_index, ver);
+    memcpy(ver, &version2, sizeof(version2));
+    return ADL_OK;
+}
+
 int CDECL ADL2_Graphics_VersionsX2_Get(ADL_CONTEXT_HANDLE ptr, ADLVersionsInfoX2 *ver)
 {
     TRACE("ptr %p, ver %p.\n", ptr, ver);
@@ -748,6 +898,11 @@ static int adapter_info_get(ADL_CONTEXT_HANDLE ctx, ADLAdapterInfo *adapters, in
         adapters[i].iSize = sizeof(ADLAdapterInfo);
         adapters[i].iAdapterIndex = i;
         adapters[i].iOSDisplayIndex = i;
+        adapters[i].iBusNumber = 0;
+        adapters[i].iFunctionNumber = 0;
+        adapters[i].iDeviceNumber = 0;
+        adapters[i].iExist = 1;
+        adapters[i].iPresent = 1;
 
         strcpy(buffer, ctx->adapters[i].gpu->device_path + 4);
         if ((p = strrchr(buffer, '#'))) *p = 0;
@@ -776,7 +931,7 @@ int CDECL ADL2_Adapter_AdapterInfo_Get(ADL_CONTEXT_HANDLE ctx, ADLAdapterInfo *a
     TRACE("ctx %p, adapters %p, input_size %d.\n", ctx, adapters, input_size);
 
     if (!adapters) return ADL_ERR_INVALID_PARAM;
-    if (input_size != default_ctx->adapter_count * sizeof(ADLAdapterInfo)) return ADL_ERR_INVALID_PARAM;
+    if (input_size != ctx->adapter_count * sizeof(ADLAdapterInfo)) return ADL_ERR_INVALID_PARAM;
 
     return adapter_info_get(ctx, adapters, input_size);
 }
@@ -792,6 +947,72 @@ int CDECL ADL2_Adapter_AdapterInfoX2_Get(ADL_CONTEXT_HANDLE ctx, ADLAdapterInfo 
 
     *info = ctx->malloc( ctx->adapter_count * sizeof(**info) );
     return adapter_info_get(ctx, *info, ctx->adapter_count * sizeof(**info));
+}
+
+static int adapter_infox2_get(ADL_CONTEXT_HANDLE ctx, ADLAdapterInfoX2 *adapters, int start_idx, int input_size)
+{
+    int i, count = input_size / sizeof(*adapters);
+    char buffer[256], *p;
+
+    memset(adapters, 0, input_size);
+
+    for (i = start_idx; i < count + start_idx; i++)
+    {
+        adapters[i].iSize = sizeof(ADLAdapterInfo);
+        adapters[i].iAdapterIndex = i;
+        adapters[i].iOSDisplayIndex = i;
+        adapters[i].iBusNumber = 0;
+        adapters[i].iFunctionNumber = 0;
+        adapters[i].iDeviceNumber = 0;
+        adapters[i].iExist = 1;
+        adapters[i].iPresent = 1;
+
+        strcpy(buffer, ctx->adapters[i].gpu->device_path + 4);
+        if ((p = strrchr(buffer, '#'))) *p = 0;
+        for (p = buffer; *p; ++p)
+            if (*p == '#') *p = '\\';
+        if (ctx->adapters[i].source_id)
+            sprintf(adapters[i].strPNPString, "%s&%02d", buffer, ctx->adapters[i].source_id + 1);
+        else
+            strcpy(adapters[i].strPNPString, buffer);
+        strcpy(adapters[i].strUDID, adapters[i].strPNPString);
+        for (p = adapters[i].strUDID; *p; ++p)
+            if (*p == '\\') *p = '_';
+        *p++ = 'A';
+        *p = 0;
+
+        adapters[i].iVendorID = convert_vendor_id(ctx->adapters[i].gpu->vendor_id);
+        strcpy(adapters[i].strAdapterName, ctx->adapters[i].gpu->device_string);
+        strcpy(adapters[i].strDisplayName, ctx->adapters[i].gdi_device_name);
+        strcpy(adapters[i].strDriverPath, ctx->adapters[i].driver_path);
+    }
+    return ADL_OK;
+}
+
+int CDECL ADL2_Adapter_AdapterInfoX4_Get(ADL_CONTEXT_HANDLE ctx, int adapter_index,
+                                         int *num_adapters, ADLAdapterInfoX2 **info)
+{
+    int num = 1, ret;
+    TRACE("ctx %p, index %d, num %p, info %p.\n", ctx, adapter_index, num_adapters, info);
+
+    if (adapter_index >= ctx->adapter_count) return ADL_ERR_INVALID_ADL_IDX;
+    if (adapter_index < 0)
+    {
+        adapter_index = 0;
+        num = ctx->adapter_count;
+    }
+
+    *info = ctx->malloc( num * sizeof(**info) );
+    ret = adapter_infox2_get(ctx, *info, adapter_index, num * sizeof(**info));
+    if (num_adapters) *num_adapters = num;
+
+    return ret;
+}
+
+int CDECL ADL_Adapter_AdapterInfoX2_Get(ADLAdapterInfo **info)
+{
+    TRACE("info %p.\n", info);
+    return ADL2_Adapter_AdapterInfoX2_Get(default_ctx, info);
 }
 
 int CDECL ADL2_Adapter_Active_Get(ADL_CONTEXT_HANDLE ctx, int adapter_index, int *status)
@@ -822,11 +1043,11 @@ int CDECL ADL2_Display_DisplayInfo_Get(ADL_CONTEXT_HANDLE ctx, int adapter_index
 
     for (i = 0; i < *num_displays; i++)
     {
-        (*info)[i].displayID.iDisplayLogicalAdapterIndex = gpu->displays[i].logical_adapter_index;
+        (*info)[i].displayID.iDisplayLogicalAdapterIndex = gpu->displays[i]->logical_adapter_index;
         (*info)[i].displayID.iDisplayLogicalIndex = i;
-        (*info)[i].displayID.iDisplayPhysicalAdapterIndex = gpu->displays[i].physical_adapter_index;
+        (*info)[i].displayID.iDisplayPhysicalAdapterIndex = gpu->displays[i]->physical_adapter_index;
         (*info)[i].displayID.iDisplayPhysicalIndex = i;
-        strcpy((*info)[i].strDisplayName, gpu->displays[i].display_name);
+        strcpy((*info)[i].strDisplayName, gpu->displays[i]->display_name);
         (*info)[i].iDisplayType = 2 /* ADL_DT_LCD_PANEL */;
         (*info)[i].iDisplayOutputType = 4 /* ADL_DOT_DIGITAL */;
         (*info)[i].iDisplayInfoValue = ADL_DISPLAY_DISPLAYINFO_DISPLAYCONNECTED | ADL_DISPLAY_DISPLAYINFO_DISPLAYMAPPED;
@@ -861,7 +1082,7 @@ int CDECL ADL2_Display_DDCInfo2_Get(ADL_CONTEXT_HANDLE ctx, int adapter_index, i
     if (adapter_index >= ctx->adapter_count) return ADL_ERR_INVALID_PARAM;
     gpu = ctx->adapters[adapter_index].gpu;
     if (display_index >= gpu->display_count) return ADL_OK;
-    display = &gpu->displays[display_index];
+    display = gpu->displays[display_index];
 
     desc = &display->dxgi_output_desc;
     info->ulSupportsDDC = 1;
@@ -908,6 +1129,16 @@ int CDECL ADL_Adapter_Crossfire_Get(int adapter_index, ADLCrossfireComb *comb, A
 {
     FIXME("adapter %d, comb %p, info %p, stub!\n", adapter_index, comb, info);
     return ADL_ERR;
+}
+
+int CDECL ADL2_Adapter_Primary_Get(ADL_CONTEXT_HANDLE ctx, int *idx)
+{
+    FIXME("%p %p stub!\n", ctx, idx);
+
+    if (!ctx || !idx) return ADL_ERR_INVALID_PARAM;
+
+    *idx = 0;
+    return ADL_OK;
 }
 
 int CDECL ADL2_Adapter_ASICFamilyType_Get(ADL_CONTEXT_HANDLE ctx, int adapter_index, int *asic_type, int *valids)
@@ -994,6 +1225,20 @@ int CDECL ADL_Adapter_ObservedClockInfo_Get(int adapter_index, int *core_clock, 
     return ADL2_Adapter_ObservedClockInfo_Get(default_ctx, adapter_index, core_clock, memory_clock);
 }
 
+int CDECL ADL_Adapter_ObservedGameClockInfo_Get(ADL_CONTEXT_HANDLE ctx, int adapter_index, int *base_clock,
+                                                int *game_clock, int *boost_clock, int *memory_clock)
+{
+    int ret;
+    FIXME("%p %d %p %p %p %p semi-stub\n", ctx, adapter_index, base_clock, game_clock, boost_clock, memory_clock);
+
+    if (!ctx || !base_clock || !game_clock || !boost_clock || !memory_clock) return ADL_ERR;
+
+    ret = ADL2_Adapter_ObservedClockInfo_Get(ctx, adapter_index, base_clock, memory_clock);
+    *game_clock = *boost_clock = *base_clock;
+
+    return ret;
+}
+
 
 int CDECL ADL2_Adapter_Graphic_Core_Info_Get(ADL_CONTEXT_HANDLE context, int adapter_index, ADLGraphicCoreInfo *info)
 {
@@ -1019,6 +1264,26 @@ int CDECL ADL2_Adapter_MemoryInfo_Get(ADL_CONTEXT_HANDLE ctx, int adapter_index,
 
     mem_info->iMemorySize = ctx->adapters[adapter_index].gpu->dxgi_adapter_desc.DedicatedVideoMemory;
     mem_info->iMemoryBandwidth = 256000; /* not exposed on Linux, probably needs a lookup table */
+
+    TRACE("iMemoryBandwidth %s, iMemorySize %s\n",
+            wine_dbgstr_longlong(mem_info->iMemoryBandwidth),
+            wine_dbgstr_longlong(mem_info->iMemorySize));
+    return ADL_OK;
+}
+
+/* documented in the "Linux Specific APIs" section, present and used on Windows */
+int CDECL ADL2_Adapter_MemoryInfo2_Get(ADL_CONTEXT_HANDLE ctx, int adapter_index, ADLMemoryInfo2 *mem_info)
+{
+    FIXME("ctx %p, adapter %d, mem_info %p stub.\n", ctx, adapter_index, mem_info);
+
+    if (mem_info == NULL) return ADL_ERR_NULL_POINTER;
+    if (adapter_index >= ctx->adapter_count) return ADL_ERR_INVALID_ADL_IDX;
+    if (ctx->adapters[adapter_index].gpu->vendor_id != VENDOR_AMD) return ADL_ERR;
+
+    mem_info->iMemorySize = ctx->adapters[adapter_index].gpu->dxgi_adapter_desc.DedicatedVideoMemory;
+    /* not exposed on Linux, probably needs a lookup table */
+    mem_info->iMemoryBandwidth = 256000;
+    strcpy(mem_info->strMemoryType, "GDDR6");
 
     TRACE("iMemoryBandwidth %s, iMemorySize %s\n",
             wine_dbgstr_longlong(mem_info->iMemoryBandwidth),
@@ -1065,8 +1330,9 @@ int CDECL ADL_Graphics_Platform_Get(int *platform)
     return ADL2_Graphics_Platform_Get(default_ctx, platform);
 }
 
-int CDECL ADL2_Display_DisplayMapConfig_Get(ADL_CONTEXT_HANDLE ctx, int adapter_index, int *display_map_count, ADLDisplayMap **display_maps,
-        int *display_target_count, ADLDisplayTarget **display_targets, int options)
+int CDECL ADL2_Display_DisplayMapConfig_Get(ADL_CONTEXT_HANDLE ctx, int adapter_index, int *display_map_count,
+                                            ADLDisplayMap **display_maps, int *display_target_count,
+                                            ADLDisplayTarget **display_targets, int options)
 {
     struct gpu *gpu;
     int i;
@@ -1077,6 +1343,8 @@ int CDECL ADL2_Display_DisplayMapConfig_Get(ADL_CONTEXT_HANDLE ctx, int adapter_
             display_targets, options);
 
     if (adapter_index >= ctx->adapter_count) return ADL_ERR_INVALID_ADL_IDX;
+    /* FIXME: not yet supported */
+    if (adapter_index < 0) return ADL_ERR;
     gpu = ctx->adapters[adapter_index].gpu;
     if (!gpu->display_count) return ADL_ERR_NOT_SUPPORTED;
     *display_map_count = gpu->display_count;
@@ -1089,24 +1357,26 @@ int CDECL ADL2_Display_DisplayMapConfig_Get(ADL_CONTEXT_HANDLE ctx, int adapter_
     for (i = 0; i < gpu->display_count; ++i)
     {
         ADLMode *m = (ADLMode *)&(*display_maps)[i].displayMode;
-        DISPLAYCONFIG_SOURCE_MODE *dc_mode = &gpu->displays[i].mode;
+        DISPLAYCONFIG_SOURCE_MODE *dc_mode = &gpu->displays[i]->mode;
 
-        (*display_maps)[i].iDisplayMapIndex = gpu->displays[i].logical_adapter_index;
+        (*display_maps)[i].iDisplayMapIndex = gpu->displays[i]->logical_adapter_index;
         (*display_maps)[i].iNumDisplayTarget = 1;
         (*display_maps)[i].iFirstDisplayTargetArrayIndex = i;
         (*display_maps)[i].iDisplayMapMask = 0xf;
         (*display_maps)[i].iDisplayMapValue = 0x4; /* ADL_DISPLAY_DISPLAYMAP_MANNER_SINGLE */
 
-        m->displayID.iDisplayLogicalAdapterIndex = gpu->displays[i].logical_adapter_index;
+        m->displayID.iDisplayLogicalAdapterIndex = gpu->displays[i]->logical_adapter_index;
         m->displayID.iDisplayLogicalIndex = i;
-        m->iAdapterIndex = gpu->displays[i].logical_adapter_index;
+        m->displayID.iDisplayPhysicalIndex = i;
+        m->displayID.iDisplayPhysicalAdapterIndex = gpu->displays[i]->physical_adapter_index;
+        m->iAdapterIndex = gpu->displays[i]->logical_adapter_index;
         m->iXPos = dc_mode->position.x;
         m->iYPos = dc_mode->position.y;
         m->iXRes = dc_mode->width;
         m->iYRes = dc_mode->height;
         m->iColourDepth = 32;
-        m->fRefreshRate = (float)gpu->displays[i].refresh_rate.Numerator / gpu->displays[i].refresh_rate.Denominator;
-        m->iOrientation = (gpu->displays[i].rotation - 1) * 90;
+        m->fRefreshRate = (float)gpu->displays[i]->refresh_rate.Numerator / gpu->displays[i]->refresh_rate.Denominator;
+        m->iOrientation = (gpu->displays[i]->rotation - 1) * 90;
         m->iModeMask = 0xff;
         m->iModeValue = 0x46;
 
@@ -1128,6 +1398,76 @@ int CDECL ADL_Display_DisplayMapConfig_Get(int adapter_index, int *display_map_c
 
     return ADL2_Display_DisplayMapConfig_Get(default_ctx, adapter_index, display_map_count, display_maps,
             display_target_count, display_targets, options);
+}
+
+int CDECL ADL2_Display_Modes_Get(ADL_CONTEXT_HANDLE ctx, int adapter_index, int display_index,
+                                 int *num_modes, ADLMode **modes)
+{
+    int i, j;
+    struct gpu *gpu;
+    TRACE("ctx %p adapter_index %d display_index %d num_modes %p modes %p\n", ctx,
+          adapter_index, display_index, num_modes, modes);
+
+    if (!num_modes || !modes) return ADL_ERR_INVALID_PARAM;
+    /* FIXME: not yet supported */
+    if (adapter_index < 0) return ADL_ERR;
+    gpu = ctx->adapters[adapter_index].gpu;
+    if (display_index >= gpu->display_count) return ADL_ERR_INVALID_ADL_IDX;
+
+    *num_modes = 0;
+
+    for (i = 0; i < gpu->display_count; i++)
+    {
+        if (i != display_index && display_index != -1) continue;
+        (*num_modes)++;
+    }
+
+    *modes = ctx->malloc(*num_modes * sizeof(**modes));
+    if (!*modes) return ADL_ERR;
+
+    for (i = j = 0; i < gpu->display_count; i++)
+    {
+        struct monitor *display = gpu->displays[i];
+        ADLMode *m;
+
+        if (i != display_index && display_index != -1) continue;
+
+        m = &(*modes)[j++];
+        m->displayID.iDisplayLogicalAdapterIndex = display->logical_adapter_index;
+        m->displayID.iDisplayLogicalIndex = i;
+        m->displayID.iDisplayPhysicalAdapterIndex = display->physical_adapter_index;
+        m->displayID.iDisplayPhysicalIndex = i;
+
+        m->iAdapterIndex = display->logical_adapter_index;
+        m->fRefreshRate = (float)display->refresh_rate.Numerator / display->refresh_rate.Denominator;
+        m->iXRes = display->mode.width;
+        m->iYRes = display->mode.height;
+        m->iXPos = display->mode.position.x;
+        m->iYPos = display->mode.position.y;
+        m->iOrientation = (display->rotation - 1) * 90;
+        m->iColourDepth = 32;
+        m->iModeMask = 0xff;
+        m->iModeValue = 0x46;
+    }
+
+    return ADL_OK;
+}
+
+int CDECL ADL_Display_Modes_Get(int adapter_index, int display_index, int *num_modes, ADLMode **modes)
+{
+    return ADL2_Display_Modes_Get(default_ctx, adapter_index, display_index, num_modes, modes);
+}
+
+int CDECL ADL2_Display_FreeSync_Cap(ADL_CONTEXT_HANDLE ctx, int adapter_index, int display_index, ADLFreeSyncCap *caps)
+{
+    FIXME("ctx %p adapter_index %d display_index %d caps %p stub!\n", ctx, adapter_index, display_index, caps);
+
+    return ADL_ERR;
+}
+
+int CDECL ADL_Display_FreeSync_Cap(int adapter_index, int display_index, ADLFreeSyncCap *caps)
+{
+    return ADL2_Display_FreeSync_Cap(default_ctx, adapter_index, display_index, caps);
 }
 
 int CDECL ADL_Display_MVPUStatus_Get(int adapter_index, ADLMVPUStatus *mvpu_status)
@@ -1171,10 +1511,163 @@ int CDECL ADL2_Overdrive_Caps(ADL_CONTEXT_HANDLE ctx, int adapter_index, int *su
     return ADL_ERR_NOT_SUPPORTED;
 }
 
+int CDECL ADL_Overdrive_Caps(int adapter_index, int *supported, int *enabled, int *version)
+{
+    return ADL2_Overdrive_Caps(default_ctx, adapter_index, supported, enabled, version);
+}
+
+int CDECL ADL2_Overdrive6_Capabilities_Get(ADL_CONTEXT_HANDLE ctx, int adapter_index, ADLOD6Capabilities *caps)
+{
+    FIXME("ctx %p adapter_index %d caps %p stub!\n", ctx, adapter_index, caps);
+
+    return ADL_ERR;
+}
+
+int CDECL ADL2_Overdrive6_StateInfo_Get(ADL_CONTEXT_HANDLE ctx, int adapter_index, int type, ADLOD6StateInfo *info)
+{
+    FIXME("ctx %p adapter_index %d type %d info %p stub!\n", ctx, adapter_index, type, info);
+
+    return ADL_ERR;
+}
+
 int CDECL ADL2_OverdriveN_Temperature_Get(ADL_CONTEXT_HANDLE ctx, int adapter_index, int type, int *temperature)
 {
     FIXME("ctx %p, adapter_index %d, type %d, temperature %p.\n", ctx, adapter_index, type, temperature);
 
     *temperature = 65000; /* 65C */
     return ADL_OK;
+}
+
+int CDECL ADL2_Display_SLSMapIndex_Get(ADL_CONTEXT_HANDLE ctx, int adapter_index, int num_display_target,
+                                       ADLDisplayTarget *display_target, int *sls_index)
+{
+    FIXME("ctx %p adapter_index %d num_display_target %d display_target %p sls_index %p stub!\n",
+          ctx, adapter_index, num_display_target, display_target, sls_index);
+
+    if (!ctx || !display_target || !sls_index) return ADL_ERR_INVALID_PARAM;
+
+    *sls_index = 0;
+
+    return ADL_OK;
+}
+
+int CDECL ADL_Display_SLSMapIndex_Get(int adapter_index, int num_display_target,
+                                      ADLDisplayTarget *display_target, int *sls_index)
+{
+    TRACE("adapter_index %d num_display_target %d display_target %p sls_index %p\n",
+          adapter_index, num_display_target, display_target, sls_index);
+
+    return ADL2_Display_SLSMapIndex_Get(default_ctx, adapter_index, num_display_target, display_target, sls_index);
+}
+
+/* undocumented structure */
+typedef struct
+{
+    UINT32 unk; /* 0x0: AGS sets this to 2 */
+    UINT32 tf; /* 0x4: transfer function ADL_TF_* */
+    UINT32 colorspace; /* 0x8: ADL_CS_* */
+    UINT32 reserved; /* 0xc: (padding) */
+    double chromaticityGreenX; /* 0x10 -> local_a8[4-5] (local_a8 is uint*) */
+    double chromaticityGreenY; /* 0x18 -> local_a8[6-7] */
+    double chromaticityBlueX; /* 0x20 -> local_a8[8-9] */
+    double chromaticityBlueY; /* 0x28 -> local_a8[10-0xb] */
+    double chromaticityRedX; /* 0x30 -> local_a8[0xc-0xd] */
+    double chromaticityRedY; /* 0x38 -> local_a8[0xe-0xf] */
+    double chromaticityWhiteX; /* 0x40 -> local_a8[0x10-0x11] */
+    double chromaticityWhiteY; /* 0x48 -> local_a8[0x12-0x13] */
+    double minLuminance; /* 0x50 -> local_a8[0x14-0x15] */
+    double maxLuminance; /* 0x58 -> local_a8[0x16-0x17] */
+    double maxContentLightLevel; /* 0x60 -> local_a8[0x18-0x19] */
+    double maxFrameAverageLightLevel; /* 0x68 -> local_a8[0x1a-0x1b] */
+    UINT32 disableLocalDimming; /* 0x70 -> local_a8[0x1c] */
+} ADLSourceContentAttributes;
+
+int CDECL ADL2_Display_SourceContentAttribute_Set(ADL_CONTEXT_HANDLE ptr, int adapter_index, int display_index,
+                                                  ADLSourceContentAttributes *attributes)
+{
+    HMODULE dxgi;
+    typeof(CreateDXGIFactory1) *pCreateDXGIFactory1;
+    DXGI_COLOR_SPACE_TYPE colorspace;
+    DXGI_HDR_METADATA_HDR10 metadata;
+    IDXGIVkInteropFactory1 *dxgi_interop = NULL;
+    IDXGIFactory1 *factory;
+    struct gpu *gpu;
+    int ret = ADL_OK;
+    TRACE("ctx %p adapter %d display %d attr %p\n", ptr, adapter_index, display_index, attributes);
+
+    if (adapter_index >= ptr->adapter_count) return ADL_ERR_INVALID_ADL_IDX;
+    gpu = ptr->adapters[adapter_index].gpu;
+    if (gpu->display_count >= display_index) return ADL_ERR_INVALID_ADL_IDX;
+
+    if (attributes->unk != 2)
+    {
+        FIXME("unk was not 2!\n");
+        return ADL_ERR;
+    }
+
+    if (!(dxgi = LoadLibraryW(L"dxgi.dll"))) return ADL_ERR;
+
+    if (!(pCreateDXGIFactory1 = (void *)GetProcAddress(dxgi, "CreateDXGIFactory1")))
+    {
+        ERR("Could not find CreateDXGIFactory1.\n");
+        return ADL_ERR;
+    }
+
+    if (FAILED(pCreateDXGIFactory1(&IID_IDXGIFactory1, (void**)&factory)))
+        return ADL_ERR;
+
+    if (FAILED(IDXGIFactory1_QueryInterface(factory, &IID_IDXGIVkInteropFactory1, (void**)&dxgi_interop)))
+    {
+        WARN("Failed to get IDXGIVkInteropFactory1.\n");
+        ret = ADL_ERR;
+        goto done;
+    }
+
+    /* we can only support a limited number of colorspace + tf combinations */
+    if (attributes->colorspace == ADL_CS_BT2020 && attributes->tf == ADL_TF_PQ2084)
+        colorspace = DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+    else if (attributes->colorspace == ADL_CS_scRGB_MS_REF && attributes->tf == ADL_TF_LINEAR_0_125)
+        colorspace = DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
+    else
+    {
+        colorspace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+        if (attributes->colorspace != ADL_CS_sRGB || attributes->tf != ADL_TF_sRGB)
+            FIXME("Unknown colorspace %u, tf %u\n", attributes->colorspace, attributes->tf);
+    }
+
+    metadata.RedPrimary[0] = attributes->chromaticityRedX * 50000;
+    metadata.RedPrimary[1] = attributes->chromaticityRedY * 50000;
+    metadata.GreenPrimary[0] = attributes->chromaticityGreenX * 50000;
+    metadata.GreenPrimary[1] = attributes->chromaticityGreenY * 50000;
+    metadata.BluePrimary[0] = attributes->chromaticityBlueX * 50000;
+    metadata.BluePrimary[1] = attributes->chromaticityBlueY * 50000;
+    metadata.WhitePoint[0] = attributes->chromaticityWhiteX * 50000;
+    metadata.WhitePoint[1] = attributes->chromaticityWhiteY * 50000;
+    metadata.MaxContentLightLevel = attributes->maxContentLightLevel;
+    metadata.MaxFrameAverageLightLevel = attributes->maxFrameAverageLightLevel;
+    metadata.MaxMasteringLuminance = attributes->maxLuminance;
+    metadata.MinMasteringLuminance = attributes->minLuminance / 0.0001f;
+
+    /* FIXME: we have no way of respecting the display index, but the AGS implementation has the same limitation */
+    if (FAILED(IDXGIVkInteropFactory1_SetGlobalHDRState(dxgi_interop, colorspace, &metadata)))
+        ret = ADL_ERR;
+
+done:
+    if (dxgi_interop) IDXGIVkInteropFactory1_Release(dxgi_interop);
+    IDXGIFactory1_Release(factory);
+    FreeLibrary(dxgi);
+    return ret;
+}
+
+int CDECL ADL_Display_SourceContentAttribute_Set(int adapter_index, int display_index,
+                                                 ADLSourceContentAttributes *attributes)
+{
+    return ADL2_Display_SourceContentAttribute_Set(default_ctx, adapter_index, display_index, attributes);
+}
+
+int CDECL ADL2_ApplicationProfiles_HitListsX3_Get(ADL_CONTEXT_HANDLE ctx, int list_type, int *num_apps, void **list)
+{
+    FIXME("%p %d %p %p stub!\n", ctx, list_type, num_apps, list);
+
+    return ADL_ERR;
 }

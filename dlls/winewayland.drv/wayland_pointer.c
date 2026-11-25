@@ -2,6 +2,7 @@
  * Wayland pointer handling
  *
  * Copyright (c) 2020 Alexandros Frantzis for Collabora Ltd
+ * Copyright (c) 2026 Etaash Mathamsetty
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -34,7 +35,7 @@
 #include "waylanddrv.h"
 #include "wine/debug.h"
 
-WINE_DEFAULT_DEBUG_CHANNEL(waylanddrv);
+WINE_DEFAULT_DEBUG_CHANNEL(cursor);
 
 /* The cursor-shape-v1 protocol file references the zwp_tablet_tool_v2
  * interface object. Since we don't currently use the tablet protocol,
@@ -121,12 +122,24 @@ static HWND wayland_pointer_get_focused_hwnd(void)
     return hwnd;
 }
 
+static void wayland_pointer_reset_frame(void)
+{
+    struct wayland_pointer_frame *frame = &process_wayland.pointer.frame;
+
+    frame->dx = frame->dy = 0.0;
+    frame->dx_raw = frame->dy_raw = 0.0;
+    frame->horz_scroll = frame->scroll = 0.0;
+    frame->horz_axis = frame->axis = 0.0;
+    frame->flags = 0;
+}
+
 static void pointer_handle_motion_internal(wl_fixed_t sx, wl_fixed_t sy)
 {
-    INPUT input = {0};
+    struct wayland_pointer *pointer = &process_wayland.pointer;
+    struct wayland_pointer_frame *frame = &pointer->frame;
     RECT *window_rect;
     HWND hwnd;
-    POINT screen;
+    POINT screen = { wl_fixed_to_double(sx), wl_fixed_to_double(sy) };
     struct wayland_surface *surface;
     struct wayland_win_data *data;
 
@@ -140,10 +153,7 @@ static void pointer_handle_motion_internal(wl_fixed_t sx, wl_fixed_t sy)
 
     window_rect = &surface->window.rect;
 
-    wayland_surface_coords_to_window(surface,
-                                     wl_fixed_to_double(sx),
-                                     wl_fixed_to_double(sy),
-                                     (int *)&screen.x, (int *)&screen.y);
+    screen = map_point_from_surface(surface, screen);
     screen.x += window_rect->left;
     screen.y += window_rect->top;
     /* Sometimes, due to rounding, we may end up with pointer coordinates
@@ -155,16 +165,17 @@ static void pointer_handle_motion_internal(wl_fixed_t sx, wl_fixed_t sy)
 
     wayland_win_data_release(data);
 
-    input.type = INPUT_MOUSE;
-    input.mi.dx = screen.x;
-    input.mi.dy = screen.y;
-    input.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE;
+    pthread_mutex_lock(&pointer->mutex);
+
+    frame->x = screen.x;
+    frame->y = screen.y;
+    frame->flags |= WAYLAND_POINTER_FRAME_ABSOLUTE;
+
+    pthread_mutex_unlock(&pointer->mutex);
 
     TRACE("hwnd=%p wayland_xy=%.2f,%.2f screen_xy=%d,%d\n",
           hwnd, wl_fixed_to_double(sx), wl_fixed_to_double(sy),
           screen.x, screen.y);
-
-    NtUserSendHardwareInput(hwnd, 0, &input, 0);
 }
 
 static void pointer_handle_motion(void *data, struct wl_pointer *wl_pointer,
@@ -172,13 +183,14 @@ static void pointer_handle_motion(void *data, struct wl_pointer *wl_pointer,
 {
     struct wayland_pointer *pointer = &process_wayland.pointer;
 
-    /* Ignore absolute motion events if in relative mode. */
-    if (pointer->zwp_relative_pointer_v1) return;
+    /* If the pointer is locked then it may not respect the win32u position */
+    if (pointer->zwp_locked_pointer_v1) return;
 
     pointer_handle_motion_internal(sx, sy);
 }
 
 static void wayland_set_cursor(HWND hwnd, HCURSOR hcursor, BOOL use_hcursor);
+static void pointer_handle_frame(void *data, struct wl_pointer *wl_pointer);
 
 static void pointer_handle_enter(void *data, struct wl_pointer *wl_pointer,
                                  uint32_t serial, struct wl_surface *wl_surface,
@@ -201,6 +213,8 @@ static void pointer_handle_enter(void *data, struct wl_pointer *wl_pointer,
     pointer->enter_serial = serial;
     pthread_mutex_unlock(&pointer->mutex);
 
+    wayland_pointer_reset_frame();
+
     /* The cursor is undefined at every enter, so we set it again with
      * the latest information we have. */
     wayland_set_cursor(hwnd, NULL, FALSE);
@@ -209,6 +223,7 @@ static void pointer_handle_enter(void *data, struct wl_pointer *wl_pointer,
      * window first appears beneath the pointer and won't get a separate
      * motion event. */
     pointer_handle_motion_internal(sx, sy);
+    pointer_handle_frame(NULL, pointer->wl_pointer);
 }
 
 static void pointer_handle_leave(void *data, struct wl_pointer *wl_pointer,
@@ -239,6 +254,7 @@ static void pointer_handle_button(void *data, struct wl_pointer *wl_pointer,
     InterlockedExchange(&process_wayland.input_serial, serial);
 
     if (!(hwnd = wayland_pointer_get_focused_hwnd())) return;
+    if (wayland_is_overlay_active()) return;
 
     input.type = INPUT_MOUSE;
 
@@ -270,15 +286,119 @@ static void pointer_handle_button(void *data, struct wl_pointer *wl_pointer,
     TRACE("hwnd=%p button=%#x state=%u\n", hwnd, button, state);
 
     NtUserSendHardwareInput(hwnd, 0, &input, 0);
+    wayland_refresh_activation_token(hwnd);
 }
 
-static void pointer_handle_axis(void *data, struct wl_pointer *wl_pointer,
+static void pointer_handle_axis(void *user_data, struct wl_pointer *wl_pointer,
                                 uint32_t time, uint32_t axis, wl_fixed_t value)
 {
+    HWND hwnd;
+    struct wayland_pointer *pointer = &process_wayland.pointer;
+    struct wayland_pointer_frame *frame = &pointer->frame;
+    /* on KWin one tick is 15.0 of whatever unit this is */
+    double scroll = wl_fixed_to_double(value) / 15.0;
+
+    if (!(hwnd = wayland_pointer_get_focused_hwnd())) return;
+
+    switch (axis)
+    {
+        case WL_POINTER_AXIS_VERTICAL_SCROLL:
+            frame->axis += -scroll * WHEEL_DELTA;
+            frame->flags |= WAYLAND_POINTER_FRAME_AXIS;
+            break;
+        case WL_POINTER_AXIS_HORIZONTAL_SCROLL:
+            frame->horz_axis += scroll * WHEEL_DELTA;
+            frame->flags |= WAYLAND_POINTER_FRAME_AXIS_HORZ;
+            break;
+        default: break;
+    }
+
+    TRACE("hwnd %p scroll %.3f\n", hwnd, scroll);
 }
 
 static void pointer_handle_frame(void *data, struct wl_pointer *wl_pointer)
 {
+    INPUT input = {0};
+    HWND hwnd;
+    struct wayland_pointer *pointer = &process_wayland.pointer;
+    struct wayland_pointer_frame *frame = &pointer->frame;
+
+    if (!(hwnd = wayland_pointer_get_focused_hwnd())) return;
+
+    TRACE("hwnd %p\n", hwnd);
+
+    input.type = INPUT_MOUSE;
+    input.mi.dwFlags = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE;
+
+    if (frame->flags & WAYLAND_POINTER_FRAME_ABSOLUTE)
+    {
+        input.mi.dx = frame->x;
+        input.mi.dy = frame->y;
+        NtUserSendHardwareInput(hwnd, SEND_HWMSG_NO_RAW, &input, 0);
+    }
+
+    input.mi.dwFlags &= ~MOUSEEVENTF_ABSOLUTE;
+
+    if (frame->flags & WAYLAND_POINTER_FRAME_RELATIVE)
+    {
+        input.mi.dx = round(frame->dx);
+        input.mi.dy = round(frame->dy);
+        frame->dx -= input.mi.dx;
+        frame->dy -= input.mi.dy;
+        if (input.mi.dx != 0 || input.mi.dy != 0)
+            NtUserSendHardwareInput(hwnd, SEND_HWMSG_NO_RAW, &input, 0);
+
+        input.mi.dx = round(frame->dx_raw);
+        input.mi.dy = round(frame->dy_raw);
+        frame->dx_raw -= input.mi.dx;
+        frame->dy_raw -= input.mi.dy;
+        if (input.mi.dx != 0 || input.mi.dy != 0)
+            NtUserSendHardwareInput(0, SEND_HWMSG_NO_MSG, &input, 0);
+    }
+
+    input.mi.dwFlags = MOUSEEVENTF_WHEEL;
+    input.mi.dx = input.mi.dy = 0;
+
+    if (frame->flags & WAYLAND_POINTER_FRAME_DISCRETE_WHEEL)
+    {
+        input.mi.mouseData = frame->scroll;
+        if (input.mi.mouseData)
+            NtUserSendHardwareInput(hwnd, 0, &input, 0);
+    }
+    else if (frame->flags & WAYLAND_POINTER_FRAME_AXIS)
+    {
+        /* many apps cannot handle high resolution scrolling */
+        input.mi.mouseData = trunc(frame->axis / WHEEL_DELTA) * WHEEL_DELTA;
+        frame->axis -= (int)input.mi.mouseData;
+        if (input.mi.mouseData)
+            NtUserSendHardwareInput(hwnd, 0, &input, 0);
+    }
+
+    input.mi.dwFlags = MOUSEEVENTF_HWHEEL;
+
+    if (frame->flags & WAYLAND_POINTER_FRAME_DISCRETE_WHEEL_HORZ)
+    {
+        input.mi.mouseData = frame->horz_scroll;
+        if (input.mi.mouseData)
+            NtUserSendHardwareInput(hwnd, 0, &input, 0);
+    }
+    else if (frame->flags & WAYLAND_POINTER_FRAME_AXIS_HORZ)
+    {
+        /* many apps cannot handle high resolution scrolling */
+        input.mi.mouseData = trunc(frame->horz_axis / WHEEL_DELTA) * WHEEL_DELTA;
+        frame->horz_axis -= (int)input.mi.mouseData;
+        if (input.mi.mouseData)
+            NtUserSendHardwareInput(hwnd, 0, &input, 0);
+    }
+
+    if (frame->flags & WAYLAND_POINTER_FRAME_AXIS_STOP)
+        frame->axis = 0.0;
+
+    if (frame->flags & WAYLAND_POINTER_FRAME_AXIS_HORZ_STOP)
+        frame->horz_axis = 0.0;
+
+    frame->flags = 0;
+    frame->scroll = frame->horz_scroll = 0;
 }
 
 static void pointer_handle_axis_source(void *data, struct wl_pointer *wl_pointer,
@@ -289,34 +409,56 @@ static void pointer_handle_axis_source(void *data, struct wl_pointer *wl_pointer
 static void pointer_handle_axis_stop(void *data, struct wl_pointer *wl_pointer,
                                      uint32_t time, uint32_t axis)
 {
+    struct wayland_pointer *pointer = &process_wayland.pointer;
+    struct wayland_pointer_frame *frame = &pointer->frame;
+    HWND hwnd;
+
+    if (!(hwnd = wayland_pointer_get_focused_hwnd())) return;
+
+    switch (axis)
+    {
+        case WL_POINTER_AXIS_HORIZONTAL_SCROLL:
+            frame->flags |= WAYLAND_POINTER_FRAME_AXIS_HORZ_STOP;
+            break;
+        case WL_POINTER_AXIS_VERTICAL_SCROLL:
+            frame->flags |= WAYLAND_POINTER_FRAME_AXIS_STOP;
+            break;
+        default: break;
+    }
+
+    TRACE("hwnd %p axis %u\n", hwnd, axis);
+}
+
+static void pointer_handle_axis_value120(void *data, struct wl_pointer *wl_pointer,
+                                         uint32_t axis, int32_t value120)
+{
+    struct wayland_pointer *pointer = &process_wayland.pointer;
+    struct wayland_pointer_frame *frame = &pointer->frame;
+    HWND hwnd;
+
+    if (!value120) return;
+    if (!(hwnd = wayland_pointer_get_focused_hwnd())) return;
+
+    switch (axis)
+    {
+        case WL_POINTER_AXIS_VERTICAL_SCROLL:
+            frame->flags |= WAYLAND_POINTER_FRAME_DISCRETE_WHEEL;
+            frame->scroll += -value120;
+            break;
+        case WL_POINTER_AXIS_HORIZONTAL_SCROLL:
+            frame->flags |= WAYLAND_POINTER_FRAME_DISCRETE_WHEEL_HORZ;
+            frame->horz_scroll += value120;
+            break;
+        default: break;
+    }
+
+    TRACE("hwnd=%p axis=%u value120=%d\n", hwnd, axis, value120);
 }
 
 static void pointer_handle_axis_discrete(void *data, struct wl_pointer *wl_pointer,
                                          uint32_t axis, int32_t discrete)
 {
-    INPUT input = {0};
-    HWND hwnd;
-
-    if (!(hwnd = wayland_pointer_get_focused_hwnd())) return;
-
-    input.type = INPUT_MOUSE;
-
-    switch (axis)
-    {
-    case WL_POINTER_AXIS_VERTICAL_SCROLL:
-        input.mi.dwFlags = MOUSEEVENTF_WHEEL;
-        input.mi.mouseData = -WHEEL_DELTA * discrete;
-        break;
-    case WL_POINTER_AXIS_HORIZONTAL_SCROLL:
-        input.mi.dwFlags = MOUSEEVENTF_HWHEEL;
-        input.mi.mouseData = WHEEL_DELTA * discrete;
-        break;
-    default: break;
-    }
-
-    TRACE("hwnd=%p axis=%u discrete=%d\n", hwnd, axis, discrete);
-
-    NtUserSendHardwareInput(hwnd, 0, &input, 0);
+    pointer_handle_axis_value120(data, wl_pointer, axis, WHEEL_DELTA * discrete);
 }
 
 static const struct wl_pointer_listener pointer_listener =
@@ -329,7 +471,10 @@ static const struct wl_pointer_listener pointer_listener =
     pointer_handle_frame,
     pointer_handle_axis_source,
     pointer_handle_axis_stop,
-    pointer_handle_axis_discrete
+    pointer_handle_axis_discrete,
+#ifdef WL_POINTER_AXIS_VALUE120_SINCE_VERSION
+    pointer_handle_axis_value120
+#endif
 };
 
 /**********************************************************************
@@ -345,17 +490,38 @@ static void wayland_motion_delta_to_window(struct wayland_surface *surface,
     *window_y = surface_y * surface->window.scale;
 }
 
+/* Some compositors seem to have broken rawinput so allow users to disable/adjust sensitivity */
+static double get_rawinput_scale(void)
+{
+    static double cached = -1.0;
+    const char *env;
+
+    if (cached != -1.0) return cached;
+
+    cached = 1.0;
+    if ((env = getenv("WAYLANDDRV_RAWINPUT")))
+    {
+        /* an invalid value would return 0, disabling rawinput */
+        cached = strtod(env, NULL);
+        if (cached < 0) cached = 0;
+    }
+
+    return cached;
+}
+
 static void relative_pointer_v1_relative_motion(void *private,
                                                 struct zwp_relative_pointer_v1 *zwp_relative_pointer_v1,
                                                 uint32_t utime_hi, uint32_t utime_lo,
                                                 wl_fixed_t dx, wl_fixed_t dy,
                                                 wl_fixed_t dx_unaccel, wl_fixed_t dy_unaccel)
 {
-    INPUT input = {0};
     HWND hwnd;
     struct wayland_win_data *data;
     double screen_x = 0.0, screen_y = 0.0;
+    double raw_x = 0.0, raw_y = 0.0;
+    double scale = get_rawinput_scale();
     struct wayland_pointer *pointer = &process_wayland.pointer;
+    struct wayland_pointer_frame *frame = &pointer->frame;
 
     if (!(hwnd = wayland_pointer_get_focused_hwnd())) return;
     if (!(data = wayland_win_data_get(hwnd))) return;
@@ -366,26 +532,25 @@ static void relative_pointer_v1_relative_motion(void *private,
                                    &screen_x, &screen_y);
     wayland_win_data_release(data);
 
-    pthread_mutex_lock(&pointer->mutex);
+    if (scale > 0.0)
+    {
+        raw_x = wl_fixed_to_double(dx_unaccel) * scale;
+        raw_y = wl_fixed_to_double(dy_unaccel) * scale;
+    }
+    else
+    {
+        raw_x = screen_x;
+        raw_y = screen_y;
+    }
 
-    pointer->accum_x += screen_x;
-    pointer->accum_y += screen_y;
+    frame->dx_raw += raw_x;
+    frame->dy_raw += raw_y;
+    frame->dx += screen_x;
+    frame->dy += screen_y;
+    frame->flags |= WAYLAND_POINTER_FRAME_RELATIVE;
 
-    input.type = INPUT_MOUSE;
-    input.mi.dx = round(pointer->accum_x);
-    input.mi.dy = round(pointer->accum_y);
-    input.mi.dwFlags = MOUSEEVENTF_MOVE;
-
-    pointer->accum_x -= input.mi.dx;
-    pointer->accum_y -= input.mi.dy;
-
-    pthread_mutex_unlock(&pointer->mutex);
-
-    TRACE("hwnd=%p wayland_dxdy=%.2f,%.2f accum_dxdy=%d,%d\n",
-          hwnd, wl_fixed_to_double(dx), wl_fixed_to_double(dy),
-          input.mi.dx, input.mi.dy);
-
-    NtUserSendHardwareInput(hwnd, 0, &input, 0);
+    TRACE("hwnd=%p screen=%.2f,%.2f raw=%.2f,%.2f accum=%.2f,%.2f\n",
+          hwnd, screen_x, screen_y, raw_x, raw_y, frame->dx_raw, frame->dy_raw);
 }
 
 static const struct zwp_relative_pointer_v1_listener relative_pointer_v1_listener =
@@ -401,8 +566,22 @@ void wayland_pointer_init(struct wl_pointer *wl_pointer)
     pointer->wl_pointer = wl_pointer;
     pointer->focused_hwnd = NULL;
     pointer->enter_serial = 0;
+    if (process_wayland.zwp_relative_pointer_manager_v1)
+    {
+        pointer->zwp_relative_pointer_v1 =
+            zwp_relative_pointer_manager_v1_get_relative_pointer(
+                process_wayland.zwp_relative_pointer_manager_v1,
+                pointer->wl_pointer);
+    }
     pthread_mutex_unlock(&pointer->mutex);
+
     wl_pointer_add_listener(pointer->wl_pointer, &pointer_listener, NULL);
+    if (pointer->zwp_relative_pointer_v1)
+    {
+        zwp_relative_pointer_v1_add_listener(pointer->zwp_relative_pointer_v1,
+                                             &relative_pointer_v1_listener,
+                                             NULL);
+    }
 }
 
 void wayland_pointer_deinit(void)
@@ -444,31 +623,29 @@ void wayland_pointer_deinit(void)
  *
  * Adapted from wineandroid.drv code.
  */
-static struct wayland_shm_buffer *create_mono_cursor_buffer(HBITMAP bmp)
+static struct wayland_shm_buffer *create_mono_cursor_buffer(
+                HBITMAP bmp, int width, int height)
 {
     struct wayland_shm_buffer *shm_buffer = NULL;
-    BITMAP bm;
     char *mask = NULL;
     unsigned int i, j, stride, mask_size, *ptr;
 
-    if (!NtGdiExtGetObjectW(bmp, sizeof(bm), &bm)) goto done;
-    stride = ((bm.bmWidth + 15) >> 3) & ~1;
-    mask_size = stride * bm.bmHeight;
+    stride = ((width + 15) >> 3) & ~1;
+    mask_size = stride * height * 2;
     if (!(mask = malloc(mask_size))) goto done;
     if (!NtGdiGetBitmapBits(bmp, mask_size, mask)) goto done;
 
-    bm.bmHeight /= 2;
-    shm_buffer = wayland_shm_buffer_create(bm.bmWidth, bm.bmHeight,
+    shm_buffer = wayland_shm_buffer_create(width, height,
                                            WL_SHM_FORMAT_ARGB8888);
     if (!shm_buffer) goto done;
 
     ptr = shm_buffer->map_data;
-    for (i = 0; i < bm.bmHeight; i++)
+    for (i = 0; i < height; i++)
     {
-        for (j = 0; j < bm.bmWidth; j++, ptr++)
+        for (j = 0; j < width; j++, ptr++)
         {
             int and = ((mask[i * stride + j / 8] << (j % 8)) & 0x80);
-            int xor = ((mask[(i + bm.bmHeight) * stride + j / 8] << (j % 8)) & 0x80);
+            int xor = ((mask[(i + height) * stride + j / 8] << (j % 8)) & 0x80);
             if (!xor && and)
                 *ptr = 0;
             else if (xor && !and)
@@ -482,6 +659,91 @@ static struct wayland_shm_buffer *create_mono_cursor_buffer(HBITMAP bmp)
 done:
     free(mask);
     return shm_buffer;
+}
+
+/* Adapted from winex11.drv */
+static struct wayland_shm_buffer *create_color_cursor_buffer(
+                HDC hdc, HCURSOR hcursor, DWORD istep,
+                unsigned int *delay_ms, HBITMAP color,
+                unsigned char *color_bits, int color_size,
+                HBITMAP mask, unsigned char *mask_bits, int mask_size,
+                int width, int height)
+{
+    struct wayland_shm_buffer *shm_buffer;
+    DWORD delay_jiffies, num_frames;
+    BOOL has_alpha = FALSE;
+    unsigned int *ptr;
+    int i, j;
+
+    if (NtUserGetCursorFrameInfo(hcursor, istep, &delay_jiffies, &num_frames))
+        *delay_ms = (100 * delay_jiffies) / 6;
+    else
+    {
+        WARN("Failed to get delay for frame %d\n", istep);
+        *delay_ms = 100;
+    }
+
+    shm_buffer = wayland_shm_buffer_create(width, height, WL_SHM_FORMAT_ARGB8888);
+    if (!shm_buffer) return NULL;
+
+    ptr = shm_buffer->map_data;
+
+    /* draw the cursor frame to a temporary buffer */
+    memset(color_bits, 0, color_size);
+    NtGdiSelectBitmap(hdc, color);
+    if (!NtUserDrawIconEx(hdc, 0, 0, hcursor, width, height, istep, NULL, DI_NORMAL))
+    {
+        WARN("Could not draw frame %d\n", istep);
+        goto fail;
+    }
+    memcpy(ptr, color_bits, color_size);
+
+    /* check if the cursor frame was drawn with an alpha channel */
+    for (i = 0; i < width * height; i++)
+        if ((has_alpha = (ptr[i] & 0xff000000) != 0)) break;
+
+    /* if no alpha channel was drawn then generate it from the mask */
+    if (!has_alpha)
+    {
+        unsigned int width_bytes = (width + 31) / 32 * 4;
+
+        /* draw the cursor mask to a temporary buffer */
+        memset(mask_bits, 0xff, mask_size);
+        NtGdiSelectBitmap(hdc, mask);
+        if (!NtUserDrawIconEx(hdc, 0, 0, hcursor, width, height, istep, NULL, DI_MASK))
+        {
+            WARN("Failed to draw frame mask %d.\n", istep);
+            goto fail;
+        }
+        for (i = 0; i < height; i++)
+        {
+            for (j = 0; j < width; j++)
+            {
+                if (!((mask_bits[i * width_bytes + j / 8] << (j % 8)) & 0x80))
+                    ptr[i * width + j] |= 0xff000000;
+            }
+        }
+    }
+
+    /* Wayland requires pre-multiplied alpha values */
+    for (i = 0; i < width * height; i++)
+    {
+        unsigned char alpha = ptr[i] >> 24;
+        if (alpha == 0) ptr[i] = 0;
+        else if (alpha != 255)
+        {
+            ptr[i] = (alpha << 24) |
+                     (((BYTE)(ptr[i] >> 16) * alpha / 255) << 16) |
+                     (((BYTE)(ptr[i] >> 8) * alpha / 255) << 8) |
+                     (((BYTE)ptr[i] * alpha / 255));
+        }
+    }
+
+    return shm_buffer;
+
+fail:
+    wayland_shm_buffer_unref(shm_buffer);
+    return NULL;
 }
 
 /***********************************************************************
@@ -521,72 +783,158 @@ static BOOL cursor_buffer_is_transparent(struct wayland_shm_buffer *shm_buffer)
     return TRUE;
 }
 
+static void wayland_pointer_clear_cursor_frames(void)
+{
+    struct wayland_cursor *cursor = &process_wayland.pointer.cursor;
+
+    if (!cursor->frames) return;
+
+    for (unsigned int i = 0; i < cursor->frame_cnt; i++)
+    {
+        if (!cursor->frames[i].shm_buffer) continue;
+        wayland_shm_buffer_unref(cursor->frames[i].shm_buffer);
+        cursor->frames[i].shm_buffer = NULL;
+    }
+
+    free(cursor->frames);
+    cursor->frames = NULL;
+    cursor->frame_idx = cursor->frame_cnt = 0;
+}
+
 static void wayland_pointer_update_cursor_buffer(HCURSOR hcursor, double scale)
 {
     struct wayland_cursor *cursor = &process_wayland.pointer.cursor;
+    struct wayland_shm_buffer *shm_buffer = NULL;
+    DWORD delay_jiffies, num_frames, clear = 1;
     ICONINFOEXW info = {0};
+    BITMAP bm;
 
-    if (!hcursor) goto clear_cursor;
+    wayland_pointer_clear_cursor_frames();
 
-    /* Create a new buffer for the specified cursor. */
-    if (cursor->shm_buffer)
-    {
-        wayland_shm_buffer_unref(cursor->shm_buffer);
-        cursor->shm_buffer = NULL;
-    }
-
+    if (!hcursor) return;
     if (!get_icon_info(hcursor, &info))
     {
         ERR("Failed to get icon info for cursor=%p\n", hcursor);
+        return;
+    }
+
+    if (!info.hbmColor) num_frames = 1;
+    else if (!NtUserGetCursorFrameInfo(hcursor, 0, &delay_jiffies, &num_frames))
+    {
+        ERR("Failed to get frame info for cursor=%p\n", hcursor);
         goto clear_cursor;
     }
+
+    if (!NtGdiExtGetObjectW(info.hbmMask, sizeof(bm), &bm)) goto clear_cursor;
+    if (!info.hbmColor) bm.bmHeight = max(1, bm.bmHeight / 2);
+
+    if (!(cursor->frames = calloc(num_frames, sizeof(*cursor->frames)))) goto clear_cursor;
+    cursor->frame_cnt = num_frames;
 
     if (info.hbmColor)
     {
         HDC hdc = NtGdiCreateCompatibleDC(0);
-        cursor->shm_buffer =
-            wayland_shm_buffer_from_color_bitmaps(hdc, info.hbmColor, info.hbmMask);
+        unsigned char *color_bits, *mask_bits;
+        int color_size, mask_size;
+        DWORD transparent = 0;
+        char buffer[FIELD_OFFSET(BITMAPINFO, bmiColors[256])];
+        BITMAPINFO *bm_info = (BITMAPINFO *)buffer;
+        HBITMAP color, mask;
+
+        bm_info->bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bm_info->bmiHeader.biWidth = bm.bmWidth;
+        bm_info->bmiHeader.biHeight = -bm.bmHeight;
+        bm_info->bmiHeader.biPlanes = 1;
+        bm_info->bmiHeader.biCompression = BI_RGB;
+        bm_info->bmiHeader.biXPelsPerMeter = 0;
+        bm_info->bmiHeader.biYPelsPerMeter = 0;
+        bm_info->bmiHeader.biClrUsed = 0;
+        bm_info->bmiHeader.biClrImportant = 0;
+        bm_info->bmiHeader.biBitCount = 32;
+        color_size = bm.bmWidth * bm.bmHeight * 4;
+        bm_info->bmiHeader.biSizeImage = color_size;
+
+        color = NtGdiCreateDIBSection(hdc, NULL, 0, bm_info, DIB_RGB_COLORS,
+                                      0, 0, 0, (void **)&color_bits);
+        if (!color)
+        {
+            ERR("Failed to create DIB section for cursor color data!\n");
+            NtGdiDeleteObjectApp(hdc);
+            goto clear_cursor;
+        }
+
+        bm_info->bmiHeader.biBitCount = 1;
+        bm_info->bmiColors[0].rgbRed      = 0;
+        bm_info->bmiColors[0].rgbGreen    = 0;
+        bm_info->bmiColors[0].rgbBlue     = 0;
+        bm_info->bmiColors[0].rgbReserved = 0;
+        bm_info->bmiColors[1].rgbRed      = 0xff;
+        bm_info->bmiColors[1].rgbGreen    = 0xff;
+        bm_info->bmiColors[1].rgbBlue     = 0xff;
+        bm_info->bmiColors[1].rgbReserved = 0;
+
+        /* width_bytes * height */
+        mask_size = ((bm.bmWidth + 31) / 32 * 4) * bm.bmHeight;
+        bm_info->bmiHeader.biSizeImage = mask_size;
+
+        mask = NtGdiCreateDIBSection(hdc, NULL, 0, bm_info, DIB_RGB_COLORS,
+                                     0, 0, 0, (void **)&mask_bits);
+        if (!mask)
+        {
+            ERR("Failed to create DIB section for cursor mask data!\n");
+            NtGdiDeleteObjectApp(color);
+            NtGdiDeleteObjectApp(hdc);
+            goto clear_cursor;
+        }
+
+        for (DWORD istep = 0; istep < num_frames; istep++)
+        {
+            unsigned int delay_ms;
+            shm_buffer = create_color_cursor_buffer(hdc, hcursor, istep, &delay_ms,
+                                                    color, color_bits, color_size,
+                                                    mask, mask_bits, mask_size,
+                                                    bm.bmWidth, bm.bmHeight);
+            if (!shm_buffer)
+            {
+                ERR("Failed to create shm_buffer for cursor=%p\n", hcursor);
+                break;
+            }
+            if (cursor_buffer_is_transparent(shm_buffer)) transparent++;
+            cursor->frames[istep].shm_buffer = shm_buffer;
+            cursor->frames[istep].delay_ms = delay_ms;
+        }
+        NtGdiDeleteObjectApp(color);
+        NtGdiDeleteObjectApp(mask);
         NtGdiDeleteObjectApp(hdc);
+
+        if (!shm_buffer || num_frames == transparent) goto clear_cursor;
     }
     else
     {
-        cursor->shm_buffer = create_mono_cursor_buffer(info.hbmMask);
+        if (!(shm_buffer = create_mono_cursor_buffer(info.hbmMask, bm.bmWidth, bm.bmHeight)))
+            goto clear_cursor;
+        cursor->frames[0].shm_buffer = shm_buffer;
+        cursor->frames[0].delay_ms = -1;
+        if (cursor_buffer_is_transparent(shm_buffer)) goto clear_cursor;
     }
-
-    if (info.hbmColor) NtGdiDeleteObjectApp(info.hbmColor);
-    if (info.hbmMask) NtGdiDeleteObjectApp(info.hbmMask);
 
     cursor->hotspot_x = info.xHotspot;
     cursor->hotspot_y = info.yHotspot;
 
-    if (!cursor->shm_buffer)
-    {
-        ERR("Failed to create shm_buffer for cursor=%p\n", hcursor);
-        goto clear_cursor;
-    }
-
-    if (cursor_buffer_is_transparent(cursor->shm_buffer))
-        goto clear_cursor;
-
     /* Make sure the hotspot is valid. */
-    if (cursor->hotspot_x >= cursor->shm_buffer->width ||
-        cursor->hotspot_y >= cursor->shm_buffer->height)
+    if (cursor->hotspot_x >= bm.bmWidth || cursor->hotspot_y >= bm.bmHeight)
     {
-        cursor->hotspot_x = cursor->shm_buffer->width / 2;
-        cursor->hotspot_y = cursor->shm_buffer->height / 2;
+        cursor->hotspot_x = bm.bmWidth / 2;
+        cursor->hotspot_y = bm.bmHeight / 2;
     }
 
     cursor->hotspot_x = round(cursor->hotspot_x / scale);
     cursor->hotspot_y = round(cursor->hotspot_y / scale);
-
-    return;
-
+    clear = 0;
 clear_cursor:
-    if (cursor->shm_buffer)
-    {
-        wayland_shm_buffer_unref(cursor->shm_buffer);
-        cursor->shm_buffer = NULL;
-    }
+    if (info.hbmColor) NtGdiDeleteObjectApp(info.hbmColor);
+    if (info.hbmMask) NtGdiDeleteObjectApp(info.hbmMask);
+    if (clear) wayland_pointer_clear_cursor_frames();
 }
 
 static void wayland_pointer_clear_cursor_surface(void)
@@ -603,18 +951,67 @@ static void wayland_pointer_clear_cursor_surface(void)
         wl_surface_destroy(cursor->wl_surface);
         cursor->wl_surface = NULL;
     }
-    if (cursor->shm_buffer)
-    {
-        wayland_shm_buffer_unref(cursor->shm_buffer);
-        cursor->shm_buffer = NULL;
-    }
+    wayland_pointer_clear_cursor_frames();
 }
 
-static void wayland_pointer_update_cursor_surface(double scale)
+static void wayland_cursor_handle_frame(void *data, struct wl_callback *callback, uint32_t time_ms);
+
+static struct wl_callback_listener pointer_callback_listener =
+{
+    wayland_cursor_handle_frame
+};
+
+static void wayland_cursor_handle_frame(void *data, struct wl_callback *callback, uint32_t time_ms)
+{
+    struct wayland_pointer *pointer = &process_wayland.pointer;
+    struct wayland_cursor *cursor = &pointer->cursor;
+    struct wayland_cursor_frame *frame, *prev;
+    uint32_t deadline;
+
+    pthread_mutex_lock(&pointer->mutex);
+    frame = &cursor->frames[cursor->frame_idx];
+    if (cursor->frame_idx) prev = &cursor->frames[cursor->frame_idx - 1];
+    else prev = &cursor->frames[cursor->frame_cnt - 1];
+    /* the cursor texture was updated or is invalid */
+    if (cursor->frame_id != (ULONG_PTR)data || !frame || !prev) goto skip;
+    if (cursor->last_timestamp == -1) deadline = 0;
+    else deadline = cursor->last_timestamp + prev->delay_ms;
+
+    TRACE("time=%u deadline=%u\n", time_ms, deadline);
+
+    if (time_ms >= deadline)
+    {
+        uint32_t new_deadline = deadline;
+        wl_surface_attach(cursor->wl_surface, frame->shm_buffer->wl_buffer, 0, 0);
+        wl_surface_damage_buffer(cursor->wl_surface, 0, 0,
+                                 frame->shm_buffer->width,
+                                 frame->shm_buffer->height);
+        /* Advance to the next frame, skipping over any frames
+         * we missed the deadline for. */
+        do
+        {
+            cursor->frame_idx = (cursor->frame_idx + 1) % cursor->frame_cnt;
+            if (!(frame = &cursor->frames[cursor->frame_idx])) goto skip;
+            new_deadline += frame->delay_ms;
+        }
+        while (deadline && time_ms >= new_deadline);
+        cursor->last_timestamp = time_ms;
+    }
+    /* trigger callback for the next frame */
+    callback = wl_surface_frame(cursor->wl_surface);
+    wl_callback_add_listener(callback, &pointer_callback_listener, data);
+    wl_surface_commit(cursor->wl_surface);
+skip:
+    pthread_mutex_unlock(&pointer->mutex);
+}
+
+static void wayland_pointer_init_cursor_surface(double scale)
 {
     struct wayland_cursor *cursor = &process_wayland.pointer.cursor;
+    struct wayland_cursor_frame *frame = &cursor->frames[0];
 
-    if (!cursor->shm_buffer) goto clear_cursor;
+    if (!frame || !frame->shm_buffer || !cursor->frame_cnt)
+        goto clear_cursor;
 
     if (!cursor->wl_surface)
     {
@@ -639,20 +1036,33 @@ static void wayland_pointer_update_cursor_surface(double scale)
         }
     }
 
+    /* set the last timestamp to something invalid so we don't delay the first frame */
+    cursor->last_timestamp = -1;
+    cursor->frame_id++;
+
     /* Commit the cursor buffer to the cursor surface. */
     wl_surface_attach(cursor->wl_surface,
-                      cursor->shm_buffer->wl_buffer, 0, 0);
+                      frame->shm_buffer->wl_buffer, 0, 0);
     wl_surface_damage_buffer(cursor->wl_surface, 0, 0,
-                             cursor->shm_buffer->width,
-                             cursor->shm_buffer->height);
+                             frame->shm_buffer->width,
+                             frame->shm_buffer->height);
     /* Setting only the viewport is enough, but some compositors don't
-     * support wp_viewport for cursor surfaces, so also set the buffer
-     * scale. Note that setting the viewport destination overrides
-     * the buffer scale, so it's fine to set both. */
+        * support wp_viewport for cursor surfaces, so also set the buffer
+        * scale. Note that setting the viewport destination overrides
+        * the buffer scale, so it's fine to set both. */
     wl_surface_set_buffer_scale(cursor->wl_surface, round(scale));
     wp_viewport_set_destination(cursor->wp_viewport,
-                                round(cursor->shm_buffer->width / scale),
-                                round(cursor->shm_buffer->height / scale));
+                                round(frame->shm_buffer->width / scale),
+                                round(frame->shm_buffer->height / scale));
+
+    /* this will recommit the first frame when the callback fires */
+    if (cursor->frame_cnt > 1)
+    {
+        struct wl_callback *callback = wl_surface_frame(cursor->wl_surface);
+        wl_callback_add_listener(callback, &pointer_callback_listener,
+                                 (void *)cursor->frame_id);
+    }
+
     wl_surface_commit(cursor->wl_surface);
 
     return;
@@ -707,8 +1117,8 @@ static BOOL wayland_pointer_set_cursor_shape(HCURSOR hcursor)
     enum wp_cursor_shape_device_v1_shape shape = 0;
     uint32_t proto_version;
 
-    if (!process_wayland.wp_cursor_shape_manager_v1) return FALSE;
     if (!hcursor) return FALSE;
+    if (!process_wayland.wp_cursor_shape_manager_v1) return FALSE;
     if (!get_icon_info(hcursor, &info)) return FALSE;
     proto_version = wp_cursor_shape_manager_v1_get_version(
         process_wayland.wp_cursor_shape_manager_v1);
@@ -749,8 +1159,15 @@ static void wayland_set_cursor(HWND hwnd, HCURSOR hcursor, BOOL use_hcursor)
     struct wayland_pointer *pointer = &process_wayland.pointer;
     struct wayland_surface *surface;
     struct wayland_win_data *data;
+    ICONINFOEXW info = {0};
     double scale;
     BOOL reapply_clip = FALSE;
+
+    if (use_hcursor && hcursor && !get_icon_info(hcursor, &info))
+    {
+        ERR("Failed to get icon info for cursor=%p\n", hcursor);
+        use_hcursor = FALSE;
+    }
 
     if ((data = wayland_win_data_get(hwnd)))
     {
@@ -759,8 +1176,10 @@ static void wayland_set_cursor(HWND hwnd, HCURSOR hcursor, BOOL use_hcursor)
             wayland_win_data_release(data);
             return;
         }
-        scale = surface->window.scale;
+        scale = (double)NtUserGetWinMonitorDpi(hwnd, MDT_RAW_DPI) / NtUserGetDpiForWindow(hwnd);
+        scale *= surface->window.scale;
         if (use_hcursor) surface->hcursor = hcursor;
+        /* this hcursor must always be valid due to above */
         else hcursor = surface->hcursor;
         use_hcursor = TRUE;
         wayland_win_data_release(data);
@@ -774,14 +1193,14 @@ static void wayland_set_cursor(HWND hwnd, HCURSOR hcursor, BOOL use_hcursor)
     if (pointer->focused_hwnd == hwnd)
     {
         if ((!use_hcursor && pointer->wp_cursor_shape_device_v1) ||
-            (use_hcursor && hcursor && wayland_pointer_set_cursor_shape(hcursor)))
+            (use_hcursor && wayland_pointer_set_cursor_shape(hcursor)))
         {
             wayland_pointer_clear_cursor_surface();
         }
         else
         {
             if (use_hcursor) wayland_pointer_update_cursor_buffer(hcursor, scale);
-            wayland_pointer_update_cursor_surface(scale);
+            wayland_pointer_init_cursor_surface(scale);
             wl_pointer_set_cursor(pointer->wl_pointer,
                                   pointer->enter_serial,
                                   pointer->cursor.wl_surface,
@@ -823,66 +1242,33 @@ static void wayland_surface_calc_confine(struct wayland_surface *surface,
         return;
     }
 
-    OffsetRect(&window_clip,
-               -surface->window.rect.left,
-               -surface->window.rect.top);
-    wayland_surface_coords_from_window(surface,
-                                       window_clip.left, window_clip.top,
-                                       (int *)&confine->left, (int *)&confine->top);
-    wayland_surface_coords_from_window(surface,
-                                       window_clip.right, window_clip.bottom,
-                                       (int *)&confine->right, (int *)&confine->bottom);
-}
-
-/**********************************************************************
- *          wayland_surface_client_covers_vscreen
- *
- * Whether a surface window client area covers the whole virtual screen.
- */
-static BOOL wayland_surface_client_covers_vscreen(struct wayland_surface *surface)
-{
-    RECT vscreen_rect, rect;
-
-    /* Get individual system metrics to get coords in thread dpi
-     * (NtUserGetVirtualScreenRect would return values in system dpi). */
-    vscreen_rect.left = NtUserGetSystemMetrics(SM_XVIRTUALSCREEN);
-    vscreen_rect.top = NtUserGetSystemMetrics(SM_YVIRTUALSCREEN);
-    vscreen_rect.right = vscreen_rect.left +
-                         NtUserGetSystemMetrics(SM_CXVIRTUALSCREEN);
-    vscreen_rect.bottom = vscreen_rect.top +
-                          NtUserGetSystemMetrics(SM_CYVIRTUALSCREEN);
-
-    /* FIXME: surface->window.client_rect is in window dpi, whereas
-     * vscreen_rect is in thread dpi. */
-    intersect_rect(&rect, &surface->window.client_rect, &vscreen_rect);
-
-    return EqualRect(&vscreen_rect, &rect);
+    OffsetRect(&window_clip, -surface->window.rect.left, -surface->window.rect.top);
+    *confine = map_rect_to_surface(surface, window_clip);
 }
 
 /***********************************************************************
  *           wayland_pointer_update_constraint
  *
- *  Enables/disables pointer confinement.
+ *  Enables/disables pointer confinement. Returns true if a wl_surface commit is needed.
  */
-static void wayland_pointer_update_constraint(struct wl_surface *wl_surface,
+static BOOL wayland_pointer_update_constraint(struct wl_surface *wl_surface,
                                               RECT *confine_rect,
-                                              BOOL covers_vscreen,
+                                              POINT *position_hint,
                                               BOOL force_lock)
 {
     struct wayland_pointer *pointer = &process_wayland.pointer;
-    BOOL needs_relative, needs_lock, needs_confine, is_visible;
+    BOOL needs_lock, needs_confine, is_visible, ret = FALSE;
     static unsigned int once;
 
     if (!process_wayland.zwp_pointer_constraints_v1)
     {
-        if (!once++)
-            ERR("This function requires zwp_pointer_constraints_v1\n");
-        return;
+        if (!once++) ERR("This function requires zwp_pointer_constraints_v1\n");
+        return FALSE;
     }
 
     is_visible = pointer->cursor.wl_surface || pointer->wp_cursor_shape_device_v1;
     needs_lock = wl_surface &&
-                 (((confine_rect || covers_vscreen) && !is_visible) || force_lock) &&
+                 ((confine_rect && !is_visible) || force_lock) &&
                  pointer->wl_pointer;
     needs_confine = wl_surface && confine_rect && is_visible && !force_lock &&
                     pointer->wl_pointer;
@@ -893,6 +1279,7 @@ static void wayland_pointer_update_constraint(struct wl_surface *wl_surface,
         zwp_confined_pointer_v1_destroy(pointer->zwp_confined_pointer_v1);
         pointer->zwp_confined_pointer_v1 = NULL;
         pointer->constraint_hwnd = NULL;
+        ret = TRUE;
     }
 
     if (!needs_lock && pointer->zwp_locked_pointer_v1)
@@ -901,6 +1288,7 @@ static void wayland_pointer_update_constraint(struct wl_surface *wl_surface,
         zwp_locked_pointer_v1_destroy(pointer->zwp_locked_pointer_v1);
         pointer->zwp_locked_pointer_v1 = NULL;
         pointer->constraint_hwnd = NULL;
+        ret = TRUE;
     }
 
     if (needs_confine)
@@ -912,6 +1300,9 @@ static void wayland_pointer_update_constraint(struct wl_surface *wl_surface,
         wl_region_add(region, confine_rect->left, confine_rect->top,
                       confine_rect->right - confine_rect->left,
                       confine_rect->bottom - confine_rect->top);
+
+        TRACE("Confining to hwnd=%p rect=%s\n",
+              pointer->constraint_hwnd, wine_dbgstr_rect(confine_rect));
 
         if (!pointer->zwp_confined_pointer_v1 || pointer->constraint_hwnd != hwnd)
         {
@@ -932,17 +1323,15 @@ static void wayland_pointer_update_constraint(struct wl_surface *wl_surface,
                                                region);
         }
 
-        TRACE("Confining to hwnd=%p wayland=%d,%d+%d,%d\n",
-              pointer->constraint_hwnd,
-              confine_rect->left, confine_rect->top,
-              confine_rect->right - confine_rect->left,
-              confine_rect->bottom - confine_rect->top);
-
         wl_region_destroy(region);
+        ret = TRUE;
     }
     else if (needs_lock)
     {
         HWND hwnd = wl_surface_get_user_data(wl_surface);
+
+        TRACE("Locking to hwnd=%p, position_hint=%s\n", pointer->constraint_hwnd,
+              wine_dbgstr_point(position_hint));
 
         if (!pointer->zwp_locked_pointer_v1 || pointer->constraint_hwnd != hwnd)
         {
@@ -956,42 +1345,26 @@ static void wayland_pointer_update_constraint(struct wl_surface *wl_surface,
                     NULL,
                     ZWP_POINTER_CONSTRAINTS_V1_LIFETIME_PERSISTENT);
             pointer->constraint_hwnd = hwnd;
-            TRACE("Locking to hwnd=%p\n", pointer->constraint_hwnd);
+            ret = TRUE;
+        }
+
+        if (position_hint)
+        {
+            zwp_locked_pointer_v1_set_cursor_position_hint(
+                pointer->zwp_locked_pointer_v1,
+                wl_fixed_from_int(position_hint->x),
+                wl_fixed_from_int(position_hint->y));
+            ret = TRUE;
         }
     }
 
-    if (!process_wayland.zwp_relative_pointer_manager_v1)
-    {
-        if (!once++)
-            ERR("zwp_relative_pointer_manager_v1 isn't supported, skipping relative motion\n");
-        return;
-    }
-
-    needs_relative = !is_visible && pointer->constraint_hwnd &&
-                     pointer->constraint_hwnd == pointer->focused_hwnd;
-
-    if (needs_relative && !pointer->zwp_relative_pointer_v1)
-    {
-        pointer->accum_x = pointer->accum_y = 0;
-        pointer->zwp_relative_pointer_v1 =
-            zwp_relative_pointer_manager_v1_get_relative_pointer(
-                process_wayland.zwp_relative_pointer_manager_v1,
-                pointer->wl_pointer);
-        zwp_relative_pointer_v1_add_listener(pointer->zwp_relative_pointer_v1,
-                                             &relative_pointer_v1_listener, NULL);
-        TRACE("Enabling relative motion\n");
-    }
-    else if (!needs_relative && pointer->zwp_relative_pointer_v1)
-    {
-        zwp_relative_pointer_v1_destroy(pointer->zwp_relative_pointer_v1);
-        pointer->zwp_relative_pointer_v1 = NULL;
-        TRACE("Disabling relative motion\n");
-    }
+    TRACE("lock=%u confine=%u\n", needs_lock, needs_confine);
+    return ret;
 }
 
 void wayland_pointer_clear_constraint(void)
 {
-    wayland_pointer_update_constraint(NULL, NULL, FALSE, FALSE);
+    wayland_pointer_update_constraint(NULL, NULL, NULL, FALSE);
 }
 
 /***********************************************************************
@@ -1010,17 +1383,50 @@ void WAYLAND_SetCursor(HWND hwnd, HCURSOR hcursor)
 BOOL WAYLAND_SetCursorPos(INT x, INT y)
 {
     struct wayland_pointer *pointer = &process_wayland.pointer;
+    POINT pt = {.x = x, .y = y}, surface_pt;
+
+    /* It doesn't make sense to warp a locked pointer, and
+     * reapply_cursor_clippping may not lead to a pClipCursor under all conditions.
+     * Therefore, we need pointer warp handling here but only when the pointer is not locked. */
+    if (process_wayland.wp_pointer_warp_v1 && !pointer->zwp_locked_pointer_v1)
+    {
+        struct wl_surface *wl_surface = NULL;
+        struct wayland_win_data *data;
+
+        if ((data = wayland_win_data_get(NtUserGetForegroundWindow())))
+        {
+            if (data->wayland_surface)
+            {
+                wl_surface = data->wayland_surface->wl_surface;
+                surface_pt = map_point_to_surface(data->wayland_surface, pt);
+            }
+
+            wayland_win_data_release(data);
+        }
+
+        if (wl_surface)
+        {
+            pthread_mutex_lock(&pointer->mutex);
+            wp_pointer_warp_v1_warp_pointer(process_wayland.wp_pointer_warp_v1,
+                                            wl_surface, pointer->wl_pointer,
+                                            wl_fixed_from_int(surface_pt.x),
+                                            wl_fixed_from_int(surface_pt.y),
+                                            pointer->enter_serial);
+            pthread_mutex_unlock(&pointer->mutex);
+
+            TRACE("warping to %d,%d\n", x, y);
+            wl_display_flush(process_wayland.wl_display);
+
+            return TRUE;
+        }
+    }
 
     pthread_mutex_lock(&pointer->mutex);
-    if (pointer->zwp_relative_pointer_v1)
-    {
-        pthread_mutex_unlock(&pointer->mutex);
-        return FALSE;
-    }
     pointer->pending_warp = TRUE;
+    pointer->warp = pt;
     pthread_mutex_unlock(&pointer->mutex);
 
-    TRACE("warping to %d,%d\n", x, y);
+    TRACE("pending warp to %d,%d\n", x, y);
     reapply_cursor_clipping();
     return TRUE;
 }
@@ -1035,60 +1441,62 @@ BOOL WAYLAND_ClipCursor(const RECT *clip, BOOL reset)
     struct wl_surface *wl_surface = NULL;
     struct wayland_surface *surface = NULL;
     struct wayland_win_data *data;
-    BOOL covers_vscreen = FALSE;
     RECT confine_rect;
-    POINT cursor_pos;
-    int warp_x, warp_y;
+    POINT cursor_pos, warp;
+    BOOL commit = FALSE;
 
     TRACE("clip=%s reset=%d\n", wine_dbgstr_rect(clip), reset);
 
     NtUserGetCursorPos(&cursor_pos);
     hwnd = NtUserGetForegroundWindow();
 
+    /* the cursor pos may have changed between SetCursorPos and ClipCursor calls */
+    pthread_mutex_lock(&pointer->mutex);
+    if (pointer->pending_warp) cursor_pos = pointer->warp;
+    pthread_mutex_unlock(&pointer->mutex);
+
     if (!(data = wayland_win_data_get(hwnd))) return FALSE;
     if ((surface = data->wayland_surface))
     {
         wl_surface = surface->wl_surface;
         if (clip) wayland_surface_calc_confine(surface, clip, &confine_rect);
-        covers_vscreen = wayland_surface_client_covers_vscreen(surface);
-        wayland_surface_coords_from_window(surface,
-                cursor_pos.x - surface->window.rect.left,
-                cursor_pos.y - surface->window.rect.top,
-                &warp_x, &warp_y);
+        warp.x = cursor_pos.x - surface->window.rect.left;
+        warp.y = cursor_pos.y - surface->window.rect.top;
+        warp = map_point_to_surface(surface, warp);
     }
     wayland_win_data_release(data);
 
     pthread_mutex_lock(&pointer->mutex);
     if (wl_surface && pointer->pending_warp)
     {
-        wayland_pointer_update_constraint(wl_surface, NULL, FALSE, TRUE);
+        commit = wayland_pointer_update_constraint(wl_surface, NULL, &warp, TRUE);
         pointer->pending_warp = FALSE;
     }
 
-    if (wl_surface && hwnd == pointer->constraint_hwnd && pointer->zwp_locked_pointer_v1)
+    if (wl_surface && commit)
     {
-        zwp_locked_pointer_v1_set_cursor_position_hint(
-                pointer->zwp_locked_pointer_v1,
-                wl_fixed_from_int(warp_x),
-                wl_fixed_from_int(warp_y));
         pthread_mutex_unlock(&pointer->mutex);
-
         data = wayland_win_data_get(hwnd);
         wl_surface_commit(wl_surface);
         wayland_win_data_release(data);
-        TRACE("position hint hwnd=%p wayland_xy=%d,%d screen_xy=%d,%d\n",
-                hwnd, warp_x, warp_y, cursor_pos.x, cursor_pos.y);
         pthread_mutex_lock(&pointer->mutex);
     }
 
    /* Since we are running in the context of the foreground thread we know
     * that the wl_surface of the foreground HWND will not be invalidated,
     * so we can access it without having the win data lock. */
-    wayland_pointer_update_constraint(wl_surface,
-                                      (clip && wl_surface) ? &confine_rect : NULL,
-                                      covers_vscreen,
-                                      FALSE);
+    commit = wayland_pointer_update_constraint(wl_surface,
+                                               (clip && wl_surface) ? &confine_rect : NULL,
+                                               &warp, FALSE);
     pthread_mutex_unlock(&pointer->mutex);
+
+    /* Starting from version 2, pointer constraint lock/unlock is double buffered */
+    if (wl_surface && commit)
+    {
+        data = wayland_win_data_get(hwnd);
+        wl_surface_commit(wl_surface);
+        wayland_win_data_release(data);
+    }
 
     wl_display_flush(process_wayland.wl_display);
 

@@ -570,6 +570,10 @@ static const struct exception
     { { 0xcd, 0xff, 0xc3 },   /* int $0xff; ret */
       0, 2, FALSE, STATUS_ACCESS_VIOLATION, 2, { 0, 0xffffffff } },
 
+    /* syscall interrupt 0x2e */
+    { { 0xcd, 0x2e, 0xc3 },   /* int $0xff; ret */
+      0, 2, FALSE, STATUS_ILLEGAL_INSTRUCTION, 0 },
+
     /* test moves to/from Crx */
     { { 0x0f, 0x20, 0xc0, 0xc3 },  /* movl %cr0,%eax; ret */
       0, 3, FALSE, STATUS_PRIVILEGED_INSTRUCTION, 0 },
@@ -6193,6 +6197,15 @@ static void test_direct_syscalls(void)
         0xc3,                       /* ret */
     };
 
+    static const BYTE code_int2e[] =
+    {
+        0x49, 0x89, 0xd2,           /* movq %rdx, %r10 */
+        0x4c, 0x89, 0xc2,           /* movq %r8,  %rdx */
+        0x89, 0xc8,                 /* movl %ecx, %eax */
+        0xcd, 0x2e,                 /* int $0x2e */
+        0xc3,                       /* ret */
+    };
+
     HANDLE event;
     NTSTATUS (WINAPI *func)(UINT32 syscall_nr, HANDLE h, LONG *prev_state);
 
@@ -6202,6 +6215,12 @@ static void test_direct_syscalls(void)
     func(find_syscall_nr("NtSetEvent"), event, NULL);
 
     ok(WaitForSingleObject(event, 0) == WAIT_OBJECT_0, "Event not signaled.\n");
+
+    memcpy(code_mem, code_int2e, sizeof(code_int2e));
+    func = code_mem;
+    func(find_syscall_nr("NtSetEvent"), event, NULL);
+    ok(WaitForSingleObject(event, 0) == WAIT_OBJECT_0, "Event not signaled.\n");
+
     CloseHandle(event);
 }
 
@@ -12063,6 +12082,9 @@ static void test_copy_context(void)
         ok(*(DWORD *)((BYTE *)dst + flags_offset) == flags, "Got unexpected ContextFlags %#lx, flags %#lx.\n",
                 *(DWORD *)((BYTE *)dst + flags_offset), flags);
 
+        status = pRtlCopyExtendedContext(dst_ex, flags | 0x100, src_ex);
+        ok(status == STATUS_INVALID_PARAMETER, "Got unexpected status %#lx, flags %#lx.\n", status, flags);
+
         memset(dst_context_buffer, 0xdd, sizeof(dst_context_buffer));
         status = pRtlInitializeExtendedContext(dst_context_buffer, flags, &dst_ex);
         ok(!status, "Got unexpected status %#lx, flags %#lx.\n", status, flags);
@@ -12103,6 +12125,11 @@ static void test_copy_context(void)
             check_changes_in_range((BYTE *)dst, flags & CONTEXT_AMD64 ? &ranges_amd64[0] : &ranges_x86[0],
                     0, context_length);
         }
+
+        *(DWORD *)((BYTE *)dst + flags_offset) = flags & (CONTEXT_AMD64 | CONTEXT_i386);
+        *(DWORD *)((BYTE *)src + flags_offset) = flags;
+        status = pRtlCopyContext(dst, flags | 0x100, src);
+        ok(status == STATUS_INVALID_PARAMETER, "Got unexpected status %#lx, flags %#lx.\n", status, flags);
     }
 
     for (i = 0; i < ARRAY_SIZE(arch_flags); ++i)

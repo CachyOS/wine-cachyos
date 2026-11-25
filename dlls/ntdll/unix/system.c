@@ -734,26 +734,9 @@ static ULONGLONG get_cpu_features(void)
     return 0;  /* FIXME */
 }
 
-static void init_xstate_features( XSTATE_CONFIGURATION *xstate )
-{
-    xstate->EnabledFeatures = (1 << XSTATE_LEGACY_FLOATING_POINT) | (1 << XSTATE_LEGACY_SSE) | (1 << XSTATE_AVX);
-    xstate->EnabledVolatileFeatures = xstate->EnabledFeatures;
-    xstate->AllFeatureSize = 0x340;
-
-    xstate->OptimizedSave = 0;
-    xstate->CompactionEnabled = 0;
-
-    xstate->Features[0].Size = xstate->AllFeatures[0] = offsetof(XSAVE_FORMAT, XmmRegisters);
-    xstate->Features[1].Size = xstate->AllFeatures[1] = sizeof(M128A) * 16;
-    xstate->Features[1].Offset = xstate->Features[0].Size;
-    xstate->Features[2].Offset = 0x240;
-    xstate->Features[2].Size = 0x100;
-    xstate->Size = 0x340;
-}
-
 void init_shared_data_cpuinfo( KUSER_SHARED_DATA *data )
 {
-    BOOLEAN *features = data->ProcessorFeatures;
+    BOOLEAN *features = data->ProcessorFeatures, have_x86 = FALSE;
 
 #ifdef linux
     FILE *f = fopen("/proc/cpuinfo", "r");
@@ -821,21 +804,39 @@ void init_shared_data_cpuinfo( KUSER_SHARED_DATA *data )
             features[PF_ARM_DIVIDE_INSTRUCTION_AVAILABLE] = TRUE;
             break;
         case IMAGE_FILE_MACHINE_I386:
-            features[PF_MMX_INSTRUCTIONS_AVAILABLE]    = TRUE;
-            features[PF_XMMI_INSTRUCTIONS_AVAILABLE]   = TRUE;
-            features[PF_RDTSC_INSTRUCTION_AVAILABLE]   = TRUE;
-            features[PF_XMMI64_INSTRUCTIONS_AVAILABLE] = TRUE;
-            features[PF_SSE3_INSTRUCTIONS_AVAILABLE]   = TRUE;
-            features[PF_COMPARE_EXCHANGE128]           = TRUE;
-            features[PF_RDTSCP_INSTRUCTION_AVAILABLE]  = TRUE;
-            features[PF_SSSE3_INSTRUCTIONS_AVAILABLE]  = TRUE;
-            features[PF_SSE4_1_INSTRUCTIONS_AVAILABLE] = TRUE;
-            features[PF_SSE4_2_INSTRUCTIONS_AVAILABLE] = TRUE;
+        case IMAGE_FILE_MACHINE_AMD64:
+            have_x86 = TRUE;
             break;
         }
     }
 
-    init_xstate_features( &data->XState );
+    if (have_x86)
+    {
+        XSTATE_CONFIGURATION *xstate_config = &data->XState;
+
+        features[PF_MMX_INSTRUCTIONS_AVAILABLE]    = TRUE;
+        features[PF_XMMI_INSTRUCTIONS_AVAILABLE]   = TRUE;
+        features[PF_RDTSC_INSTRUCTION_AVAILABLE]   = TRUE;
+        features[PF_XMMI64_INSTRUCTIONS_AVAILABLE] = TRUE;
+        features[PF_SSE3_INSTRUCTIONS_AVAILABLE]   = TRUE;
+        features[PF_COMPARE_EXCHANGE128]           = TRUE;
+        features[PF_XSAVE_ENABLED]                 = TRUE;
+        features[PF_RDTSCP_INSTRUCTION_AVAILABLE]  = TRUE;
+        features[PF_SSSE3_INSTRUCTIONS_AVAILABLE]  = TRUE;
+        features[PF_SSE4_1_INSTRUCTIONS_AVAILABLE] = TRUE;
+        features[PF_SSE4_2_INSTRUCTIONS_AVAILABLE] = TRUE;
+        features[PF_AVX_INSTRUCTIONS_AVAILABLE]    = TRUE;
+        features[PF_AVX2_INSTRUCTIONS_AVAILABLE]   = TRUE;
+
+        xstate_config->EnabledFeatures = xstate_config->EnabledVolatileFeatures = XSTATE_MASK_LEGACY | XSTATE_MASK_AVX;
+        xstate_config->Features[XSTATE_LEGACY_FLOATING_POINT].Offset = 0;
+        xstate_config->Features[XSTATE_LEGACY_FLOATING_POINT].Size   = 10 * sizeof(M128A);
+        xstate_config->Features[XSTATE_LEGACY_SSE].Offset = 10 * sizeof(M128A);
+        xstate_config->Features[XSTATE_LEGACY_SSE].Size   = 16 * sizeof(M128A);
+        xstate_config->Features[XSTATE_AVX].Offset = sizeof(XSAVE_AREA);
+        xstate_config->Features[XSTATE_AVX].Size   = sizeof(YMMCONTEXT);
+        xstate_config->Size = xstate_config->AllFeatureSize = sizeof(XSAVE_FORMAT) + sizeof(XSTATE);
+    }
 }
 
 #endif /* End architecture specific feature detection for CPUs */
@@ -4403,6 +4404,25 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
         snprintf( info, size, "%s%c%s%c%s%c%s", version, 0, wine_build, 0, buf.sysname, 0, buf.release );
         len = strlen(version) + strlen(wine_build) + strlen(buf.sysname) + strlen(buf.release) + 4;
         if (size < len) ret = STATUS_INFO_LENGTH_MISMATCH;
+        break;
+    }
+
+    case SystemWineQueryUserToken: /* 1001 */
+    {
+        SYSTEM_WINE_QUERY_USER_TOKEN *query = info;
+
+        len = sizeof(*query);
+        if (size == len)
+        {
+            SERVER_START_REQ( query_user_token )
+            {
+                req->session_id = query->session_id;
+                if (!(ret = wine_server_call( req )))
+                    query->token = wine_server_ptr_handle( reply->handle );
+            }
+            SERVER_END_REQ;
+        }
+        else ret = STATUS_INFO_LENGTH_MISMATCH;
         break;
     }
 

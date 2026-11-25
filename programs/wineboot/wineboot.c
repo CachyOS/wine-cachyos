@@ -82,6 +82,7 @@
 #include <wininet.h>
 #include <newdev.h>
 #include <wincrypt.h>
+#include <userenv.h>
 #include "resource.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(wineboot);
@@ -1454,15 +1455,58 @@ static int ProcessWindowsFileProtection(void)
     return 1;
 }
 
+static BOOL create_process_as_user( HANDLE token, const WCHAR *app_name, WCHAR *cmd_line,
+                                    SECURITY_ATTRIBUTES *process_attr, SECURITY_ATTRIBUTES *thread_attr,
+                                    BOOL inherit, DWORD flags, void *env, const WCHAR *cur_dir,
+                                    STARTUPINFOW *startup_info, PROCESS_INFORMATION *info )
+{
+    void *new_env = NULL;
+    BOOL ret;
+
+    if (token)
+    {
+        ret = CreateEnvironmentBlock( &new_env, token, FALSE );
+        if (ret)
+            env = new_env;
+        else
+            WINE_MESSAGE( "wine: CreateEnvironmentBlock failed\n" );
+        flags |= CREATE_UNICODE_ENVIRONMENT;
+    }
+
+    ret = CreateProcessAsUserW( token, app_name, cmd_line, process_attr, thread_attr, inherit,
+                                flags, env, cur_dir, startup_info, info );
+    if (new_env)
+        DestroyEnvironmentBlock( new_env );
+    return ret;
+}
+
+static BOOL create_native_process( HANDLE token, const WCHAR *app, WCHAR *cmdline, BOOL inherit,
+                                   DWORD flags, const WCHAR *curdir, PROCESS_INFORMATION *info )
+{
+    struct _PROC_THREAD_ATTRIBUTE_LIST *list;
+    STARTUPINFOEXW si = { .StartupInfo.cb = sizeof(si) };
+    SIZE_T size = 1024;
+    BOOL ret;
+    USHORT machine = machines[0].Machine;
+
+    si.lpAttributeList = list = malloc( size );
+    InitializeProcThreadAttributeList( list, 1, 0, &size );
+    UpdateProcThreadAttribute( list, 0, PROC_THREAD_ATTRIBUTE_MACHINE_TYPE,
+                               &machine, sizeof(machine), NULL, NULL );
+    ret = create_process_as_user( token, app, cmdline, NULL, NULL, inherit,
+                                  EXTENDED_STARTUPINFO_PRESENT | flags, NULL, curdir, &si.StartupInfo, info );
+    free( list );
+    return ret;
+}
+
 static BOOL start_services_process(void)
 {
     static const WCHAR svcctl_started_event[] = SVCCTL_STARTED_EVENT;
     PROCESS_INFORMATION pi;
-    STARTUPINFOW si = { sizeof(si) };
     HANDLE wait_handles[2];
 
-    if (!CreateProcessW(L"C:\\windows\\system32\\services.exe", NULL,
-                        NULL, NULL, TRUE, DETACHED_PROCESS, NULL, NULL, &si, &pi))
+    if (!create_native_process( NULL, L"C:\\windows\\system32\\services.exe", NULL,
+                                TRUE, DETACHED_PROCESS, L"C:\\windows\\system32", &pi))
     {
         WINE_ERR("Couldn't start services.exe: error %lu\n", GetLastError());
         return FALSE;
@@ -1488,32 +1532,33 @@ static BOOL start_services_process(void)
     return TRUE;
 }
 
-static HANDLE start_rundll32( const WCHAR *inf_path, const WCHAR *install, WORD machine )
+static HANDLE start_rundll32( const WCHAR *inf_path, const WCHAR *install, WORD machine, HANDLE token )
 {
     WCHAR app[MAX_PATH + ARRAY_SIZE(L"\\rundll32.exe" )];
-    STARTUPINFOW si;
+    STARTUPINFOW si = { .cb = sizeof(si) };
     PROCESS_INFORMATION pi;
     WCHAR *buffer;
     DWORD len;
-
-    memset( &si, 0, sizeof(si) );
-    si.cb = sizeof(si);
+    BOOL ret;
 
     if (!GetSystemWow64Directory2W( app, MAX_PATH, machine )) return 0;
     lstrcatW( app, L"\\rundll32.exe" );
     TRACE( "machine %x starting %s\n", machine, debugstr_w(app) );
 
-    len = lstrlenW(app) + ARRAY_SIZE(L" setupapi,InstallHinfSection DefaultInstall 128 ") + lstrlenW(inf_path);
+    len = lstrlenW(app) + ARRAY_SIZE(L" setupapi,InstallHinfSection  128 ") + lstrlenW(install) + lstrlenW(inf_path);
 
     if (!(buffer = malloc( len * sizeof(WCHAR) ))) return 0;
     swprintf( buffer, len, L"%s setupapi,InstallHinfSection %s 128 %s", app, install, inf_path );
 
-    if (CreateProcessW( app, buffer, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi ))
-        CloseHandle( pi.hThread );
+    if (machine == IMAGE_FILE_MACHINE_TARGET_HOST)
+        ret = create_native_process( token, app, buffer, FALSE, 0, NULL, &pi );
     else
-        pi.hProcess = 0;
+        ret = create_process_as_user( token, app, buffer, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi );
 
     free( buffer );
+    if (!ret) return 0;
+
+    CloseHandle( pi.hThread );
     return pi.hProcess;
 }
 
@@ -1570,16 +1615,12 @@ static void install_root_pnp_devices(void)
     SetupDiDestroyDeviceInfoList(set);
 }
 
-static void update_user_profile(void)
+static void add_profile_list_entry(HANDLE token, const WCHAR *profile, DWORD flags)
 {
     char token_buf[sizeof(TOKEN_USER) + sizeof(SID) + sizeof(DWORD) * SID_MAX_SUB_AUTHORITIES];
-    HANDLE token;
-    WCHAR profile[MAX_PATH], *sid;
-    DWORD size;
     HKEY hkey, profile_hkey;
-
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_READ, &token))
-        return;
+    WCHAR *sid;
+    DWORD size;
 
     size = sizeof(token_buf);
     GetTokenInformation(token, TokenUser, token_buf, size, &size);
@@ -1593,10 +1634,8 @@ static void update_user_profile(void)
         if (!RegCreateKeyExW(hkey, sid, 0, NULL, 0,
                              KEY_ALL_ACCESS, NULL, &profile_hkey, NULL))
         {
-            DWORD flags = 0;
-            if (SHGetSpecialFolderPathW(NULL, profile, CSIDL_PROFILE, TRUE))
-                set_reg_value(profile_hkey, L"ProfileImagePath", profile);
-            RegSetValueExW( profile_hkey, L"Flags", 0, REG_DWORD, (const BYTE *)&flags, sizeof(flags) );
+            set_reg_value(profile_hkey, L"ProfileImagePath", profile);
+            RegSetValueExW(profile_hkey, L"Flags", 0, REG_DWORD, (const BYTE *)&flags, sizeof(flags));
             RegCloseKey(profile_hkey);
         }
 
@@ -1655,13 +1694,51 @@ static void update_root_certs(void)
     CertCloseStore( store, 0 );
 }
 
+static void update_user_profile(void)
+{
+    WCHAR profile[MAX_PATH] = {0};
+
+    if (SHGetSpecialFolderPathW(NULL, profile, CSIDL_PROFILE, TRUE))
+        add_profile_list_entry(GetCurrentProcessToken(), profile, 0);
+    else
+        WINE_ERR("Failed to get the user profile directory.\n");
+}
+
+static void add_service_user_profiles(const WCHAR *username, HANDLE token)
+{
+    WCHAR profile[MAX_PATH] = {0};
+    DWORD flags = 0;
+
+    if (!wcsicmp(username, L"System"))
+    {
+        GetSystemDirectoryW(profile, ARRAY_SIZE(profile));
+        PathAppendW(profile, L"config\\systemprofile");
+        flags = 0xc; /* undocumented */
+    }
+    else if (!wcsicmp(username, L"LocalService"))
+    {
+        GetWindowsDirectoryW(profile, ARRAY_SIZE(profile));
+        PathAppendW(profile, L"ServiceProfiles\\LocalService");
+    }
+    else if (!wcsicmp(username, L"NetworkService"))
+    {
+        GetWindowsDirectoryW(profile, ARRAY_SIZE(profile));
+        PathAppendW(profile, L"ServiceProfiles\\NetworkService");
+    }
+    add_profile_list_entry(token, profile, flags);
+}
+
 /* execute rundll32 on the wine.inf file if necessary */
 static void update_wineprefix( BOOL force )
 {
+    static const WCHAR *service_accounts[] = {L"System", L"LocalService", L"NetworkService"};
     const WCHAR *config_dir = _wgetenv( L"WINECONFIGDIR" );
     WCHAR *inf_path = get_wine_inf_path();
     int fd;
     struct stat st;
+    HANDLE token;
+    BOOL ret;
+    int i;
 
     if (!inf_path)
     {
@@ -1682,7 +1759,7 @@ static void update_wineprefix( BOOL force )
         HANDLE process;
         DWORD count = 0;
 
-        if ((process = start_rundll32( inf_path, L"PreInstall", IMAGE_FILE_MACHINE_TARGET_HOST )))
+        if ((process = start_rundll32( inf_path, L"PreInstall", IMAGE_FILE_MACHINE_TARGET_HOST, NULL )))
         {
             for (;;)
             {
@@ -1699,10 +1776,50 @@ static void update_wineprefix( BOOL force )
                 }
                 if (!machines[count].Machine) break;
                 if (machines[count].Native)
-                    process = start_rundll32( inf_path, L"DefaultInstall", IMAGE_FILE_MACHINE_TARGET_HOST );
+                    process = start_rundll32( inf_path, L"DefaultInstall", IMAGE_FILE_MACHINE_TARGET_HOST, NULL );
                 else
-                    process = start_rundll32( inf_path, L"Wow64Install", machines[count].Machine );
+                    process = start_rundll32( inf_path, L"Wow64Install", machines[count].Machine, NULL );
                 count++;
+            }
+
+            for (i = 0; i < ARRAY_SIZE( service_accounts ); i++)
+            {
+                ret = LogonUserW( service_accounts[i], L"NT AUTHORITY", NULL, LOGON32_LOGON_SERVICE,
+                                  LOGON32_PROVIDER_DEFAULT, &token );
+                if (!ret)
+                {
+                    WINE_ERR( "wine: failed to logon to user %s, error %#lx.\n",
+                              wine_dbgstr_w(service_accounts[i]), GetLastError() );
+                    continue;
+                }
+
+                count = 0;
+                process = NULL;
+                for (;;)
+                {
+                    if (process)
+                    {
+                        MSG msg;
+
+                        DWORD res = MsgWaitForMultipleObjects( 1, &process, FALSE, INFINITE, QS_ALLINPUT );
+
+                        if (res != WAIT_OBJECT_0)
+                        {
+                            while (PeekMessageW( &msg, 0, 0, 0, PM_REMOVE )) DispatchMessageW( &msg );
+                            continue;
+                        }
+                        CloseHandle( process );
+                    }
+                    if (!machines[count].Machine) break;
+                    if (machines[count].Native)
+                        process = start_rundll32( inf_path, L"ServiceAccountInstall", IMAGE_FILE_MACHINE_TARGET_HOST, token );
+                    else
+                        process = start_rundll32( inf_path, L"ServiceAccountWow64Install", machines[count].Machine, token );
+                    count++;
+                }
+
+                add_service_user_profiles( service_accounts[i], token );
+                CloseHandle( token );
             }
         }
         install_root_pnp_devices();
@@ -1872,21 +1989,21 @@ int __cdecl main( int argc, char *argv[] )
     if( !SetCurrentDirectoryW( windowsdir ) )
         WINE_ERR("Cannot set the dir to %s (%ld)\n", wine_dbgstr_w(windowsdir), GetLastError() );
 
+    if (NtQuerySystemInformationEx( SystemSupportedProcessorArchitectures, &process, sizeof(process),
+                                    machines, sizeof(machines), NULL )) machines[0].Machine = 0;
+
     if (IsWow64Process( GetCurrentProcess(), &is_wow64 ) && is_wow64)
     {
-        STARTUPINFOW si;
         PROCESS_INFORMATION pi;
         WCHAR filename[MAX_PATH];
         void *redir;
         DWORD exit_code;
 
-        memset( &si, 0, sizeof(si) );
-        si.cb = sizeof(si);
         GetSystemDirectoryW( filename, MAX_PATH );
         wcscat( filename, L"\\wineboot.exe" );
 
         Wow64DisableWow64FsRedirection( &redir );
-        if (CreateProcessW( filename, GetCommandLineW(), NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi ))
+        if (create_native_process( NULL, filename, GetCommandLineW(), FALSE, 0, NULL, &pi ))
         {
             WINE_TRACE( "restarting %s\n", wine_dbgstr_w(filename) );
             WaitForSingleObject( pi.hProcess, INFINITE );
@@ -1942,9 +2059,6 @@ int __cdecl main( int argc, char *argv[] )
     if (kill) kill_processes( shutdown );
 
     if (shutdown) return 0;
-
-    if (NtQuerySystemInformationEx( SystemSupportedProcessorArchitectures, &process, sizeof(process),
-                                    machines, sizeof(machines), NULL )) machines[0].Machine = 0;
 
     /* create event to be inherited by services.exe */
     InitializeObjectAttributes( &attr, &nameW, OBJ_OPENIF | OBJ_INHERIT, 0, NULL );

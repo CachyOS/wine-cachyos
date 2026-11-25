@@ -56,7 +56,8 @@ struct _EPROCESS
     DISPATCHER_HEADER header;
     PROCESS_BASIC_INFORMATION info;
     KERNEL_USER_TIMES times;
-    BOOL wow64;
+    PEB32 *peb32;
+    DWORD_PTR debug_port;
     ULONG session_id;
     char image_name[15];
 };
@@ -68,6 +69,7 @@ struct _KTHREAD
     CLIENT_ID id;
     unsigned int critical_region;
     KAFFINITY user_affinity;
+    void *teb;
 };
 
 struct _ETHREAD

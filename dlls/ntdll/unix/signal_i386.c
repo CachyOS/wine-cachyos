@@ -1861,6 +1861,12 @@ static BOOL handle_interrupt( unsigned int interrupt, ucontext_t *sigcontext, vo
         rec->ExceptionInformation[2] = context->Edx;
         setup_raise_exception( sigcontext, stack, rec, xcontext );
         return TRUE;
+    case 0x2e:
+        rec->ExceptionCode = EXCEPTION_ILLEGAL_INSTRUCTION;
+        rec->ExceptionAddress = (void *)context->Eip;
+        rec->NumberParameters = 0;
+        setup_raise_exception( sigcontext, stack, rec, xcontext );
+        return TRUE;
     default:
         return FALSE;
     }
@@ -2509,7 +2515,11 @@ void init_syscall_frame( LPTHREAD_START_ROUTINE entry, void *arg, BOOL suspend, 
     context.FloatSave.ControlWord = 0x27f;
     ((XSAVE_FORMAT *)context.ExtendedRegisters)->ControlWord = 0x27f;
     ((XSAVE_FORMAT *)context.ExtendedRegisters)->MxCsr = 0x1f80;
-    if ((ctx = get_cpu_area( IMAGE_FILE_MACHINE_I386 ))) *ctx = context;
+    if ((ctx = get_cpu_area( IMAGE_FILE_MACHINE_I386 )))
+    {
+        *ctx = context;
+        if (user_shared_data->XState.EnabledFeatures) ctx->ContextFlags |= CONTEXT_XSTATE;
+    }
 
     if (suspend)
     {

@@ -828,6 +828,27 @@ DECL_HANDLER(get_thread_desktop)
     release_object( thread );
 }
 
+/* get the thread current keyboard layout */
+DECL_HANDLER(get_thread_layout)
+{
+    struct thread *thread;
+
+    if (!(thread = get_thread_from_id( req->tid ))) return;
+    reply->layout = thread->layout;
+
+    release_object( thread );
+}
+
+/* set the thread current keyboard layout */
+DECL_HANDLER(set_thread_layout)
+{
+    struct thread *thread;
+
+    if (!(thread = get_thread_from_id( req->tid ))) return;
+    thread->layout = req->layout;
+
+    release_object( thread );
+}
 
 /* set the thread current desktop */
 DECL_HANDLER(set_thread_desktop)
@@ -984,18 +1005,36 @@ DECL_HANDLER(enum_winstation)
     }
     else
     {
-        LIST_FOR_EACH_ENTRY( winstation, &winstation_list, struct winstation, entry )
+        struct unicode_str winstations_dir_name;
+        struct object *winstations_dir = NULL;
+        char buffer[64];
+        WCHAR *path;
+
+        snprintf( buffer, sizeof(buffer), "\\Sessions\\%u\\Windows\\WindowStations", current->process->session_id );
+        if ((path = ascii_to_unicode_str( buffer, &winstations_dir_name )))
         {
-            unsigned int access = WINSTA_ENUMERATE;
-            if (!(name = winstation->obj.name)) continue;
-            if (!check_object_access( NULL, &winstation->obj, &access )) continue;
-            reply->count++;
-            reply->total += name->len + sizeof(WCHAR);
-            if (reply->total <= size)
+            winstations_dir = open_named_object( NULL, NULL, &winstations_dir_name, OBJ_CASE_INSENSITIVE );
+            free( path );
+            clear_error();
+        }
+
+        if (winstations_dir)
+        {
+            LIST_FOR_EACH_ENTRY( winstation, &winstation_list, struct winstation, entry )
             {
-                ptr = mem_append( ptr, name->name, name->len );
-                *ptr++ = 0;
+                unsigned int access = WINSTA_ENUMERATE;
+                if (!(name = winstation->obj.name)) continue;
+                if (name->parent != winstations_dir) continue;
+                if (!check_object_access( NULL, &winstation->obj, &access )) continue;
+                reply->count++;
+                reply->total += name->len + sizeof(WCHAR);
+                if (reply->total <= size)
+                {
+                    ptr = mem_append( ptr, name->name, name->len );
+                    *ptr++ = 0;
+                }
             }
+            release_object( winstations_dir );
         }
     }
 

@@ -611,11 +611,23 @@ static ATOM register_dummy_class(void)
     return RegisterClassA(&wc);
 }
 
+static DWORD WINAPI revoke_thread(void *param)
+{
+    HWND hwnd = param;
+    HRESULT hr;
+
+    OleInitialize(NULL);
+    hr = RevokeDragDrop(hwnd);
+    ok(hr == RPC_E_WRONG_THREAD, "got hr %#lx.\n", hr);
+    return 0;
+}
+
 static void test_Register_Revoke(void)
 {
     HANDLE prop;
     HRESULT hr;
     HWND hwnd;
+    HANDLE thread;
 
     hwnd = CreateWindowA("WineOleTestClass", "Test", 0,
         CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, NULL,
@@ -626,6 +638,7 @@ static void test_Register_Revoke(void)
         broken(hr == CO_E_NOTINITIALIZED), /* NT4 */
         "RegisterDragDrop without OLE initialized should have returned E_OUTOFMEMORY instead of 0x%08lx\n", hr);
 
+    CoInitialize(NULL);
     OleInitialize(NULL);
 
     hr = RegisterDragDrop(hwnd, NULL);
@@ -650,38 +663,83 @@ static void test_Register_Revoke(void)
 
     ok(droptarget_refs >= 1, "DropTarget refs should be at least one\n");
     OleUninitialize();
+    ok(droptarget_refs == 1, "got %d.\n", droptarget_refs);
+    CoUninitialize();
+    ok(!droptarget_refs, "got %d.\n", droptarget_refs);
 
-    /* Win 8 releases the ref in OleUninitialize() */
-    if (droptarget_refs >= 1)
-    {
-        hr = RevokeDragDrop(hwnd);
-        ok_ole_success(hr, "RevokeDragDrop");
-        ok(droptarget_refs == 0 ||
-           broken(droptarget_refs == 1), /* NT4 */
-           "DropTarget refs should be zero not %d\n", droptarget_refs);
-    }
+    prop = GetPropA(hwnd, "OleDropTargetInterface");
+    ok(prop == &DropTarget, "expected %p, got %p\n", &DropTarget, prop);
 
     hr = RevokeDragDrop(NULL);
     ok(hr == DRAGDROP_E_INVALIDHWND, "RevokeDragDrop with NULL hwnd should return DRAGDROP_E_INVALIDHWND instead of 0x%08lx\n", hr);
 
+    OleInitialize(NULL);
+
+    hr = RegisterDragDrop(hwnd, &DropTarget);
+    ok(hr == DRAGDROP_E_ALREADYREGISTERED, "got %#lx.\n", hr);
+    hr = RevokeDragDrop(hwnd);
+    ok(hr == RPC_E_WRONG_THREAD, "got %#lx.\n", hr);
+    hr = RevokeDragDrop(hwnd);
+    ok(hr == DRAGDROP_E_NOTREGISTERED, "got %#lx.\n", hr);
+
+    RemovePropA(hwnd, "OleDropTargetInterface");
+    hr = RegisterDragDrop(hwnd, &DropTarget);
+    ok(hr == S_OK, "got %#lx.\n", hr);
+    ok(droptarget_refs == 1, "got %d.\n", droptarget_refs);
+
+    SetPropA(hwnd, "OleDropTargetInterface", (void *)0xdeadbeef);
+    hr = RevokeDragDrop(hwnd);
+    ok(hr == S_OK, "got %#lx.\n", hr);
+    ok(!droptarget_refs, "got %d.\n", droptarget_refs);
+
+    hr = RegisterDragDrop(hwnd, &DropTarget);
+    ok(hr == S_OK, "got %#lx.\n", hr);
+    ok(droptarget_refs == 1, "got %d.\n", droptarget_refs);
+    RemovePropA(hwnd, "OleDropTargetInterface");
+    hr = RevokeDragDrop(hwnd);
+    ok(hr == DRAGDROP_E_NOTREGISTERED, "got %#lx.\n", hr);
+    ok(droptarget_refs == 1, "got %d.\n", droptarget_refs);
+
+    OleUninitialize();
+    ok(!droptarget_refs, "got %d.\n", droptarget_refs);
+
+    OleInitialize(NULL);
+    hr = RegisterDragDrop(hwnd, &DropTarget);
+    ok(hr == S_OK, "got %#lx.\n", hr);
     DestroyWindow(hwnd);
 
-    /* try to revoke with already destroyed window */
-    OleInitialize(NULL);
+    hr = RevokeDragDrop(hwnd);
+    ok(hr == DRAGDROP_E_INVALIDHWND, "got %#lx.\n", hr);
+    ok(droptarget_refs == 1, "got %d.\n", droptarget_refs);
+
+    OleUninitialize();
+    ok(droptarget_refs == 1, "got %d.\n", droptarget_refs);
+    droptarget_refs = 0;
 
     hwnd = CreateWindowA("WineOleTestClass", "Test", 0,
         CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, NULL,
         NULL, NULL, NULL);
 
+    OleInitialize(NULL);
     hr = RegisterDragDrop(hwnd, &DropTarget);
-    ok(hr == S_OK, "got 0x%08lx\n", hr);
+    ok(hr == S_OK, "got %#lx.\n", hr);
+    ok(droptarget_refs == 1, "got %d.\n", droptarget_refs);
 
-    DestroyWindow(hwnd);
+    prop = GetPropA(hwnd, "OleDropTargetInterface");
+    ok(!!prop, "got %p.\n", prop);
 
-    hr = RevokeDragDrop(hwnd);
-    ok(hr == DRAGDROP_E_INVALIDHWND, "got 0x%08lx\n", hr);
+    thread = CreateThread(NULL, 0, revoke_thread, hwnd, 0, NULL);
+    ok(!!thread, "got error %lu.\n", GetLastError());
+    WaitForSingleObject(thread, INFINITE);
+    CloseHandle(thread);
 
+    prop = GetPropA(hwnd, "OleDropTargetInterface");
+    ok(!prop, "got %p.\n", prop);
+
+    ok(droptarget_refs == 1, "got %d.\n", droptarget_refs);
     OleUninitialize();
+    ok(!droptarget_refs, "got %d.\n", droptarget_refs);
+    DestroyWindow(hwnd);
 }
 
 static void test_DoDragDrop(void)

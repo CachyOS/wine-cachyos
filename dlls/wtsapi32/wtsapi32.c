@@ -97,8 +97,8 @@ BOOL WINAPI WTSEnumerateProcessesExW(HANDLE server, DWORD *level, DWORD session_
         return FALSE;
     }
 
-    if (session_id != WTS_ANY_SESSION)
-        FIXME("ignoring session id %#lx\n", session_id);
+    if (session_id == WTS_CURRENT_SESSION)
+        ProcessIdToSessionId(GetCurrentProcessId(), &session_id);
 
     if (*level)
     {
@@ -162,34 +162,38 @@ BOOL WINAPI WTSEnumerateProcessesExW(HANDLE server, DWORD *level, DWORD session_
     {
         HANDLE process, token;
 
-        info[count].SessionId = nt_process->SessionId;
-        info[count].ProcessId = (DWORD_PTR)nt_process->UniqueProcessId;
-
-        info[count].pProcessName = (WCHAR *)p;
-        memcpy(p, nt_process->ProcessName.Buffer, nt_process->ProcessName.Length);
-        info[count].pProcessName[nt_process->ProcessName.Length / sizeof(WCHAR)] = 0;
-        p += nt_process->ProcessName.Length + sizeof(WCHAR);
-
-        info[count].pUserSid = NULL;
-        if ((process = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, info[count].ProcessId)))
+        if (session_id == WTS_ANY_SESSION || session_id == nt_process->SessionId)
         {
-            if (OpenProcessToken(process, TOKEN_QUERY, &token))
-            {
-                char buffer[sizeof(TOKEN_USER) + offsetof(SID, SubAuthority[SID_MAX_SUB_AUTHORITIES])];
-                TOKEN_USER *user = (TOKEN_USER *)buffer;
-                DWORD size;
+            info[count].SessionId = nt_process->SessionId;
+            info[count].ProcessId = (DWORD_PTR)nt_process->UniqueProcessId;
 
-                GetTokenInformation(token, TokenUser, buffer, sizeof(buffer), &size);
-                info[count].pUserSid = p;
-                size = GetLengthSid(user->User.Sid);
-                memcpy(p, user->User.Sid, size);
-                p += size;
-                CloseHandle(token);
+            info[count].pProcessName = (WCHAR *)p;
+            memcpy(p, nt_process->ProcessName.Buffer, nt_process->ProcessName.Length);
+            info[count].pProcessName[nt_process->ProcessName.Length / sizeof(WCHAR)] = 0;
+            p += nt_process->ProcessName.Length + sizeof(WCHAR);
+
+            info[count].pUserSid = NULL;
+            if ((process = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, info[count].ProcessId)))
+            {
+                if (OpenProcessToken(process, TOKEN_QUERY, &token))
+                {
+                    char buffer[sizeof(TOKEN_USER) + offsetof(SID, SubAuthority[SID_MAX_SUB_AUTHORITIES])];
+                    TOKEN_USER *user = (TOKEN_USER *)buffer;
+                    DWORD size;
+
+                    GetTokenInformation(token, TokenUser, buffer, sizeof(buffer), &size);
+                    info[count].pUserSid = p;
+                    size = GetLengthSid(user->User.Sid);
+                    memcpy(p, user->User.Sid, size);
+                    p += size;
+                    CloseHandle(token);
+                }
+                CloseHandle(process);
             }
-            CloseHandle(process);
+
+            ++count;
         }
 
-        ++count;
         if (!nt_process->NextEntryOffset)
             break;
         nt_process = (SYSTEM_PROCESS_INFORMATION *)((char *)nt_process + nt_process->NextEntryOffset);
@@ -348,27 +352,32 @@ BOOL WINAPI WTSEnumerateSessionsA(HANDLE server, DWORD reserved, DWORD version,
 BOOL WINAPI WTSEnumerateSessionsW(HANDLE server, DWORD reserved, DWORD version,
         PWTS_SESSION_INFOW *session_info, DWORD *count)
 {
-    static const WCHAR session_name[] = L"Console";
+    static const WCHAR console_session_name[] = L"Console", services_session_name[] = L"Services";
+    PWTS_SESSION_INFOW info;
 
-    FIXME("%p 0x%08lx 0x%08lx %p %p semi-stub.\n", server, reserved, version, session_info, count);
+    TRACE("%p 0x%08lx 0x%08lx %p %p.\n", server, reserved, version, session_info, count);
 
     if (!session_info || !count) return FALSE;
 
-    if (!(*session_info = malloc(sizeof(**session_info) + sizeof(session_name))))
+    if (!(info = malloc(sizeof(*info) * 2 + sizeof(services_session_name) + sizeof(console_session_name))))
     {
         SetLastError(ERROR_OUTOFMEMORY);
         return FALSE;
     }
-    if (!ProcessIdToSessionId( GetCurrentProcessId(), &(*session_info)->SessionId))
-    {
-        WTSFreeMemory(*session_info);
-        return FALSE;
-    }
-    *count = 1;
-    (*session_info)->State = WTSActive;
-    (*session_info)->pWinStationName = (WCHAR *)((char *)*session_info + sizeof(**session_info));
-    memcpy((*session_info)->pWinStationName, session_name, sizeof(session_name));
 
+    *count = 2;
+
+    info[0].SessionId = 0;
+    info[0].State = WTSDisconnected;
+    info[0].pWinStationName = (WCHAR *)((char *)info + sizeof(*info) * 2);
+    memcpy(info[0].pWinStationName, services_session_name, sizeof(services_session_name));
+
+    info[1].SessionId = WTSGetActiveConsoleSessionId();
+    info[1].State = WTSActive;
+    info[1].pWinStationName = (WCHAR *)((char *)info[0].pWinStationName + sizeof(services_session_name));
+    memcpy(info[1].pWinStationName, console_session_name, sizeof(console_session_name));
+
+    *session_info = info;
     return TRUE;
 }
 
@@ -555,12 +564,15 @@ BOOL WINAPI WTSQuerySessionInformationW(HANDLE server, DWORD session_id, WTS_INF
         return FALSE;
     }
 
+    if (session_id == WTS_CURRENT_SESSION)
+        ProcessIdToSessionId(GetCurrentProcessId(), &session_id);
+
     if (class == WTSConnectState)
     {
         WTS_CONNECTSTATE_CLASS *state;
 
         if (!(state = malloc(sizeof(*state)))) return FALSE;
-        *state = WTSActive;
+        *state = (session_id == 0 ? WTSDisconnected : WTSActive);
         *buffer = (WCHAR *)state;
         *count = sizeof(*state);
         return TRUE;
@@ -580,27 +592,50 @@ BOOL WINAPI WTSQuerySessionInformationW(HANDLE server, DWORD session_id, WTS_INF
 
     if (class == WTSUserName)
     {
-        DWORD size = UNLEN + 1;
-        WCHAR *username;
+        if (session_id == 0)
+        {
+            WCHAR *empty;
 
-        if (!(username = malloc(size * sizeof(WCHAR)))) return FALSE;
-        GetUserNameW(username, &size);
-        *buffer = username;
-        *count = size * sizeof(WCHAR);
+            if (!(empty = calloc(1, sizeof(WCHAR)))) return FALSE;
+            *buffer = empty;
+            *count = sizeof(WCHAR);
+        }
+        else
+        {
+            DWORD size = UNLEN + 1;
+            WCHAR *username;
+
+            if (!(username = malloc(size * sizeof(WCHAR)))) return FALSE;
+            GetUserNameW(username, &size);
+            *buffer = username;
+            *count = size * sizeof(WCHAR);
+        }
+
         return TRUE;
     }
 
     if (class ==  WTSDomainName)
     {
-        DWORD size = MAX_COMPUTERNAME_LENGTH + 1;
-        WCHAR *computername;
+        if (session_id == 0)
+        {
+            WCHAR *empty;
 
-        if (!(computername = malloc(size * sizeof(WCHAR)))) return FALSE;
-        GetComputerNameW(computername, &size);
-        *buffer = computername;
-        /* GetComputerNameW() return size doesn't include terminator */
-        size++;
-        *count = size * sizeof(WCHAR);
+            if (!(empty = calloc(1, sizeof(WCHAR)))) return FALSE;
+            *buffer = empty;
+            *count = sizeof(WCHAR);
+        }
+        else
+        {
+            DWORD size = MAX_COMPUTERNAME_LENGTH + 1;
+            WCHAR *computername;
+
+            if (!(computername = malloc(size * sizeof(WCHAR)))) return FALSE;
+            GetComputerNameW(computername, &size);
+            *buffer = computername;
+            /* GetComputerNameW() return size doesn't include terminator */
+            size++;
+            *count = size * sizeof(WCHAR);
+        }
         return TRUE;
     }
 
@@ -613,17 +648,22 @@ BOOL WINAPI WTSQuerySessionInformationW(HANDLE server, DWORD session_id, WTS_INF
         if (!(info = malloc(sizeof(*info)))) return FALSE;
         FIXME("returning partial WTSINFO\n");
         memset(info, 0, sizeof(*info));
-        info->State = WTSActive;
-        if (!ProcessIdToSessionId(GetCurrentProcessId(), &info->SessionId))
+        info->State = (session_id == 0 ? WTSDisconnected : WTSActive);
+        info->SessionId = session_id;
+        if (session_id == 0)
         {
-            free(info);
-            return FALSE;
+            wcscpy(info->WinStationName, L"Services");
+            info->Domain[0] = 0;
+            info->UserName[0] = 0;
         }
-        wcscpy(info->WinStationName, L"Console");
-        size = sizeof(info->Domain) / sizeof(WCHAR);
-        GetComputerNameW(info->Domain, &size);
-        size = sizeof(info->UserName) / sizeof(WCHAR);
-        GetUserNameW(info->UserName, &size);
+        else
+        {
+            wcscpy(info->WinStationName, L"Console");
+            size = sizeof(info->Domain) / sizeof(WCHAR);
+            GetComputerNameW(info->Domain, &size);
+            size = sizeof(info->UserName) / sizeof(WCHAR);
+            GetUserNameW(info->UserName, &size);
+        }
         GetSystemTimeAsFileTime(&ft);
         info->CurrentTime.LowPart = ft.dwLowDateTime;
         info->CurrentTime.HighPart = ft.dwHighDateTime;
@@ -645,7 +685,10 @@ BOOL WINAPI WTSQuerySessionInformationW(HANDLE server, DWORD session_id, WTS_INF
  */
 BOOL WINAPI WTSQueryUserToken(ULONG session_id, PHANDLE token)
 {
-    FIXME("%lu %p semi-stub!\n", session_id, token);
+    SYSTEM_WINE_QUERY_USER_TOKEN query = {0};
+    NTSTATUS status;
+
+    TRACE("%lu %p\n", session_id, token);
 
     if (!token)
     {
@@ -653,9 +696,16 @@ BOOL WINAPI WTSQueryUserToken(ULONG session_id, PHANDLE token)
         return FALSE;
     }
 
-    return DuplicateHandle(GetCurrentProcess(), GetCurrentProcessToken(),
-                           GetCurrentProcess(), token,
-                           0, FALSE, DUPLICATE_SAME_ACCESS);
+    if (session_id == WTS_CURRENT_SESSION)
+        ProcessIdToSessionId(GetCurrentProcessId(), &session_id);
+
+    query.session_id = session_id;
+    status = NtQuerySystemInformation(SystemWineQueryUserToken, &query, sizeof(query), NULL);
+    if (!status)
+        *token = query.token;
+    else
+        SetLastError(RtlNtStatusToDosError(status));
+    return !status;
 }
 
 /************************************************************

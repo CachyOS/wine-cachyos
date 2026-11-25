@@ -518,6 +518,12 @@ static const WCHAR * const WellKnownPrivNames[SE_MAX_WELL_KNOWN_PRIVILEGE + 1] =
     L"SeManageVolumePrivilege",
     L"SeImpersonatePrivilege",
     L"SeCreateGlobalPrivilege",
+    L"SeTrustedCredManAccessPrivilege",
+    L"SeRelabelPrivilege",
+    L"SeIncreaseWorkingSetPrivilege",
+    L"SeTimeZonePrivilege",
+    L"SeCreateSymbolicLinkPrivilege",
+    L"SeDelegateSessionUserImpersonatePrivilege",
 };
 
 const WCHAR *get_wellknown_privilege_name(const LUID *luid)
@@ -954,13 +960,7 @@ LookupAccountSidW(
                             ac = L"RAS and IAS Servers";
                             break;
                         case 1000:	/* first user account */
-                            size = UNLEN + 1;
-                            account_name = malloc(size * sizeof(WCHAR));
-                            if (GetUserNameW(account_name, &size))
-                                ac = account_name;
-                            else
-                                dm = NULL;
-
+                            ac = L"steamuser";
                             break;
                         default:
                             dm = NULL;

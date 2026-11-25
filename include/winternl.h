@@ -2308,6 +2308,7 @@ typedef enum _SYSTEM_INFORMATION_CLASS {
     SystemHandleCountInformation = 253,
 #ifdef __WINESRC__
     SystemWineVersionInformation = 1000,
+    SystemWineQueryUserToken = 1001,
 #endif
 } SYSTEM_INFORMATION_CLASS, *PSYSTEM_INFORMATION_CLASS;
 
@@ -3294,6 +3295,14 @@ typedef struct _SYSTEM_PROCESS_ID_INFORMATION
     UNICODE_STRING ImageName;
 } SYSTEM_PROCESS_ID_INFORMATION, *PSYSTEM_PROCESS_ID_INFORMATION;
 
+#ifdef __WINESRC__
+typedef struct _SYSTEM_WINE_QUERY_USER_TOKEN
+{
+    ULONG session_id;
+    HANDLE token;
+} SYSTEM_WINE_QUERY_USER_TOKEN, *PSYSTEM_WINE_QUERY_USER_TOKEN;
+#endif
+
 typedef struct _TIME_FIELDS
 {   CSHORT Year;
     CSHORT Month;
@@ -3561,38 +3570,44 @@ typedef void (NTAPI *RTL_WAITORTIMERCALLBACKFUNC)(PVOID,BOOLEAN); /* FIXME: not 
 #define DPFLTR_MASK    0x8000000
 
 /* Well-known LUID values */
-#define SE_MIN_WELL_KNOWN_PRIVILEGE       2
-#define SE_CREATE_TOKEN_PRIVILEGE         2
-#define SE_ASSIGNPRIMARYTOKEN_PRIVILEGE   3
-#define SE_LOCK_MEMORY_PRIVILEGE          4
-#define SE_INCREASE_QUOTA_PRIVILEGE       5
-#define SE_UNSOLICITED_INPUT_PRIVILEGE    6 /* obsolete */
-#define SE_MACHINE_ACCOUNT_PRIVILEGE      6
-#define SE_TCB_PRIVILEGE                  7
-#define SE_SECURITY_PRIVILEGE             8
-#define SE_TAKE_OWNERSHIP_PRIVILEGE       9
-#define SE_LOAD_DRIVER_PRIVILEGE         10
-#define SE_SYSTEM_PROFILE_PRIVILEGE      11
-#define SE_SYSTEMTIME_PRIVILEGE          12
-#define SE_PROF_SINGLE_PROCESS_PRIVILEGE 13
-#define SE_INC_BASE_PRIORITY_PRIVILEGE   14
-#define SE_CREATE_PAGEFILE_PRIVILEGE     15
-#define SE_CREATE_PERMANENT_PRIVILEGE    16
-#define SE_BACKUP_PRIVILEGE              17
-#define SE_RESTORE_PRIVILEGE             18
-#define SE_SHUTDOWN_PRIVILEGE            19
-#define SE_DEBUG_PRIVILEGE               20
-#define SE_AUDIT_PRIVILEGE               21
-#define SE_SYSTEM_ENVIRONMENT_PRIVILEGE  22
-#define SE_CHANGE_NOTIFY_PRIVILEGE       23
-#define SE_REMOTE_SHUTDOWN_PRIVILEGE     24
-#define SE_UNDOCK_PRIVILEGE              25
-#define SE_SYNC_AGENT_PRIVILEGE          26
-#define SE_ENABLE_DELEGATION_PRIVILEGE   27
-#define SE_MANAGE_VOLUME_PRIVILEGE       28
-#define SE_IMPERSONATE_PRIVILEGE         29
-#define SE_CREATE_GLOBAL_PRIVILEGE       30
-#define SE_MAX_WELL_KNOWN_PRIVILEGE      SE_CREATE_GLOBAL_PRIVILEGE
+#define SE_MIN_WELL_KNOWN_PRIVILEGE                     2
+#define SE_CREATE_TOKEN_PRIVILEGE                       2
+#define SE_ASSIGNPRIMARYTOKEN_PRIVILEGE                 3
+#define SE_LOCK_MEMORY_PRIVILEGE                        4
+#define SE_INCREASE_QUOTA_PRIVILEGE                     5
+#define SE_UNSOLICITED_INPUT_PRIVILEGE                  6 /* obsolete */
+#define SE_MACHINE_ACCOUNT_PRIVILEGE                    6
+#define SE_TCB_PRIVILEGE                                7
+#define SE_SECURITY_PRIVILEGE                           8
+#define SE_TAKE_OWNERSHIP_PRIVILEGE                     9
+#define SE_LOAD_DRIVER_PRIVILEGE                        10
+#define SE_SYSTEM_PROFILE_PRIVILEGE                     11
+#define SE_SYSTEMTIME_PRIVILEGE                         12
+#define SE_PROF_SINGLE_PROCESS_PRIVILEGE                13
+#define SE_INC_BASE_PRIORITY_PRIVILEGE                  14
+#define SE_CREATE_PAGEFILE_PRIVILEGE                    15
+#define SE_CREATE_PERMANENT_PRIVILEGE                   16
+#define SE_BACKUP_PRIVILEGE                             17
+#define SE_RESTORE_PRIVILEGE                            18
+#define SE_SHUTDOWN_PRIVILEGE                           19
+#define SE_DEBUG_PRIVILEGE                              20
+#define SE_AUDIT_PRIVILEGE                              21
+#define SE_SYSTEM_ENVIRONMENT_PRIVILEGE                 22
+#define SE_CHANGE_NOTIFY_PRIVILEGE                      23
+#define SE_REMOTE_SHUTDOWN_PRIVILEGE                    24
+#define SE_UNDOCK_PRIVILEGE                             25
+#define SE_SYNC_AGENT_PRIVILEGE                         26
+#define SE_ENABLE_DELEGATION_PRIVILEGE                  27
+#define SE_MANAGE_VOLUME_PRIVILEGE                      28
+#define SE_IMPERSONATE_PRIVILEGE                        29
+#define SE_CREATE_GLOBAL_PRIVILEGE                      30
+#define SE_TRUSTED_CREDMAN_ACCESS_PRIVILEGE             31
+#define SE_RELABEL_PRIVILEGE                            32
+#define SE_INC_WORKING_SET_PRIVILEGE                    33
+#define SE_TIME_ZONE_PRIVILEGE                          34
+#define SE_CREATE_SYMBOLIC_LINK_PRIVILEGE               35
+#define SE_DELEGATE_SESSION_USER_IMPERSONATE_PRIVILEGE  36
+#define SE_MAX_WELL_KNOWN_PRIVILEGE                     SE_DELEGATE_SESSION_USER_IMPERSONATE_PRIVILEGE
 
 /* NtGlobalFlag bits */
 #define FLG_STOP_ON_EXCEPTION            0x00000001
@@ -4465,6 +4480,7 @@ typedef struct _WOW64_CPU_AREA_INFO
     WOW64_CPURESERVED *CpuReserved;
     ULONG              ContextFlag;
     USHORT             Machine;
+    void              *CpuAreaEnd;
 } WOW64_CPU_AREA_INFO, *PWOW64_CPU_AREA_INFO;
 
 typedef struct _WOW64INFO

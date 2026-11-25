@@ -4252,6 +4252,16 @@ static int compare_tzdate( const TIME_FIELDS *tf, const SYSTEMTIME *compare )
 }
 
 
+static BOOL daylight_lt_std( const TIME_ZONE_INFORMATION *info )
+{
+    if (info->DaylightDate.wMonth != info->StandardDate.wMonth)
+        return info->DaylightDate.wMonth < info->StandardDate.wMonth;
+    if (info->DaylightDate.wDay != info->StandardDate.wDay)
+        return info->DaylightDate.wDay < info->StandardDate.wDay;
+    return info->DaylightDate.wHour < info->StandardDate.wHour;
+}
+
+
 static DWORD get_timezone_id( const TIME_ZONE_INFORMATION *info, LARGE_INTEGER time, BOOL is_local )
 {
     int year;
@@ -4294,7 +4304,7 @@ static DWORD get_timezone_id( const TIME_ZONE_INFORMATION *info, LARGE_INTEGER t
     else
         after_daylight_date = tf.Year > year;
 
-    if (info->DaylightDate.wMonth < info->StandardDate.wMonth) /* Northern hemisphere */
+    if (daylight_lt_std( info )) /* Northern hemisphere */
     {
         if (before_standard_date && after_daylight_date) return TIME_ZONE_ID_DAYLIGHT;
     }
@@ -6317,6 +6327,87 @@ DWORD WINAPI DECLSPEC_HOTPATCH GetTimeZoneInformation( TIME_ZONE_INFORMATION *in
 }
 
 
+struct tzinfo_for_year_cache_entry
+{
+    WCHAR key_name[128];
+    BOOLEAN dlt_disabled;
+    unsigned int year;
+    TIME_ZONE_INFORMATION info;
+};
+
+static struct tzinfo_for_year_cache_entry tzinfo_for_year_cache[4];
+
+static BOOL dynamic_tzinfo_key_matches( struct tzinfo_for_year_cache_entry *entry,
+                                        const DYNAMIC_TIME_ZONE_INFORMATION *dynamic, unsigned int year )
+{
+    if (!entry->dlt_disabled != !dynamic->DynamicDaylightTimeDisabled) return FALSE;
+    if (entry->year != year) return FALSE;
+    return !wcscmp( entry->key_name, dynamic->TimeZoneKeyName );
+}
+
+
+static BOOL get_cached_tzinfo_for_year( USHORT year, const DYNAMIC_TIME_ZONE_INFORMATION *dynamic,
+                                        TIME_ZONE_INFORMATION *info)
+{
+    static ULONGLONG last_checked;
+    struct tzinfo_for_year_cache_entry tmp;
+    unsigned int i;
+
+    if (!year) return FALSE;
+
+    RtlEnterCriticalSection( &tzname_section );
+    if (GetTickCount64() - last_checked >= 5000)
+    {
+        last_checked = GetTickCount64();
+        for (i = 0; i < ARRAY_SIZE(tzinfo_for_year_cache); ++i) tzinfo_for_year_cache[i].year = 0;
+    }
+
+    for (i = 0; i < ARRAY_SIZE(tzinfo_for_year_cache); ++i)
+    {
+        if (!dynamic_tzinfo_key_matches( &tzinfo_for_year_cache[i], dynamic, year )) continue;
+        *info = tzinfo_for_year_cache[i].info;
+        if (i)
+        {
+            tmp = tzinfo_for_year_cache[i];
+            memmove( &tzinfo_for_year_cache[1], &tzinfo_for_year_cache[0],
+                     sizeof(*tzinfo_for_year_cache) * i );
+            tzinfo_for_year_cache[0] = tmp;
+        }
+        break;
+    }
+    RtlLeaveCriticalSection( &tzname_section );
+    return i < ARRAY_SIZE(tzinfo_for_year_cache);
+}
+
+
+static void cache_tzinfo_for_year( USHORT year, const DYNAMIC_TIME_ZONE_INFORMATION *dynamic,
+                                        TIME_ZONE_INFORMATION *info)
+{
+    unsigned int i;
+
+    RtlEnterCriticalSection( &tzname_section );
+    for (i = 0; i < ARRAY_SIZE(tzinfo_for_year_cache); ++i)
+    {
+        if (dynamic_tzinfo_key_matches( &tzinfo_for_year_cache[i], dynamic, year ))
+        {
+            tzinfo_for_year_cache[i].info = *info;
+            break;
+        }
+    }
+
+    if (i == ARRAY_SIZE(tzinfo_for_year_cache))
+    {
+        memmove( &tzinfo_for_year_cache[1], &tzinfo_for_year_cache[0],
+                 sizeof(*tzinfo_for_year_cache) * (ARRAY_SIZE(tzinfo_for_year_cache) - 1) );
+        wcscpy( tzinfo_for_year_cache[0].key_name, dynamic->TimeZoneKeyName );
+        tzinfo_for_year_cache[0].year = year;
+        tzinfo_for_year_cache[0].dlt_disabled = dynamic->DynamicDaylightTimeDisabled;
+        tzinfo_for_year_cache[0].info = *info;
+    }
+    RtlLeaveCriticalSection( &tzname_section );
+}
+
+
 /***********************************************************************
  *	GetTimeZoneInformationForYear   (kernelbase.@)
  */
@@ -6345,6 +6436,8 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetTimeZoneInformationForYear( USHORT year,
         dynamic = &local_info;
     }
 
+    if (get_cached_tzinfo_for_year( year, dynamic, info )) return TRUE;
+
     if ((ret = RegOpenKeyExW( tz_key, dynamic->TimeZoneKeyName, 0, KEY_ALL_ACCESS, &key ))) goto done;
     if (RegLoadMUIStringW( key, L"MUI_Std", info->StandardName,
                            sizeof(info->StandardName), NULL, 0, system_dir ))
@@ -6366,7 +6459,14 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetTimeZoneInformationForYear( USHORT year,
         !RegOpenKeyExW( key, L"Dynamic DST", 0, KEY_ALL_ACCESS, &dst_key ))
     {
         WCHAR yearW[16];
-        swprintf( yearW, ARRAY_SIZE(yearW), L"%u", year );
+        DWORD use_year;
+
+        count = sizeof(use_year);
+        if ((RegQueryValueExW( dst_key, L"LastEntry", NULL, NULL, (BYTE *)&use_year, &count ) || year < use_year)
+            && (RegQueryValueExW( dst_key, L"FirstEntry", NULL, NULL, (BYTE *)&use_year, &count ) || year > use_year))
+            use_year = year;
+
+        swprintf( yearW, ARRAY_SIZE(yearW), L"%u", use_year );
         count = sizeof(data);
         ret = RegQueryValueExW( dst_key, yearW, NULL, NULL, (BYTE *)&data, &count );
         RegCloseKey( dst_key );
@@ -6384,6 +6484,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetTimeZoneInformationForYear( USHORT year,
         info->DaylightBias = data.dlt_bias;
         info->StandardDate = data.std_date;
         info->DaylightDate = data.dlt_date;
+        cache_tzinfo_for_year( year, dynamic, info );
     }
 
 done:
@@ -7326,6 +7427,61 @@ BOOL WINAPI DECLSPEC_HOTPATCH SystemTimeToTzSpecificLocalTime( const TIME_ZONE_I
 }
 
 
+static BOOL is_special_dst_date( SYSTEMTIME *time)
+{
+    return time->wMonth == 1 && time->wDay == 1 && !time->wHour && !time->wSecond;
+}
+
+
+static BOOL system_time_to_local_time_for_year( const DYNAMIC_TIME_ZONE_INFORMATION *dinfo, LARGE_INTEGER time,
+                                                int year, TIME_FIELDS *ret_tf )
+{
+    BOOL before_standard_date, after_daylight_date;
+    TIME_ZONE_INFORMATION info;
+    TIME_FIELDS std_tf;
+    LARGE_INTEGER t;
+
+    if (!GetTimeZoneInformationForYear( year, (DYNAMIC_TIME_ZONE_INFORMATION *)dinfo, &info )) return FALSE;
+
+    if (!info.DaylightDate.wMonth)
+    {
+        t.QuadPart = time.QuadPart - info.Bias * (LONGLONG)600000000;
+        RtlTimeToTimeFields( &t, ret_tf );
+        return TRUE;
+    }
+
+    if (is_special_dst_date( &info.StandardDate ))
+        info.StandardDate.wYear = year;
+    if (is_special_dst_date( &info.DaylightDate ))
+        info.DaylightDate.wYear = year;
+
+    t.QuadPart = time.QuadPart - (info.Bias + info.DaylightBias) * (LONGLONG)600000000;
+    RtlTimeToTimeFields( &t, ret_tf );
+    if (ret_tf->Year == year)
+        before_standard_date = compare_tzdate( ret_tf, &info.StandardDate ) < 0;
+    else
+        before_standard_date = ret_tf->Year < year;
+
+    t.QuadPart = time.QuadPart - (info.Bias + info.StandardBias) * (LONGLONG)600000000;
+    RtlTimeToTimeFields( &t, &std_tf );
+    if (std_tf.Year == year)
+        after_daylight_date = compare_tzdate( &std_tf, &info.DaylightDate ) >= 0;
+    else
+        after_daylight_date = std_tf.Year > year || is_special_dst_date( &info.DaylightDate );
+
+    if (daylight_lt_std( &info ))
+    {
+        if (before_standard_date && after_daylight_date) return TRUE;
+    }
+    else
+    {
+        if (before_standard_date || after_daylight_date) return TRUE;
+    }
+    *ret_tf = std_tf;
+    return TRUE;
+}
+
+
 /***********************************************************************
  *	SystemTimeToTzSpecificLocalTimeEx   (kernelbase.@)
  */
@@ -7333,15 +7489,33 @@ BOOL WINAPI DECLSPEC_HOTPATCH SystemTimeToTzSpecificLocalTimeEx( const DYNAMIC_T
                                                                  const SYSTEMTIME *system,
                                                                  SYSTEMTIME *local )
 {
-    TIME_ZONE_INFORMATION tzinfo;
+    LARGE_INTEGER time;
+    TIME_FIELDS tf;
+    int year;
 
     if (!system || !local)
     {
         SetLastError( ERROR_INVALID_PARAMETER );
         return FALSE;
     }
-    if (!GetTimeZoneInformationForYear( system->wYear, (DYNAMIC_TIME_ZONE_INFORMATION *)info, &tzinfo )) return FALSE;
-    return SystemTimeToTzSpecificLocalTime( &tzinfo, system, local );
+
+    if (!SystemTimeToFileTime( system, (FILETIME *)&time )) return FALSE;
+    year = system->wYear;
+    if (system->wMonth == 1 && system->wDay == 1) --year;
+
+    if (!system_time_to_local_time_for_year( info, time, year, &tf )) return FALSE;
+
+    if (year != tf.Year && !system_time_to_local_time_for_year( info, time, year + 1, &tf )) return FALSE;
+
+    local->wYear = tf.Year;
+    local->wMonth = tf.Month;
+    local->wDay = tf.Day;
+    local->wHour = tf.Hour;
+    local->wMinute = tf.Minute;
+    local->wSecond = tf.Second;
+    local->wMilliseconds = tf.Milliseconds;
+    local->wDayOfWeek = tf.Weekday;
+    return TRUE;
 }
 
 
@@ -7395,6 +7569,12 @@ BOOL WINAPI DECLSPEC_HOTPATCH TzSpecificLocalTimeToSystemTimeEx( const DYNAMIC_T
         return FALSE;
     }
     if (!GetTimeZoneInformationForYear( local->wYear, (DYNAMIC_TIME_ZONE_INFORMATION *)info, &tzinfo )) return FALSE;
+
+    if (is_special_dst_date( &tzinfo.StandardDate ))
+        tzinfo.StandardDate.wYear = local->wYear;
+    if (is_special_dst_date( &tzinfo.DaylightDate ))
+        tzinfo.DaylightDate.wYear = local->wYear;
+
     return TzSpecificLocalTimeToSystemTime( &tzinfo, local, system );
 }
 

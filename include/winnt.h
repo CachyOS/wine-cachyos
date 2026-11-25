@@ -1287,7 +1287,7 @@ typedef struct DECLSPEC_ALIGN(16) _M128A {
     LONGLONG High;
 } M128A, *PM128A;
 
-typedef struct _XSAVE_FORMAT {
+typedef struct DECLSPEC_ALIGN(16) _XSAVE_FORMAT {
     WORD ControlWord;        /* 000 */
     WORD StatusWord;         /* 002 */
     BYTE TagWord;            /* 004 */
@@ -1505,7 +1505,11 @@ typedef struct _KNONVOLATILE_CONTEXT_POINTERS
 #define XSTATE_AVX512_ZMM_H          6
 #define XSTATE_AVX512_ZMM            7
 #define XSTATE_IPT                   8
+#define XSTATE_PASID                 10
 #define XSTATE_CET_U                 11
+#define XSTATE_CET_S                 12
+#define XSTATE_AMX_TILE_CONFIG       17
+#define XSTATE_AMX_TILE_DATA         18
 #define XSTATE_LWP                   62
 #define MAXIMUM_XSTATE_FEATURES      64
 
@@ -1513,10 +1517,16 @@ typedef struct _KNONVOLATILE_CONTEXT_POINTERS
 #define XSTATE_MASK_LEGACY_SSE              (1 << XSTATE_LEGACY_SSE)
 #define XSTATE_MASK_LEGACY                  (XSTATE_MASK_LEGACY_FLOATING_POINT | XSTATE_MASK_LEGACY_SSE)
 #define XSTATE_MASK_GSSE                    (1 << XSTATE_GSSE)
-
-#define XSTATE_ARM64_SVE 2
-
-#define XSTATE_MASK_ARM64_SVE (1 << XSTATE_ARM64_SVE)
+#define XSTATE_MASK_AVX                     XSTATE_MASK_GSSE
+#define XSTATE_MASK_MPX                     ((1 << XSTATE_MPX_BNDREGS) | (1 << XSTATE_MPX_BNDCSR))
+#define XSTATE_MASK_AVX512                  ((1 << XSTATE_AVX512_KMASK) | (1 << XSTATE_AVX512_ZMM_H) | (1 << XSTATE_AVX512_ZMM))
+#define XSTATE_MASK_IPT                     (1 << XSTATE_IPT)
+#define XSTATE_MASK_PASID                   (1 << XSTATE_PASID)
+#define XSTATE_MASK_CET_U                   (1 << XSTATE_CET_U)
+#define XSTATE_MASK_CET_S                   (1 << XSTATE_CET_S)
+#define XSTATE_MASK_AMX_TILE_CONFIG         (1 << XSTATE_AMX_TILE_CONFIG)
+#define XSTATE_MASK_AMX_TILE_DATA           (1 << XSTATE_AMX_TILE_DATA)
+#define XSTATE_MASK_LWP                     ((UINT64)1 << XSTATE_LWP)
 
 typedef struct _XSTATE_FEATURE
 {
@@ -1547,10 +1557,33 @@ typedef struct _XSTATE_CONFIGURATION
     ULONG64 EnabledUserVisibleSupervisorFeatures;
     ULONG64 ExtendedFeatureDisableFeatures;
     ULONG AllNonLargeFeatureSize;
-    ULONG Spare;
+    union
+    {
+        struct
+        {
+            DWORD Amd64Spare1[3];
+        };
+        struct
+        {
+            WORD MaxSveVectorLength;
+            WORD MaxSmeVectorLength;
+            WORD SmeZTRegisterCount;
+            union
+            {
+                WORD Arm64Flags;
+                struct
+                {
+                    WORD SmeFa64 : 1;
+                };
+            };
+            BYTE SupportedSmeVectorLengths;
+            BYTE Arm64Spare[3];
+        };
+    };
+    ULONG64 Spare;
 } XSTATE_CONFIGURATION, *PXSTATE_CONFIGURATION;
 
-typedef struct _XSAVE_AREA_HEADER
+typedef struct DECLSPEC_ALIGN(8) _XSAVE_AREA_HEADER
 {
     DWORD64 Mask;
     DWORD64 CompactionMask;
@@ -1558,12 +1591,54 @@ typedef struct _XSAVE_AREA_HEADER
 }
 XSAVE_AREA_HEADER, *PXSAVE_AREA_HEADER;
 
-typedef struct _XSAVE_ARM64_SVE_HEADER {
-    ULONG VectorLength;
-    ULONG VectorRegisterOffset;
-    ULONG PredicateRegisterOffset;
-    ULONG Reserved[5];
+typedef struct _XSAVE_ARM64_SVE_HEADER
+{
+    DWORD VectorLength;
+    DWORD VectorRegisterOffset;
+    DWORD PredicateRegisterOffset;
+    union
+    {
+        DWORD Flags;
+        struct
+        {
+            DWORD Sm : 1;
+            DWORD ReservedFlags : 31;
+        };
+    };
+    DWORD Reserved[4];
 } XSAVE_ARM64_SVE_HEADER, *PXSAVE_ARM64_SVE_HEADER;
+
+typedef struct _XSAVE_ARM64_SME_ZA_HEADER
+{
+    DWORD VectorLength;
+    union
+    {
+        DWORD Flags;
+        struct
+        {
+            DWORD Za : 1;
+            DWORD ReservedFlags : 31;
+        };
+    };
+    DWORD Reserved[6];
+} XSAVE_ARM64_SME_ZA_HEADER, *PXSAVE_ARM64_SME_ZA_HEADER;
+
+typedef struct _XSAVE_ARM64_SME_TPIDR2_HEADER
+{
+    DWORD Reserved[8];
+} XSAVE_ARM64_SME_TPIDR2_HEADER, *PXSAVE_ARM64_SME_TPIDR2_HEADER;
+
+typedef struct _XSAVE_ARM64_SME_ZT_HEADER
+{
+    DWORD RegisterCount;
+    DWORD Reserved[7];
+} XSAVE_ARM64_SME_ZT_HEADER, *PXSAVE_ARM64_SME_ZT_HEADER;
+
+typedef struct DECLSPEC_ALIGN(16) _XSAVE_AREA
+{
+    XSAVE_FORMAT LegacyState;
+    XSAVE_AREA_HEADER Header;
+} XSAVE_AREA, *PXSAVE_AREA;
 
 typedef struct _YMMCONTEXT
 {
@@ -1740,15 +1815,17 @@ typedef struct _KNONVOLATILE_CONTEXT_POINTERS
 #endif /* __arm__ */
 
 #define CONTEXT_ARM64           0x400000
-#define CONTEXT_ARM64_CONTROL         (CONTEXT_ARM64 | 0x00000001)
-#define CONTEXT_ARM64_INTEGER         (CONTEXT_ARM64 | 0x00000002)
-#define CONTEXT_ARM64_FLOATING_POINT  (CONTEXT_ARM64 | 0x00000004)
-#define CONTEXT_ARM64_DEBUG_REGISTERS (CONTEXT_ARM64 | 0x00000008)
-#define CONTEXT_ARM64_X18             (CONTEXT_ARM64 | 0x00000010)
-#define CONTEXT_ARM64_XSTATE          (CONTEXT_ARM64 | 0x00000020)
-#define CONTEXT_ARM64_FEX_YMMSTATE   (CONTEXT_ARM64 | 0x00000040)
+#define CONTEXT_ARM64_CONTROL             (CONTEXT_ARM64 | 0x00000001)
+#define CONTEXT_ARM64_INTEGER             (CONTEXT_ARM64 | 0x00000002)
+#define CONTEXT_ARM64_FLOATING_POINT      (CONTEXT_ARM64 | 0x00000004)
+#define CONTEXT_ARM64_DEBUG_REGISTERS     (CONTEXT_ARM64 | 0x00000008)
+#define CONTEXT_ARM64_X18                 (CONTEXT_ARM64 | 0x00000010)
+#define CONTEXT_ARM64_XSTATE              (CONTEXT_ARM64 | 0x00000020)
+#define CONTEXT_ARM64_FLOATING_POINT_LOW  (CONTEXT_ARM64 | 0x00000040)
+#define CONTEXT_ARM64_FLOATING_POINT_HIGH (CONTEXT_ARM64 | 0x00000080)
 #define CONTEXT_ARM64_FULL (CONTEXT_ARM64_CONTROL | CONTEXT_ARM64_INTEGER | CONTEXT_ARM64_FLOATING_POINT)
-#define CONTEXT_ARM64_ALL  (CONTEXT_ARM64_FULL | CONTEXT_ARM64_DEBUG_REGISTERS | CONTEXT_ARM64_X18)
+#define CONTEXT_ARM64_ALL  (CONTEXT_ARM64_FULL | CONTEXT_ARM64_DEBUG_REGISTERS | CONTEXT_ARM64_X18 | \
+                            CONTEXT_ARM64_FLOATING_POINT_LOW | CONTEXT_ARM64_FLOATING_POINT_HIGH)
 
 #define CONTEXT_ARM64_UNWOUND_TO_CALL 0x20000000
 #define CONTEXT_ARM64_RET_TO_GUEST    0x04000000
@@ -4637,7 +4714,7 @@ typedef struct _SID_AND_ATTRIBUTES_HASH {
 
 /* S-1-2 */
 #define SECURITY_LOCAL_SID_AUTHORITY		{0,0,0,0,0,2}
-#define SECURITY_LOCAL_LOGON_RID                __MSABI_LONG(0X00000000)
+#define SECURITY_LOCAL_LOGON_RID                __MSABI_LONG(0X00000001)
 
 /* S-1-3 */
 #define SECURITY_CREATOR_SID_AUTHORITY		{0,0,0,0,0,3}
