@@ -377,6 +377,14 @@ static void test_sprintf( void )
     ok(!strcmp(buffer,"foo  "),"Negative field width ignored \"%s\"\n",buffer);
     ok( r==5, "return count wrong\n");
 
+    r = p_sprintf(buffer, "%.*f", 0x80000000, 3.14);
+    ok(!strcmp(buffer,"3.140000"),"Negative precision ignored \"%s\"\n",buffer);
+    ok( r==8, "return count wrong\n");
+
+    r = p_sprintf(buffer, "%.*f", 0x80000000, NAN);
+    ok(!strcmp(buffer,"1.#QNAN0"),"Negative precision ignored \"%s\"\n",buffer);
+    ok( r==8, "return count wrong\n");
+
     x = 0;
     r = p_sprintf(buffer, "asdf%n", &x );
     if (r == -1)
