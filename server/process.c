@@ -706,6 +706,7 @@ struct process *create_process( int fd, struct process *parent, unsigned int fla
     process->rawinput_device_count = 0;
     process->rawinput_mouse  = NULL;
     process->rawinput_kbd    = NULL;
+    process->views_tree.root = NULL;
     memset( &process->image_info, 0, sizeof(process->image_info) );
     process->cpu_override.cpu_count = 0;
     list_init( &process->rawinput_entry );
